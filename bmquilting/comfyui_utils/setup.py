@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='comfyui-utils',
+    name='bmquilting.comfyui-utils',
     version='1.0.0',
     packages=find_packages(),
     install_requires=[
