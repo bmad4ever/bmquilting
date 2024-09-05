@@ -92,9 +92,9 @@ class SeamlessMPFuncWrapper(SeamlessFuncWrapper):
                 lookup = cv2.cvtColor(lookup, cv2.COLOR_RGB2Lab) if lookup is not None else None
 
         match self.ori:
-            case Orientation.H:
+            case Orientation.H.value:
                 func = make_seamless_horizontally
-            case Orientation.V:
+            case Orientation.V.value:
                 func = make_seamless_vertically
             case ___:
                 func = make_seamless_both
@@ -124,9 +124,9 @@ class SeamlessSPFuncWrapper(SeamlessFuncWrapper):
                 lookup = cv2.cvtColor(lookup, cv2.COLOR_RGB2Lab) if lookup is not None else None
 
         match self.ori:
-            case Orientation.H:
+            case Orientation.H.value:
                 func = seamless_horizontal
-            case Orientation.V:
+            case Orientation.V.value:
                 func = seamless_vertical
             case ___:
                 func = seamless_both
