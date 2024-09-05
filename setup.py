@@ -13,6 +13,7 @@ setup(
         'scikit-learn~=1.3.1',
     ],
     extras_require={
+        'astar': ['pyastar2d==1.0.6'],
         'comfy': [
             'bmq-comfyui-utils @ git+https://github.com/bmad4ever/bmquilting.git#egg=bmq-comfyui-utils&subdirectory=bmquilting/bmq_comfyui_utils'
         ],
