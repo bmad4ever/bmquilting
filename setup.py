@@ -14,7 +14,7 @@ setup(
     ],
     extras_require={
         'comfy': [
-            'bmquilting.comfyui-utils @ git+https://github.com/bmad4ever/bmquilting.git#egg=bmquilting.comfyui-utils&subdirectory=bmquilting/comfyui_utils'
+            'comfyui-utils @ git+https://github.com/bmad4ever/bmquilting.git#egg=comfyui-utils&subdirectory=bmquilting/comfyui_utils'
         ],
     }
 )
