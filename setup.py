@@ -19,7 +19,7 @@ setup(
     ],
     extras_require={
         'comfy': [
-            'comfyui-utils @ TODO'
+            'comfyui-utils @ git+https://github.com/bmad4ever/bmquilting.git#egg=comfyui-utils&subdirectory=comfyui_utils'
         ],
     }
 )
