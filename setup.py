@@ -5,7 +5,7 @@ setup(
     author="Bruno Madeira",
     author_email="bmad.works@gmail.com",
     version='1.0.0',
-    packages=find_packages(exclude=['bmquilting.comfyui_utils', 'bmquilting.comfyui_utils.*']),
+    packages=find_packages(exclude=['bmquilting.bmq_comfyui_utils', 'bmquilting.bmq_comfyui_utils.*']),
     install_requires=[
         'numpy>=1.23.5',
         'joblib~=1.3.2',
@@ -14,7 +14,7 @@ setup(
     ],
     extras_require={
         'comfy': [
-            'comfyui-utils @ git+https://github.com/bmad4ever/bmquilting.git#egg=comfyui-utils&subdirectory=bmquilting/comfyui_utils'
+            'bmq-comfyui-utils @ git+https://github.com/bmad4ever/bmquilting.git#egg=bmq-comfyui-utils&subdirectory=bmquilting/bmq_comfyui_utils'
         ],
     }
 )
