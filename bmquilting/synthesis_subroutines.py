@@ -379,7 +379,7 @@ if importlib.util.find_spec("pyastar2d") is not None:
             if i >= shape_m2:
                 break
 
-        cv.floodFill(mask, None, (mask.shape[0] - 1, mask.shape[1] - 1), (0,))
+        cv.floodFill(mask, None, (mask.shape[1] - 1, mask.shape[0] - 1), (0,))
         return mask
 
 
