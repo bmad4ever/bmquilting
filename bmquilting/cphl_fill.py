@@ -16,6 +16,12 @@ from .synthesis_subroutines import apply_mask
 # -> implement comfyui node
 # -> implement "radial" parallel texture generation using this quilting variant
 
+def showInMovedWindow(winname, img, x, y):
+    cv2.namedWindow(winname)        # Create a named window
+    cv2.moveWindow(winname, x, y)   # Move it to (x,y)
+    cv2.imshow(winname,img)
+
+
 def create_mock_mask_with_polygon(width, height, polygon_points):
     """
     Create a white mask of given dimensions and draw a black polygon on it.
@@ -36,7 +42,7 @@ def create_mock_mask_with_polygon(width, height, polygon_points):
 
 def create_mock_mask(shape):
     # Define dimensions of the mask
-    width, height = shape[:2]  #500, 500
+    height, width = shape[:2]  #500, 500
 
     # Define points of the 5-sided polygon (pentagon)
     polygon_points = [
@@ -78,7 +84,7 @@ kernelx3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 kernelx5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
 
-def circle_quilt(img, roi_mask, lookup, radius=55, spacing_factor=1.1, overlap_r=30, debug_img=None):
+def circle_quilt(img, roi_mask, lookup, radius=64, spacing_factor=1.1, overlap_r=32, debug_img=None):
     img = cv2.copyMakeBorder(img, radius, radius, radius, radius, borderType=cv2.BORDER_REFLECT_101)
     roi_mask = cv2.copyMakeBorder(roi_mask, radius, radius, radius, radius, borderType=cv2.BORDER_REFLECT_101)
 
@@ -100,7 +106,7 @@ def circle_quilt(img, roi_mask, lookup, radius=55, spacing_factor=1.1, overlap_r
     circ_roi = np.zeros((int(radius*2), int(radius*2)), dtype=np.uint8)
     cv2.circle(circ_roi, (radius, radius), radius, (1,), -1)
     donut_roi = circ_roi.copy()  # used as mask for template matching
-    cv2.circle(donut_roi, (radius, radius), round(non_overlap_radius * .9), (0,), -1)
+    cv2.circle(donut_roi, (radius, radius), round(non_overlap_radius), (0,), -1)
 
     #cv2.imshow("donut_roi", circ_roi); cv2.waitKey(0); quit()
 
@@ -124,10 +130,17 @@ def circle_quilt(img, roi_mask, lookup, radius=55, spacing_factor=1.1, overlap_r
 
                 y1, y2, x1, x2 = y - radius, y + radius, x - radius, x + radius
                 block, roi = img[y1:y2, x1:x2], filled_mask[y1:y2, x1:x2]
+                roi = donut_roi*roi
+                #roi = circ_roi*roi
+                # TODO to investigate...
+                #   areas near "donut" breaks should be considered more important to match (I'm guessing)
+                #   consider using float mask weighted w/ the above in mind
                 print(f"shapes  block={block.shape}  roi={roi.shape}")
-                patch: np.ndarray = find_circular_patch(lookup, block, roi, 0,
+                patch: np.ndarray = find_circular_patch(lookup, block, roi, 0.0,
                                                         radius * 2)  # TODO tolerance should not be hardcoded
 
+                #cv2.imshow("block", block)
+                cv2.imshow("roi", roi*255)
                 #cv2.imshow("Patch", apply_mask(patch, circ_roi));
                 #cv2.waitKey(0); quit()
 
@@ -159,10 +172,14 @@ def circle_quilt(img, roi_mask, lookup, radius=55, spacing_factor=1.1, overlap_r
     return img[radius:-radius, radius:-radius]
 
 
-def find_first_all_zero_row(mask):
+def find_first_2adjacent_all_zero_rows(mask):
+    """return the index of the second all zero row"""
+    prev = False
     for i, row in enumerate(mask):
-        if all(pixel == 0 for pixel in row):
+        current = all(pixel == 0 for pixel in row)
+        if prev and current:
             return i
+        prev = current
     return None
 
 
@@ -181,13 +198,17 @@ def min_cut_circ(block, patch, roi, non_overlap_radius):
     #roi[40:50, :] = 0  # force all zeros row
 
     errs = ((patch - block) ** 2).mean(2)
-    empty_row = find_first_all_zero_row(roi)
+    #empty_row = find_first_all_zero_row(roi)
+    empty_row = find_first_2adjacent_all_zero_rows(roi[:, non_overlap_radius:])
     if empty_row is not None:
         errs = np.roll(errs, -empty_row, axis=0)
         roi = np.roll(roi, -empty_row, axis=0)
-    #cv2.imshow("rolled polar roi", roi * 255)
-    #cv2.waitKey(0)
-    #quit()
+        block = np.roll(block, -empty_row, axis=0)
+
+    showInMovedWindow("rolled polar roi", roi * 255, 100, 200)
+    showInMovedWindow("rolled polar block", block, 100 + 8 + roi.shape[1], 200)
+    errs[roi == 0] = 0
+    showInMovedWindow("errs", errs/np.max(errs), 100 +(8+roi.shape[1])*2, 200)
 
     maze = np.ones((errs.shape[0] + 2, errs.shape[1]), dtype=np.float32)
     maze_area = maze[1:-1, :]
@@ -198,11 +219,9 @@ def min_cut_circ(block, patch, roi, non_overlap_radius):
     maze *= errs.shape[0] ** 3
     maze[0, :] = 1
     maze[-1, :] = 1
-    maze[1:-1, -1] = roi[:, -1] * maze[1:-1, -1] + (1 - roi[:, -1])
+    maze[1:-1, -1] = roi[:, -1] * maze[1:-1, -1] + (1 - roi[:, -1])  # bottom holes escape path
+    #maze[1:-1,:][roi==0] = 1 # don't try this, it won't work
     maze[:, :non_overlap_radius] = np.inf  # TODO define or make configurable the overlap outer radius
-
-    #cv2.imshow("maze", maze/np.max(maze)*255)
-    #cv2.waitKey(0)
 
 
     start = (0, maze.shape[1] - 1)
@@ -226,15 +245,15 @@ def min_cut_circ(block, patch, roi, non_overlap_radius):
         if i >= shape_m2:
             break
 
-    cv2.imshow("cut path", mask * 255)
+    showInMovedWindow("cut path", mask * 255,  100 + (8+roi.shape[1])*3, 200)
 
     print(f"seed point={(mask.shape[0] - 1, mask.shape[1] - 1)}")
     cv2.floodFill(mask, None, (mask.shape[1] - 1, mask.shape[0] - 1), (0,))
     #cv2.floodFill(mask, None, (0, 0), (0,))
     if empty_row is not None:
         mask = np.roll(mask, empty_row, axis=0)
-    cv2.imshow("cut mask", mask * 255)
-    #cv2.waitKey(0)
+    showInMovedWindow("cut mask", mask * 255, 100 + (8 + roi.shape[1])*4, 200)
+    cv2.waitKey(0)
 
     return mask[:, :-2]
 
@@ -242,9 +261,12 @@ def min_cut_circ(block, patch, roi, non_overlap_radius):
 def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  # TODO rng
     # texture is for output
     # image is for patch search
-    ncs = cv2.matchTemplate(image=lookup, templ=block, mask=mask, method=cv2.TM_CCOEFF_NORMED)
 
-    err_mat = 1 - ncs
+    # according to documentation only TM_SQDIFF and TM_CCORR_NORMED accept a mask
+    # also, if given as a float it can be weighted... may come in handy later
+    err_mat = cv2.matchTemplate(image=lookup, templ=block, mask=mask, method=cv2.TM_SQDIFF)
+
+    #err_mat = 1 - ncs  # for TM_CCOEFF_NORMED
     if tolerance > 0:
         # attempt to ignore zeroes in order to apply tolerance, but mind edge case (e.g., blank image)
         min_val = np.min(pos_vals) if (pos_vals := err_mat[err_mat > 0]).size > 0 else 0
@@ -259,20 +281,18 @@ def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  
 
 
 if __name__ == "__main__":
-    src = cv2.imread("t16g.png", cv2.IMREAD_COLOR)
-    src2 = cv2.imread("t16s.png", cv2.IMREAD_COLOR)
+    text_idx = "10"
+    src = cv2.imread(f"results/t{text_idx}.png", cv2.IMREAD_COLOR)
+    src2 = cv2.imread(f"textures/t{text_idx}.png", cv2.IMREAD_COLOR)
     src = np.float32(src) / 255
     src2 = np.float32(src2) / 255
 
-    #lookup = cv2.imread("t16.png", cv2.IMREAD_COLOR)
-    #img, lookup = src, src2
-    img = cv2.resize(src, [d * 2 for d in src.shape[:2]])
-    lookup = cv2.resize(src2, [d * 2 for d in src2.shape[:2]])
+    img = cv2.resize(src, [d * 2 for d in src.shape[:2][::-1]])
+    lookup = cv2.resize(src2, [d * 2 for d in src2.shape[:2][::-1]])
 
     mask = create_mock_mask(img.shape)
+    print(f"shapes {(img.shape, mask.shape)}")
     img[mask == 0] = (0, 0, 0)
-    #cv2.imshow('Mask with Polygon', mask)
-    #cv2.waitKey(0)
 
     debug_img = np.stack((mask.copy(),) * 3, axis=-1)
     img = circle_quilt(img=img, roi_mask=mask, lookup=lookup, debug_img=debug_img)
