@@ -4,6 +4,7 @@ import math
 from numpy import random
 from .synthesis_subroutines import apply_mask
 
+
 # quilting using Circular Patches over a Hexagonal Lattice (CPHL)
 
 
@@ -18,24 +19,23 @@ from .synthesis_subroutines import apply_mask
 
 
 def showInMovedWindow(winname, img, x, y):
-    cv2.namedWindow(winname)        # Create a named window
-    cv2.moveWindow(winname, x, y)   # Move it to (x,y)
+    cv2.namedWindow(winname)  # Create a named window
+    cv2.moveWindow(winname, x, y)  # Move it to (x,y)
     cv2.imshow(winname, img)
 
 
-def find_donut_outer_corners(mask: np.ndarray, inner_radius: int, outer_radius: int) -> list[tuple[int, int]]:
+def find_annulus_outer_corners(mask: np.ndarray, inner_radius: int, outer_radius: int) -> list[tuple[int, int]]:
     """
-    yes, this is a function name; and this, is its respective documentation...
     Args:
-        mask: the mask w/ the donut
-        inner_radius: inner radius of the donut
-        outer_radius: outer radius of the donut
+        mask: the mask w/ the annulus
+        inner_radius: inner radius of the annulus
+        outer_radius: outer radius of the annulus
 
     Returns:
         list of points in the following tuple format: (y, x)
     """
     margin: int = 4
-    extended_mask = np.zeros((margin*2 + mask.shape[0], margin*2 + mask.shape[1]), dtype=mask.dtype)
+    extended_mask = np.zeros((margin * 2 + mask.shape[0], margin * 2 + mask.shape[1]), dtype=mask.dtype)
     extended_mask[4:-4, 4:-4] = mask
 
     dst = cv2.cornerHarris(extended_mask, blockSize=2, ksize=5, k=0.06)
@@ -44,7 +44,7 @@ def find_donut_outer_corners(mask: np.ndarray, inner_radius: int, outer_radius: 
     corners = ((c[0] - margin, c[1] - margin) for c in corners)  # offset w/ margin
 
     # ___ filter out inner corners __________
-    center = (outer_radius+margin, outer_radius+margin)
+    center = (outer_radius + margin, outer_radius + margin)
     sqr_cut_off_radius = ((outer_radius + inner_radius) / 2) ** 2
 
     def corner_filter_predicate(corner):
@@ -69,15 +69,16 @@ def distance_to_points(shape: tuple[int, int], points: list[tuple[int, int]]) ->
         # points are drawn using cv.circle to avoid out of bound errors at the edges
         cv2.circle(corners, p, 3, (255,), -1)
 
-    showInMovedWindow("donut corners", corners, 50+shape[0]*1, 25)
+    showInMovedWindow("annulus corners", corners, 50 + shape[0] * 1, 25)
 
-    distance_map = cv2.distanceTransform(255 - corners, cv2.DIST_L2, 3, dst=corners)
+    distance_map = cv2.distanceTransform(255 - corners, cv2.DIST_L2, 5, dst=corners)
+    cv2.GaussianBlur(distance_map, (15, 15), sigmaX=0, sigmaY=0,
+                     dst=distance_map)  # TODO this requires a min radius of ~8
     dst_norm = np.empty_like(distance_map, dtype=np.float32)
     dst_norm = cv2.normalize(distance_map, dst_norm, 0, 1, cv2.NORM_MINMAX)
-    dst_norm = cv2.GaussianBlur(dst_norm, (15, 15), sigmaX=0, sigmaY=0)  # TODO this requires a min radius of ~8
     dst_norm = 1 - dst_norm
 
-    showInMovedWindow('Weighted Mask', dst_norm, 50+shape[0]*2, 25)
+    showInMovedWindow('Weighted Mask', dst_norm, 50 + shape[0] * 2, 25)
     return dst_norm
 
 
@@ -139,11 +140,11 @@ def get_bounding_box(mask):
 
 
 kernelx3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-#kernelx5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 kernelx5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+kernelx15 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
 
 
-def blur_donut_mask(mask, inner_radius):
+def blur_annulus_mask(mask, inner_radius):
     """
     UNUSED, likely not needed...
     """
@@ -170,20 +171,20 @@ def reverse_blured_circle_mask(mask, overlap_radius):
         mask: circle mask as uint8 w/ values from [0 to 255]
     """
     _, width = mask.shape[:2]
-    ksize = width//2 + 1
+    ksize = width // 2 + 1
     ksize = (ksize, ksize)
     border_size = round(width / 2)
     blured_mask = cv2.copyMakeBorder(mask, border_size, border_size, border_size, border_size, cv2.BORDER_CONSTANT)
     blured_mask[border_size:-border_size, border_size:-border_size] = mask
     np.subtract(255, blured_mask, out=blured_mask)
-    blured_mask = cv2.morphologyEx(blured_mask, cv2.MORPH_DILATE, kernelx3, iterations=overlap_radius//2)
+    blured_mask = cv2.morphologyEx(blured_mask, cv2.MORPH_DILATE, kernelx3, iterations=overlap_radius // 2)
     blured_mask = cv2.GaussianBlur(blured_mask, ksize, sigmaX=0, sigmaY=0)
     blured_mask = blured_mask[border_size:-border_size, border_size:-border_size]
     blured_mask = blured_mask.astype(np.float32) / 255
     return blured_mask
 
 
-def circle_quilt(img, roi_mask, lookup, radius=80, spacing_factor=1.0, overlap_r=40, debug_img=None):
+def circle_quilt(img, roi_mask, lookup, radius=80, spacing_factor=.9, overlap_r=40, debug_img=None):
     # for a spacing factor of .9, non-overlap must be at least half the radius
     # so overlap beyond half the radius may leave holes in the generation
     # instead of limiting the overlap though, it may be preferable to circle_quilt each hole individually recursively
@@ -204,22 +205,20 @@ def circle_quilt(img, roi_mask, lookup, radius=80, spacing_factor=1.0, overlap_r
     cv2.rectangle(debug_img, (int(min_x - radius), int(min_y - radius)), (int(max_x - radius), int(max_y - radius)),
                   (255, 0, 0), 2)  # TODO remove debug
 
-    #circ_roi = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (int(radius * 2), int(radius * 2)))
-    #hole_mask = np.zeros_like(circ_roi)
-    overlap_r_kernel_adj = overlap_r +1 if overlap_r%2 == 0 else overlap_r
+    overlap_r_kernel_adj = overlap_r + 1 if overlap_r % 2 == 0 else overlap_r
     overlap_kernel = (overlap_r_kernel_adj, overlap_r_kernel_adj)
     del overlap_r_kernel_adj
 
     non_overlap_radius = radius - overlap_r
-    circ_roi = np.zeros((int(radius*2), int(radius*2)), dtype=np.uint8)
+    circ_roi = np.zeros((int(radius * 2), int(radius * 2)), dtype=np.uint8)
     cv2.circle(circ_roi, (radius, radius), radius, (1,), -1)
-    donut_roi = circ_roi.copy()  # used as mask for template matching
-    cv2.circle(donut_roi, (radius, radius), round(non_overlap_radius), (0,), -1)
+    annulus_roi = circ_roi.copy()  # used as mask for template matching
+    cv2.circle(annulus_roi, (radius, radius), round(non_overlap_radius), (0,), -1)
 
-    weighted_circle_roi = reverse_blured_circle_mask(circ_roi*255, overlap_r)  # weights less near the center
+    #weighted_circle_roi = 1-reverse_blured_circle_mask(circ_roi*255, overlap_r)  # weights less near the center
     #showInMovedWindow("wc", weighted_circle_roi, 500, 25)
 
-    #cv2.imshow("donut_roi", circ_roi); cv2.waitKey(0); quit()
+    #cv2.imshow("annulus_roi", circ_roi); cv2.waitKey(0); quit()
 
     center = [d / 2 - .5 for d in circ_roi.shape]
     polar_unwrapped_size = (radius, round(radius * 2 * np.pi))
@@ -233,7 +232,6 @@ def circle_quilt(img, roi_mask, lookup, radius=80, spacing_factor=1.0, overlap_r
                 x += x_spacing // 2
 
             if roi_mask[y, x] == 0:  # point within delimited roi
-
                 # TODO likely a good idea to extract the code below into a method!
 
                 if debug_img is not None:
@@ -243,25 +241,22 @@ def circle_quilt(img, roi_mask, lookup, radius=80, spacing_factor=1.0, overlap_r
 
                 y1, y2, x1, x2 = y - radius, y + radius, x - radius, x + radius
                 block, roi = img[y1:y2, x1:x2], filled_mask[y1:y2, x1:x2]
-                roi = donut_roi*roi
-                corners = find_donut_outer_corners(roi, non_overlap_radius, radius)
+                roi = annulus_roi * roi
+                corners = find_annulus_outer_corners(roi, non_overlap_radius, radius)
                 weighted_roi = distance_to_points(roi.shape[:2], corners)
-
-                # prior solutions, TODO remove later
-                #weighted_roi = weighted_circle_roi * weighted_roi * roi
-                #weighted_roi = np.maximum(weighted_circle_roi, weighted_roi) * roi
-
-                weighted_roi = np.maximum(weighted_circle_roi, weighted_roi)
-                weighted_roi = cv2.GaussianBlur(weighted_roi, overlap_kernel, sigmaX=0, sigmaY=0)
+                #weighted_roi = np.maximum(weighted_circle_roi, weighted_roi)
+                #weighted_roi = cv2.GaussianBlur(weighted_roi, overlap_kernel, sigmaX=0, sigmaY=0)
+                #cv2.normalize(weighted_roi, weighted_roi, 0, 1, cv2.NORM_MINMAX)
                 weighted_roi = weighted_roi * roi
-                showInMovedWindow("weighted roi", weighted_roi, 50+radius*2*3, 25)
+                #weighted_roi = np.float32(roi)  # only use roi
+                showInMovedWindow("weighted roi", weighted_roi, 50 + radius * 2 * 3, 25)
 
                 print(f"shapes  block={block.shape}  roi={roi.shape}")
-                patch: np.ndarray = find_circular_patch(lookup, block, roi, 0.0 ,
+                patch: np.ndarray = find_circular_patch(lookup, block, roi, 0.0,
                                                         radius * 2)  # TODO tolerance should not be hardcoded
 
                 #cv2.imshow("block", block)
-                cv2.imshow("roi", roi*255)
+                cv2.imshow("roi", roi * 255)
                 #cv2.imshow("Patch", apply_mask(patch, circ_roi));
                 #cv2.waitKey(0); quit()
 
@@ -274,14 +269,8 @@ def circle_quilt(img, roi_mask, lookup, radius=80, spacing_factor=1.0, overlap_r
                 mask = min_cut_circ(polar_block, polar_patch, polar_roi, non_overlap_radius)
                 mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius,
                                      cv2.WARP_INVERSE_MAP | warp_flags)
-                #mask = np.maximum(mask, (1 - roi))
-                #mask *= circ_roi
 
-                #mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernelx3)
-                #mask = cv2.blur(mask, (3, 3))
-                showInMovedWindow("mask", mask * 255, 50+radius*2*4, 25)
-                #cv2.imshow("roi", roi * 255)
-                #cv2.imshow("Patch", apply_mask(patch, mask))
+                showInMovedWindow("mask", mask * 255, 50 + radius * 2 * 4, 25)
                 #cv2.waitKey(0); quit()
 
                 img[y1:y2, x1:x2] = apply_mask(img[y1:y2, x1:x2], (1 - mask)) + apply_mask(patch, mask)
@@ -312,13 +301,19 @@ def min_cut_circ(block, patch, roi, non_overlap_radius):
         block: polar unwrapped block
         patch: polar unwrapped patch
         roi:  polar unwrapped overlap roi ( stored in filled mask )
-        non_overlap_radius: inner radius where overlap is not considered ( could use the donut roi, but this is faster )
+        non_overlap_radius: inner radius where there is no overlap
     Returns:
 
     """
     import pyastar2d
-    # forced debug case, remove the following line later TODO
-    #roi[40:50, :] = 0  # force all zeros row
+
+    # devnote:
+    #  narrow cuts, that barely have any width, can still allow for narrow paths;
+    #   such cases can leave unfilled "cuts" in the texture when patching.
+    #  To avoid the aforementioned problem, the size or spacing of the patches can be changed.
+    #  I've attempted to solve the problem using morphological operations;
+    #   however, this approach comes with some new problems.
+    #  I've thus decided to keep the solution simple.
 
     errs = ((patch - block) ** 2).mean(2)
     #empty_row = find_first_all_zero_row(roi)
@@ -329,16 +324,15 @@ def min_cut_circ(block, patch, roi, non_overlap_radius):
         roi = np.roll(roi, -offset_row, axis=0)
         block = np.roll(block, -offset_row, axis=0)
 
-
     showInMovedWindow("rolled polar roi", roi * 255, 100, 200)
     showInMovedWindow("rolled polar block", block, 100 + 8 + roi.shape[1], 200)
     errs[roi == 0] = 0
-    showInMovedWindow("errs", errs/np.max(errs), 100 +(8+roi.shape[1])*2, 200)
+    showInMovedWindow("errs", errs / np.max(errs), 100 + (8 + roi.shape[1]) * 2, 200)
 
     start_x = end_x = errs.shape[1] - 1
     if offset_row is None:
         # when no empty row is found, search for the cut endpoints at the top & bottom so that the path is not broken
-        start_x, end_x = find_min_cut_circ_endpoints(errs, roi, errs.shape[0]//4)
+        start_x, end_x = find_min_cut_circ_endpoints(errs, roi, errs.shape[0] // 4)
 
     maze = errs.copy()
     maze *= errs.shape[0] ** 3
@@ -349,7 +343,7 @@ def min_cut_circ(block, patch, roi, non_overlap_radius):
 
     start = (0, start_x)
     end = (maze.shape[0] - 1, end_x)
-    cv2.waitKey(0)
+    #cv2.waitKey(0)
 
     path = pyastar2d.astar_path(maze, start, end, allow_diagonal=True)
     mask = np.ones((errs.shape[0], errs.shape[1] + 1), dtype=roi.dtype)
@@ -358,14 +352,14 @@ def min_cut_circ(block, patch, roi, non_overlap_radius):
     for i, j in path:  # draw path
         mask[i, j] = 0
 
-    showInMovedWindow("cut path", mask * 255,  100 + (8+roi.shape[1])*3, 200)
+    showInMovedWindow("cut path", mask * 255, 100 + (8 + roi.shape[1]) * 3, 200)
 
     print(f"seed point={(mask.shape[0] - 1, mask.shape[1] - 1)}")
     cv2.floodFill(mask, None, (mask.shape[1] - 1, mask.shape[0] - 1), (0,))
     #cv2.floodFill(mask, None, (0, 0), (0,))
     if offset_row is not None:
         mask = np.roll(mask, offset_row, axis=0)
-    showInMovedWindow("cut mask", mask * 255, 100 + (8 + roi.shape[1])*4, 200)
+    showInMovedWindow("cut mask", mask * 255, 100 + (8 + roi.shape[1]) * 4, 200)
     #cv2.waitKey(0)
 
     return mask[:, :-2]
@@ -383,9 +377,9 @@ def find_min_cut_circ_endpoints(errs, roi, half_section_size):
     import pyastar2d
     from scipy.spatial.distance import cdist
 
-    errs = np.roll(errs, -half_section_size, axis=0)[half_section_size*2:, :]
-    roi = np.roll(roi, -half_section_size, axis=0)[half_section_size*2:, :]
-    showInMovedWindow("rolled roi section", roi*255,  100 + (8 + roi.shape[1])*5, 200)
+    errs = np.roll(errs, -half_section_size, axis=0)[half_section_size * 2:, :]
+    roi = np.roll(roi, -half_section_size, axis=0)[half_section_size * 2:, :]
+    showInMovedWindow("rolled roi section", roi * 255, 100 + (8 + roi.shape[1]) * 5, 200)
 
     maze = np.ones((errs.shape[0] + 2, errs.shape[1]), dtype=np.float32)
     maze_area = maze[1:-1, :]
@@ -397,8 +391,7 @@ def find_min_cut_circ_endpoints(errs, roi, half_section_size):
     maze[0, :] = 1
     maze[-1, :] = 1
     maze[1:-1, -1] = roi[:, -1] * maze[1:-1, -1] + (1 - roi[:, -1])  # bottom holes escape path
-    maze[1:-1, :-1][roi[:,:-1]==0] = np.inf  # don't travel outside the mask, unless via the escape path
-
+    maze[1:-1, :-1][roi[:, :-1] == 0] = np.inf  # don't travel outside the mask, unless via the escape path
 
     start = (0, maze.shape[1] - 1)
     end = (maze.shape[0] - 1, maze.shape[1] - 1)
@@ -408,8 +401,8 @@ def find_min_cut_circ_endpoints(errs, roi, half_section_size):
 
     print(f"mask.shape={mask.shape}")
     half_section_size_m1 = half_section_size - 1
-    points_of_interest_top = [(y-1, x) for (y, x) in path if y-1 == half_section_size]
-    points_of_interest_bottom = [(y-1, x) for (y, x) in path if y-1 == half_section_size_m1]
+    points_of_interest_top = [(y - 1, x) for (y, x) in path if y - 1 == half_section_size]
+    points_of_interest_bottom = [(y - 1, x) for (y, x) in path if y - 1 == half_section_size_m1]
 
     # Compute the distance matrix between points in la and lb
     dist_matrix = cdist(points_of_interest_top, points_of_interest_bottom, metric='euclidean')
@@ -426,10 +419,9 @@ def find_min_cut_circ_endpoints(errs, roi, half_section_size):
     mask = np.zeros_like(maze)
     for i, j in path:
         mask[i, j] = 1
-    showInMovedWindow("aux_cut", mask,  100 + (8 + roi.shape[1])*6, 200)
+    showInMovedWindow("aux_cut", mask, 100 + (8 + roi.shape[1]) * 6, 200)
 
     return top_point[1], bottom_point[1]
-
 
 
 def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  # TODO rng
@@ -455,7 +447,7 @@ def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  
 
 
 if __name__ == "__main__":
-    text_idx = "18"
+    text_idx = "16"
     src = cv2.imread(f"results/t{text_idx}.png", cv2.IMREAD_COLOR)
     src2 = cv2.imread(f"textures/t{text_idx}.png", cv2.IMREAD_COLOR)
     src = np.float32(src) / 255
