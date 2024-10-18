@@ -165,7 +165,8 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
 
     def process_block(rolled_block, mask):
         if gen_args.blend_into_patch:
-            mask = blur_patch_mask(mask, block_size, overlap, has_left, has_right, has_top, has_bottom)
+            vignette = patch_blending_vignette(block_size, overlap, has_left, has_right, has_top, has_bottom)
+            mask = blur_patch_mask(mask, vignette)
         masks_list.append(mask)
         np.add(apply_mask(rolled_block, mask, True), res_block, out=res_block)
 
@@ -280,22 +281,30 @@ def patch_blending_vignette(block_size: num_pixels, overlap: num_pixels,
     return mask
 
 
-def blur_patch_mask(src_mask, block_size: num_pixels, overlap: num_pixels, left: bool, right: bool, top: bool,
-                    bottom: bool):
-    vignette = patch_blending_vignette(block_size, overlap, left, right, top, bottom)
+def blur_patch_mask(src_mask:np.ndarray, vignette:np.ndarray):
+    """
+    Uses the distance transform to blur the patch -> dst_grad.
+    This mask is composed w/ additional masks to avoid noticeable discontinuities on the generation.
 
+    Args:
+        src_mask: patch mask complement in f32; patch area as 0s and outside as 1s
+        vignette: mask that fades from 1s to 0s on the edges,
+
+    Returns: (vignette * dst_grad) + ((1 - vignette) * edge_blurred_source)
+    """
     # compute dst_grad & edge_blurred
     blurred_a = np.ascontiguousarray(src_mask * 255, dtype=np.uint8)
     blurred_b = np.empty_like(blurred_a, order='c')
     cv.morphologyEx(blurred_a, cv.MORPH_ERODE, iterations=1, dst=blurred_b,
                     kernel=cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3)))
-
     cv.blur(blurred_b, (3, 3), dst=blurred_a)
     edge_blurred = np.float32(blurred_a) / 255
 
-    cv.distanceTransform(blurred_b, cv.DIST_L2, maskSize=0, dst=blurred_a, dstType=0)
-    cv.blur(blurred_a, (5, 5), dst=blurred_b)
-    dst_grad = np.float32(blurred_b) / max(np.max(blurred_b), 1)
+    # devnote: L2 only does not work w/ uint8, only L1 works w/ uint8 I think...
+    #  prior micro optimization using blurred_a & b actually removed the gradient mask, and the blured was being used instead
+    dst_grad = cv.distanceTransform(blurred_b, cv.DIST_L2, maskSize=0)
+    dst_grad_aux = cv.blur(dst_grad, (5, 5))
+    np.divide(dst_grad_aux, max(np.max(dst_grad_aux), 1), out=dst_grad)
 
     # compute formula re-using already allocated memory
     #   formula: (vignette * dst_grad) + ((1 - vignette) * edge_blurred)
@@ -379,7 +388,7 @@ if importlib.util.find_spec("pyastar2d") is not None:
             if i >= shape_m2:
                 break
 
-        cv.floodFill(mask, None, (mask.shape[1] - 1, mask.shape[0] - 1), (0,))
+        cv.floodFill(mask, None, (mask.shape[0] - 1, mask.shape[1] - 1), (0,))
         return mask
 
 
