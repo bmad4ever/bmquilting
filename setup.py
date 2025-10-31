@@ -10,7 +10,7 @@ setup(
         'numpy>=1.23.5',
         'joblib~=1.3.2',
         'opencv-python~=4.8.1.78',
-        'scikit-learn~=1.3.1',
+        'scikit-learn>=1.3.1',
     ],
     extras_require={
         'astar': ['pyastar2d==1.0.6'],
@@ -19,3 +19,4 @@ setup(
         ],
     }
 )
+
