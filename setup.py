@@ -8,8 +8,8 @@ setup(
     packages=find_packages(exclude=['bmquilting.bmq_comfyui_utils', 'bmquilting.bmq_comfyui_utils.*']),
     install_requires=[
         'numpy>=1.23.5',
-        'joblib~=1.3.2',
-        'opencv-python~=4.8.1.78',
+        'joblib>=1.3.2',
+        'opencv-python>=4.0.1.24',
         'scikit-learn>=1.3.1',
     ],
     extras_require={
@@ -19,4 +19,5 @@ setup(
         ],
     }
 )
+
 
