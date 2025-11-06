@@ -60,7 +60,7 @@ def fill_column(image, initial_block, gen_args: GenParams, rows: int, rng: np.ra
     for i, blk_idx in enumerate(range((block_size - overlap), texture_map.shape[0] - overlap, (block_size - overlap))):
         ref_block = texture_map[(blk_idx - block_size + overlap):(blk_idx + overlap), :block_size]
         patch_block = find_patch_below(ref_block, image, gen_args, rng)
-        min_cut_patch = get_min_cut_patch(ref_block, patch_block, gen_args)
+        min_cut_patch, _ = get_min_cut_patch(ref_block, patch_block, gen_args)
         texture_map[blk_idx:(blk_idx + block_size), :block_size] = min_cut_patch
     return texture_map
 
@@ -76,7 +76,7 @@ def fill_row(image, initial_block, gen_args: GenParams, columns: int, rng: np.ra
     for i, blk_idx in enumerate(range((block_size - overlap), texture_map.shape[1] - overlap, (block_size - overlap))):
         ref_block = texture_map[:block_size, (blk_idx - block_size + overlap):(blk_idx + overlap)]
         patch_block = find_patch_to_the_right(ref_block, image, gen_args, rng)
-        min_cut_patch = get_min_cut_patch(ref_block, patch_block, gen_args)
+        min_cut_patch, _ = get_min_cut_patch(ref_block, patch_block, gen_args)
         texture_map[:block_size, blk_idx:(blk_idx + block_size)] = min_cut_patch
     return texture_map
 
@@ -99,7 +99,7 @@ def fill_quad(rows: int, columns: int, gen_args: GenParams, texture_map, image,
                             blk_index_j:(blk_index_j + block_size)]
 
             patch_block = find_patch_both(ref_block_left, ref_block_top, image, gen_args, rng)
-            min_cut_patch = get_min_cut_patch(ref_block_left, ref_block_top, patch_block, gen_args)
+            min_cut_patch, _ = get_min_cut_patch(ref_block_left, ref_block_top, patch_block, gen_args)
 
             texture_map[blk_index_i:(blk_index_i + block_size), blk_index_j:(blk_index_j + block_size)] = min_cut_patch
 
@@ -116,6 +116,8 @@ def fill_quad(rows: int, columns: int, gen_args: GenParams, texture_map, image,
 def generate_texture_parallel(image, gen_args: GenParams, out_h, out_w, nps,
                               rng: np.random.Generator, uicd: UiCoordData | None):
     """
+    @param out_h: output's height in pixels
+    @param out_w: output's width in pixels
     @param uicd: contains:
                  * the shared memory name to a one dimensional array that stores the number of "blocks"
                  (with the overlapping area removed) processed by each job;
@@ -157,6 +159,7 @@ def generate_texture_parallel(image, gen_args: GenParams, out_h, out_w, nps,
 
     # generate 2 vertical strips and 2 horizontal strips that will split the generated canvas in half
     # the center, where the stripes connect, shares the same tile
+    # image, initial_block, gen_args: GenParams, columns: int, rng: np.random.Generator
     args = [
         (image, start_block, gen_args, cols_per_quad, rng),
         (hi_image, hi_start_block, gen_args, cols_per_quad, rng),
@@ -164,13 +167,14 @@ def generate_texture_parallel(image, gen_args: GenParams, out_h, out_w, nps,
         (vi_image, vi_start_block, gen_args, rows_per_quad, rng)
     ]
     funcs = [fill_row, fill_row, fill_column, fill_column]
+    print("A")
     stripes = Parallel(n_jobs=4, backend="loky", timeout=None)(
         delayed(funcs[i])(*args[i]) for i in range(4))
     hs, his, vs, vis = stripes
-
+    print("B")
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(rows_per_quad * 2 + cols_per_quad * 2):
         return None
-
+    print("C")
     # generate the 4 sections (quadrants)
     args = [
         (vis, his, hi_image, rows_per_quad, cols_per_quad, gen_args, nps, rng, uicd),
@@ -182,14 +186,14 @@ def generate_texture_parallel(image, gen_args: GenParams, out_h, out_w, nps,
     quads = Parallel(n_jobs=4, backend="loky", timeout=None)(
         delayed(funcs[i])(*args[i]) for i in range(4))
     q1, q2, q3, q4 = quads
-
+    print("D")
     texture = np.zeros((q1.shape[0] * 2 - block_size, q1.shape[1] * 2 - block_size, image.shape[2])).astype(image.dtype)
     bmo = block_size - overlap
     texture[:q1.shape[0] - bmo, :q1.shape[1] - bmo] = q1[:q1.shape[0] - bmo, :q1.shape[1] - bmo]
     texture[:q1.shape[0] - bmo, q1.shape[1] - bmo:] = q2[:q1.shape[0] - bmo, overlap:]
     texture[q1.shape[0] - bmo:, :q1.shape[1] - bmo] = q4[overlap:, :q1.shape[1] - bmo]
     texture[q1.shape[0] - bmo:, q1.shape[1] - bmo:] = q3[overlap:, overlap:]
-
+    print("E")
     return texture[:out_h, :out_w]
 
 
@@ -406,7 +410,7 @@ def fill_rows_ps(pid: int, job: ParaRowsJobInfo, jobs_events: list, uicd: UiCoor
                             blk_index_j:(blk_index_j + block_size)]
 
             patch_block = find_patch_both(ref_block_left, ref_block_top, image, gen_args, rng)
-            min_cut_patch = get_min_cut_patch(ref_block_left, ref_block_top, patch_block, gen_args)
+            min_cut_patch, _ = get_min_cut_patch(ref_block_left, ref_block_top, patch_block, gen_args)
 
             texture[blk_index_i:(blk_index_i + block_size), blk_index_j:(blk_index_j + block_size)] = min_cut_patch
 
@@ -429,6 +433,10 @@ def fill_rows_ps(pid: int, job: ParaRowsJobInfo, jobs_events: list, uicd: UiCoor
 
 def generate_texture(image, gen_args: GenParams, out_h, out_w, rng: np.random.Generator,
                      uicd: UiCoordData | None):
+    """
+    @param out_h: output's height in pixels
+    @param out_w: output's width in pixels
+    """
     block_size, overlap = gen_args.block_size, gen_args.overlap
 
     n_h = int(ceil((out_h - block_size) / (block_size - overlap)))

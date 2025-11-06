@@ -42,14 +42,14 @@ def seamless_horizontal(image, lookup_texture, gen_args: GenParams, rng, uicd: U
     fake_block_sized_patch[:, -overlap:] = lookup_texture[y:y + image.shape[0], x + block_size - overlap:x + block_size]
     fake_gen_args = dataclasses.replace(gen_args)
     fake_gen_args.block_size = image.shape[0]
-    left_side_patch = get_min_cut_patch_horizontal(fake_left_block, fake_block_sized_patch, fake_gen_args)
-    right_side_patch = np.fliplr(
-        get_min_cut_patch_horizontal(
+    left_side_patch , _ = get_min_cut_patch_horizontal(fake_left_block, fake_block_sized_patch, fake_gen_args)
+    right_side_patch, _ = get_min_cut_patch_horizontal(
             np.fliplr(fake_right_block),
             np.fliplr(fake_block_sized_patch),
             fake_gen_args
         )
-    )
+    right_side_patch = np.fliplr(right_side_patch)
+
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
         return None
 
