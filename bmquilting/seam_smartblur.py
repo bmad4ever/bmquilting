@@ -1,13 +1,43 @@
 import numpy as np
 import cv2
-from scipy.ndimage import distance_transform_edt, gaussian_filter
+from scipy.ndimage import maximum_filter
 from functools import lru_cache
+from math import ceil
 
 from .misc.dry import apply_mask
-from .types import UiCoordData, GenParams
+from .types import UiCoordData, GenParams, BlendConfig, num_pixels
 
 
-DEFAULT_MAX_BLEND_RATIO = 0.28
+
+DEFAULT_MAX_BLEND_RATIO = 0.33
+DEFAULT_BLEND_SCALE = 1.0
+
+USE_SCHAAR_WHEN_KSIZE_EQUALS_3 = True
+
+
+def debug_resize(arr, factor=8):
+    return cv2.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
+
+
+def auto_blend_config_2(sobel_kernel_size: num_pixels, block_size: num_pixels,
+                        blend_scale: float = DEFAULT_BLEND_SCALE, use_vignette: bool = False) -> BlendConfig:
+    return BlendConfig(
+        blend_scale=blend_scale,
+        use_vignette=use_vignette,
+        sobel_kernel_size=sobel_kernel_size,
+        min_blur_radius=auto_min_blend_size(sobel_kernel_size),
+        max_blur_radius=auto_max_blend_size(block_size, sobel_kernel_size)
+    )
+
+
+def auto_blend_config_1(block_size: num_pixels,
+                        blend_scale: float = DEFAULT_BLEND_SCALE, use_vignette: bool = False) -> BlendConfig:
+    return auto_blend_config_2(
+        blend_scale=blend_scale,
+        use_vignette=use_vignette,
+        sobel_kernel_size=ceil(block_size//5/2.0),
+        block_size=block_size
+    )
 
 
 @lru_cache(maxsize=1)
@@ -26,7 +56,7 @@ def get_max_possible_gradient_diff(dtype_str, sobel_ksize) -> float:
 
     Returns:
     --------
-    float : Maximum possible value for D
+    float : Maximum possible value gradient difference
     """
     # Convert string back to dtype
     dtype = np.dtype(dtype_str)
@@ -39,11 +69,13 @@ def get_max_possible_gradient_diff(dtype_str, sobel_ksize) -> float:
         max_pixel_value = float(np.iinfo(dtype).max) if np.issubdtype(dtype, np.integer) else 1.0
 
     # Get actual OpenCV kernel to determine scale
-    kx, ky = cv2.getDerivKernels(1, 0, sobel_ksize, normalize=False)
+    if USE_SCHAAR_WHEN_KSIZE_EQUALS_3 and sobel_ksize == 3:
+        sobel_ksize = cv2.FILTER_SCHARR
+    kx, ky = cv2.getDerivKernels(1, 0, ksize=sobel_ksize, normalize=False)
     kernel_2d = np.outer(kx, ky)
 
-    # Maximum response is sum of absolute values in one column (for vertical edge)
-    sobel_scale = np.sum(np.abs(kernel_2d[:, -1]))
+    # Maximum response is sum of absolute values
+    sobel_scale = np.sum(np.abs(kernel_2d)) / 2
 
     # Maximum gradient in one direction
     K = sobel_scale * max_pixel_value
@@ -70,13 +102,13 @@ def create_adaptive_blend_mask_fast(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
     Parameters:
     -----------
     tdiff_map : np.ndarray (H, W)
-        Gradient difference map (higher = more difficult transition)
+        Seam gradient difference map (higher values = more difficult transition)
     mcp_mask_overlap : np.ndarray (H, W)
         Min-cut mask (0 = source side, 1 = patch side)
     sobel_ksize : int
-        Sobel kernel size used to compute D
+        Sobel kernel size used to compute tdiff_map
     blend_scale : float
-        Exponent for mapping D to blend widths (higher = more aggressive)
+        Exponent for mapping tdiff_map to blend widths (higher = more aggressive)
     min_blend_width : int or None
         Minimum blend width in pixels. If None, equals sobel_ksize
     max_blend_width : int or None
@@ -91,13 +123,12 @@ def create_adaptive_blend_mask_fast(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
 
     Returns:
     --------
-    np.ndarray (H, W, 1) : Blend mask (0 = source, 1 = patch)
+    np.ndarray (H, W): Blend mask (0 = source, 1 = patch)
     """
-
     # Auto-scale blend widths based on Sobel kernel size
+    # Technically they could made be independent, but this is done in order to keep things simple
     if min_blend_width is None:
-        # Minimum should be at least the kernel size
-        min_blend_width = sobel_ksize
+        min_blend_width = auto_min_blend_size(sobel_ksize)
 
     if max_blend_width is None:
         max_blend_width = _auto_max_blend_size(max_blend_ratio, patch_size, sobel_ksize)
@@ -111,29 +142,67 @@ def create_adaptive_blend_mask_fast(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
     dtype_str = np.dtype(dtype).name
     max_gradient_diff = get_max_possible_gradient_diff(dtype_str, sobel_ksize)
 
-    # Smooth tdiff to remove hard pixel transitions
-    blur_sigma = max(1.0, sobel_ksize / 2.0)
-    tdiff_smoothed = gaussian_filter(tdiff_map, sigma=blur_sigma)
-
     # Normalize from 0 to theoretical maximum
-    tdiff_norm = np.clip(tdiff_smoothed / max_gradient_diff, 0, 1)
+    #tdiff_norm = np.clip(tdiff_map / max_gradient_diff, 0, 1, dtype=tdiff_map.dtype)
+    # --- 2. Normalize tdiff map (robustly) ---
+    #local_cap = np.percentile(tdiff_map, 99.5)
+    #denom = min(local_cap, max_gradient_diff)
+    #tdiff_norm = np.clip(tdiff_map / max(denom, 1e-8), 0, 1).astype(np.float32)
+    #max_blend_width*=10
+    print(f"max_blend_w = {max_blend_width}")
+    # normalize & map to func
+    # these params are somewhat arbitrary; eyeballing ( <*>__<*>)
+    gain = 10.0    # steeper response curve
+    top = 1.0  # 1/3 would be when the diffs sum in all channels equals the range
+
+    tdiff_norm = tdiff_map/max_gradient_diff
+    # compute the following: np.clip(np.log1p(tdiff_norm * gain) / np.log1p(gain * top), 0, 1)
+    tdiff_norm *= gain
+    np.log1p(tdiff_norm, out=tdiff_norm)
+    tdiff_norm /= np.log1p(gain*top)
+    np.clip(tdiff_norm, 0, 1, out=tdiff_norm)
+    #cv2.GaussianBlur(tdiff_norm, (sobel_ksize*8, sobel_ksize*8), sigmaX=1.0, sigmaY=1.0, dst=tdiff_norm)
+    #cv2.GaussianBlur(tdiff_norm, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=tdiff_norm)
+    #cv2.GaussianBlur(tdiff_norm, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=tdiff_norm)
+
+
+    # -- DEBUG --
+    cv2.imshow("_tdiff", debug_resize(tdiff_norm / max(1e-8, np.max(tdiff_norm))))
+
 
     # Map normalized tdiff values to blend widths
     blend_widths = min_blend_width + (max_blend_width - min_blend_width) * (tdiff_norm ** blend_scale)
+    maximum_filter(input=blend_widths, size=round(max_blend_width/2), output=blend_widths)
+    cv2.GaussianBlur(blend_widths, (0, 0), sigmaX=3.0, sigmaY=3.0, dst=blend_widths)
 
     # Get binary mask from min-cut
-    mcp_binary = (mcp_mask_overlap > 0.5).astype(float)
+    #mcp_binary = (mcp_mask_overlap > 0.5).astype(float) # unneeded r.n., already in the correct format
+    mcp_binary = mcp_mask_overlap
 
     # Calculate signed distance from transition line
-    dist_from_source = distance_transform_edt(mcp_binary)
-    dist_from_patch = distance_transform_edt(1 - mcp_binary)
-    signed_distance = dist_from_patch - dist_from_source
+    # dev note: compared 3 vs cv2.DIST_MASK_PRECISE
+    #   both performed well in terms of speed and precision so far
+    #   doesn't seem like something that needs to be further tested
+    #   as any minor details will be blured out.
+    #   I will choose simples-fastest for now
+    dist_from_source = cv2.distanceTransform((mcp_binary > 0).astype(np.uint8), cv2.DIST_L2, 3)
+    dist_from_patch = cv2.distanceTransform((mcp_binary <= 0).astype(np.uint8), cv2.DIST_L2, 3)
+    dist_from_patch -= dist_from_source   # compute in place
+    signed_distance = dist_from_patch.astype(np.float32)
+    # consider using min blend width here
+    cv2.GaussianBlur(signed_distance, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=signed_distance)
+
 
     # Create smooth transition using sigmoid function
-    t = signed_distance / (blend_widths / 2.0 + 1e-8)
-    blend_mask = 1.0 / (1.0 + np.exp(-3 * t))
+    t = signed_distance / (blend_widths / 2.0 + 1e-8)  # distance / blur radius
+    #cv2.GaussianBlur(t, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=t)
+    blend_mask = 1.0 / (1.0 + np.exp(-5 * t))          # sigmoid func.
 
-    return blend_mask[:, :, np.newaxis]
+    cv2.imshow("t", debug_resize(np.abs(t)/np.max(t)))
+    cv2.imshow("blend_mask", debug_resize(blend_mask))
+    #cv2.waitKey()
+
+    return blend_mask
 
 
 def _auto_max_blend_size(max_blend_ratio, patch_size, sobel_ksize):
@@ -151,167 +220,15 @@ def auto_max_blend_size(patch_size, sobel_ksize):
     return _auto_max_blend_size(DEFAULT_MAX_BLEND_RATIO, patch_size, sobel_ksize)
 
 
-def _compute_adaptive_blend_mask(source: np.ndarray, #patch: np.ndarray,
-                                overlap: int, sobel_ksize: int = 3, version: int = 1,
-                                debug: bool = True):
-    """
-    Compute adaptive blend mask based on gradient differences.
-    Optimized for performance with pre-allocated arrays and minimal allocations.
-    """
-    from bmquilting.synthesis_subroutines import get_min_cut_patch_horizontal_method
+def auto_min_blend_size(sobel_ksize):
+    return sobel_ksize // 3 + 1
 
-    assert source.shape[0] == source.shape[1], "Source must be square"
-    block_size = source.shape[0]
-
-    # Setup output dimensions
-    dims = np.copy(source.shape)
-    dims[0] = block_size
-    dims[1] = block_size * 2 - overlap
-
-    new_img = np.zeros(dims, dtype=source.dtype)
-    new_img[0:block_size, 0:block_size] = source
-
-    # Setup min-cut function
-    get_min_cut_patch = get_min_cut_patch_horizontal_method(version)
-    mock_gen_args = GenParams(block_size, overlap, 0, False, version)
-
-    # For testing purposes use same texture as patch
-    patch = source  # No copy needed if we're not modifying it
-
-    # Compute min-cut patch
-    min_cut_patch, mcp_mask = get_min_cut_patch(source, patch, mock_gen_args, highlight=False)
-    new_img[:block_size, block_size - overlap:] = min_cut_patch
-
-    # Extract overlap regions (views, not copies)
-    patched_overlap = new_img[:block_size, block_size - overlap:block_size]
-    source_overlap = patch[:block_size, block_size - overlap:block_size]
-    patch_overlap = patch[:block_size, :overlap]
-    mcp_mask_overlap = mcp_mask[:block_size, :overlap]
-
-    # Pre-allocate output arrays for gradients
-    # Determine output shape (handle multi-channel)
-    grad_shape = patched_overlap.shape
-    assert (source.dtype == np.float32)
-    _dtype, ddepth = np.float32, cv2.CV_32F
-
-    # Allocate gradient arrays once (reuse for different images)
-    gx = np.empty(grad_shape, dtype=_dtype)
-    gy = np.empty(grad_shape, dtype=_dtype)
-
-    # Compute gradients for patched_overlap
-    cv2.Sobel(patched_overlap, ddepth, 1, 0, dst=gx, ksize=sobel_ksize)
-    cv2.Sobel(patched_overlap, ddepth, 0, 1, dst=gy, ksize=sobel_ksize)
-
-    # Pre-allocate diff array (will reuse)
-    diff_source = np.empty(grad_shape, dtype=_dtype)
-
-    # Compute diff_source in-place
-    # diff_source = sqrt((gx_patched - gx_source)² + (gy_patched - gy_source)²)
-    cv2.Sobel(source_overlap, ddepth, 1, 0, dst=diff_source, ksize=sobel_ksize)
-    diff_source -= gx  # diff_source now has (gx_patched - gx_source)
-    diff_source *= diff_source  # Square in-place
-
-    # Temporary for gy difference
-    temp_gy = np.empty(grad_shape, dtype=_dtype)
-    cv2.Sobel(source_overlap, ddepth, 0, 1, dst=temp_gy, ksize=sobel_ksize)
-    temp_gy -= gy  # (gy_patched - gy_source)
-    temp_gy *= temp_gy  # Square in-place
-
-    diff_source += temp_gy  # Add squared differences
-    np.sqrt(diff_source, out=diff_source)  # In-place sqrt
-
-    # Compute diff_patch (reuse temp_gy)
-    diff_patch = temp_gy  # Reuse the allocation
-    cv2.Sobel(patch_overlap, ddepth, 1, 0, dst=diff_patch, ksize=sobel_ksize)
-    diff_patch -= gx  # (gx_patched - gx_patch)
-    diff_patch *= diff_patch  # Square
-
-    # Reuse gx for temporary gy computation
-    cv2.Sobel(patch_overlap, ddepth, 0, 1, dst=gx, ksize=sobel_ksize)
-    gx -= gy  # (gy_patched - gy_patch)
-    gx *= gx  # Square
-
-    diff_patch += gx  # Add squared differences
-    np.sqrt(diff_patch, out=diff_patch)  # In-place sqrt
-
-    # Take maximum across channels
-    if len(diff_source.shape) == 3:
-        max_diffs_source = np.max(diff_source, axis=2)
-        max_diffs_patch = np.max(diff_patch, axis=2)
-    else:
-        # suppose shape == 2
-        max_diffs_source = diff_source
-        max_diffs_patch = diff_patch
-
-    # Compute "transition diff. map" in-place using max_diffs_source as output buffer
-    tdiff_map = max_diffs_source  # Reuse allocation
-    np.multiply(max_diffs_source, 1 - mcp_mask_overlap, out=tdiff_map)
-
-    # Use max_diffs_patch as temporary
-    np.multiply(max_diffs_patch, mcp_mask_overlap, out=max_diffs_patch)
-    np.maximum(tdiff_map, max_diffs_patch, out=tdiff_map)
-
-    if debug:
-        print(f"tdiff shape: {tdiff_map.shape}, max: {np.max(tdiff_map):.2f}, min: {np.min(tdiff_map):.2f}")
-        print(f"tdiff mean: {np.mean(tdiff_map):.2f}, std: {np.std(tdiff_map):.2f}")
-
-    # Create adaptive blend mask
-    blended = create_adaptive_blend_mask_fast(
-        tdiff_map,
-        mcp_mask_overlap,
-        sobel_ksize=sobel_ksize,
-        blend_scale=10.0,
-        patch_size=block_size,
-        max_blend_ratio=0.15,
-        dtype=source.dtype
-    )
-
-    if debug:
-        min_blend = sobel_ksize
-        max_proposed = int(round(sobel_ksize * 2.5))
-        max_allowed = int(block_size * 0.15)
-        max_actual = min(max_proposed, max_allowed)
-        print(f"Blend widths: min={min_blend}px, max={max_actual}px")
-
-    # Update min-cut mask with adaptive blend
-    mcp_mask[:block_size, :overlap] = 1 - blended[:, :, 0]
-
-    # Create final blended patch
-    final_patch = np.zeros(source.shape, dtype=_dtype)
-    final_patch[:, :overlap] = source[:, -overlap:]
-    final_patch = apply_mask(final_patch, 1 - mcp_mask) + apply_mask(patch, mcp_mask)
-
-    if debug:
-        print(f"Final patch shape: {final_patch.shape}, dtype: {final_patch.dtype}")
-
-        def scale(img, factor=6):
-            return cv2.resize(img, (img.shape[1] * factor, img.shape[0] * factor))
-
-        tdiff_map = scale(tdiff_map)
-        # base_mask = cv2.resize(base_mask, (base_mask.shape[1]*4, base_mask.shape[0]*4))
-        blended = scale(blended)
-        final_patch = scale(final_patch)
-        min_cut_patch = scale(min_cut_patch)
-        source = scale(source)
-        source = cv2.cvtColor(np.uint8(source * 255), cv2.COLOR_LAB2BGR)
-        min_cut_patch = cv2.cvtColor(np.uint8(min_cut_patch * 255), cv2.COLOR_LAB2BGR)
-        final_patch = cv2.cvtColor(np.uint8(final_patch * 255), cv2.COLOR_LAB2BGR)
-        # cv2.imshow("Source", source)
-        # cv2.imshow("Patch", patch)
-        cv2.imshow("Raw Patched", min_cut_patch)
-        cv2.imshow("Blend Patched", final_patch)
-        cv2.imshow("Source", source)
-        cv2.imshow("tdiff_map (discontinuity)", tdiff_map / tdiff_map.max())
-        cv2.imshow("Blend Mask (final)", blended)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-    return final_patch, mcp_mask
 
 
 
 def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask: np.ndarray,
-                                overlap: int, sobel_ksize: int = 3,
+                                gen_args: GenParams,
+                                #overlap: int, sobel_ksize: int = 3,
                                 debug: bool = False):
     """
     Compute adaptive blend mask based on gradient differences.
@@ -323,7 +240,11 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     @param cut_mask: the mask used to produce the final patched block.
     """
     assert source.shape[0] == source.shape[1], "Source must be square"
-    block_size = source.shape[0]
+    block_size = gen_args.block_size  # = source.shape[0]
+    overlap = gen_args.overlap
+    sobel_ksize = gen_args.blend_config.sobel_kernel_size
+    if USE_SCHAAR_WHEN_KSIZE_EQUALS_3:
+        sobel_ksize = cv2.FILTER_SCHARR
 
     # Setup output dimensions
     dims = np.copy(source.shape)
@@ -420,7 +341,9 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
         tdiff_map,
         cut_mask_overlap,
         sobel_ksize=sobel_ksize,
-        blend_scale=1,  # TODO add arg for this!
+        min_blend_width=gen_args.blend_config.min_blur_radius * 2,
+        max_blend_width=gen_args.blend_config.max_blur_radius * 2,
+        blend_scale=gen_args.blend_config.blend_scale,
         patch_size=block_size,
         max_blend_ratio=0.15,
         dtype=source.dtype
@@ -434,7 +357,7 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
         print(f"Blend widths: min={min_blend}px, max={max_actual}px")
 
     # Update min-cut mask with adaptive blend
-    cut_mask[:block_size, :overlap] = 1 - blended[:, :, 0]
+    cut_mask[:block_size, :overlap] = 1 - blended
 
     if debug:
         #print(f"Final patch shape: {final_patch.shape}, dtype: {final_patch.dtype}")
@@ -466,26 +389,4 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
 
 
 if __name__ == "__main__":
-    root_dir = "test_data"
-    text_idx = "18"  # 18 and 9 are good for testing purposes
-
-    src2 = cv2.imread(f"{root_dir}/textures/t{text_idx}.png", cv2.IMREAD_COLOR_BGR)
-    print(f"max src2 -> {np.max(src2)}")
-    src2 = cv2.cvtColor(src2, cv2.COLOR_BGR2LAB)
-    print(f"max src2 post conv -> {np.max(src2)}")
-    src2 = np.float32(src2) / 255
-    print(f"max src2 post norm-> {np.max(src2)}")
-
-    #print(f"max rev-> {np.max(cv2.cvtColor(src2*255, cv2.COLOR_LAB2BGR)) * 255 }")
-    #cv2.imshow("test revert", cv2.cvtColor(np.uint8(src2*255), cv2.COLOR_LAB2BGR) )
-    #cv2.waitKey()
-    #quit()
-
-    ss = np.min(src2.shape[:2])
-    src2 = src2[:ss, :ss]
-
-    _compute_adaptive_blend_mask(src2, 80, 9)
-    quit()
-
-    # patched = patch_single(src2, 50)
-    # cv2.waitKey(0)
+    print(get_max_possible_gradient_diff("float32", 3))

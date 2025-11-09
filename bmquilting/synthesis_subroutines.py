@@ -1,15 +1,21 @@
 from functools import lru_cache
 import importlib.util
+
+import cv2
 import numpy as np
 import cv2 as cv
 
 from .jena2020.generate import (inf, findPatchHorizontal, findPatchVertical, findPatchBoth,
                                 getMinCutPatchHorizontal, getMinCutPatchVertical, getMinCutPatchBoth)
-from .types import GenParams, num_pixels
-from .seam_smartblur import compute_adaptive_blend_mask, auto_max_blend_size
+from .types import GenParams, BlendConfig, num_pixels
+from .seam_smartblur import compute_adaptive_blend_mask, auto_max_blend_size, auto_min_blend_size
 from .misc.dry import apply_mask
 
 epsilon = np.finfo(float).eps
+
+
+def debug_resize(arr, factor=8):
+    return cv2.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
 
 
 # region   get methods by version
@@ -153,11 +159,8 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
     # note -> if blurred, masks weights are scaled with respect the max mask value.
     # example: mask1: 0.2 mask2:0.5 -> max = .5 ; sum = .7 -> (.2*lb + .5*tb) * (max/sum) + patch * (1 - max)
     # likely "heavier" to compute, but does not require handling each corner individually
-    sobel_kernel_size = 11  # TODO must be passed as argument!
 
     block_size, overlap = gen_args.bo
-
-    max_blur_radius = auto_max_blend_size(block_size, sobel_kernel_size)
 
     masks_list = []
 
@@ -168,24 +171,23 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
 
     res_block = np.zeros_like(patch_block)
 
-
     def process_block(rolled_block, mask):
-        #if gen_args.blend_into_patch:
-        #    vignette = patch_blending_vignette(block_size, overlap, has_left, has_right, has_top, has_bottom)
-        #    mask = blur_patch_mask(mask, vignette)
+        if gen_args.blend_into_patch and gen_args.blend_config.use_vignette:
+            vignette = patch_blending_vignette(block_size, overlap, has_left, has_right, has_top, has_bottom)
+            mask *= vignette
         masks_list.append(mask)
         np.add(apply_mask(rolled_block, mask, True), res_block, out=res_block)
 
     if has_left:
-        mask = get_min_cut_patch_mask_horizontal(ref_block_left, patch_block, block_size, overlap, max_blur_radius)
+        mask = get_min_cut_patch_mask_horizontal(ref_block_left, patch_block, block_size, overlap, gen_args.blend_config)
         #print(f"prior mask = {mask}")
+
         if gen_args.blend_into_patch:
             compute_adaptive_blend_mask(
                 ref_block_left,
                 patch_block,
                 mask,
-                overlap,
-                sobel_kernel_size
+                gen_args
             )
         #print(f"post mask = {mask}")
         process_block(np.roll(ref_block_left, overlap, 1), mask)
@@ -193,14 +195,13 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
     if has_right:
         adj_src = np.fliplr(ref_block_right)
         adj_ptc = np.fliplr(patch_block)
-        mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, max_blur_radius)
+        mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, gen_args.blend_config)
         if gen_args.blend_into_patch:
             compute_adaptive_blend_mask(
                 adj_src,
                 adj_ptc,
                 mask,
-                overlap,
-                sobel_kernel_size
+                gen_args
             )
         mask = np.fliplr(mask)
         process_block(np.roll(ref_block_right, -overlap, 1), mask)
@@ -209,14 +210,13 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
         # V , >  counterclockwise rotation
         adj_src = np.rot90(ref_block_top)
         adj_ptc = np.rot90(patch_block)
-        mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, max_blur_radius)
+        mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, gen_args.blend_config)
         if gen_args.blend_into_patch:
             compute_adaptive_blend_mask(
                 adj_src,
                 adj_ptc,
                 mask,
-                overlap,
-                sobel_kernel_size
+                gen_args
             )
         mask = np.rot90(mask, 3)
         process_block(np.roll(ref_block_top, overlap, 0), mask)
@@ -224,14 +224,13 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
     if has_bottom:
         adj_src = np.fliplr(np.rot90(ref_block_bottom))
         adj_ptc = np.fliplr(np.rot90(patch_block))
-        mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, max_blur_radius)
+        mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, gen_args.blend_config)
         if gen_args.blend_into_patch:
             compute_adaptive_blend_mask(
                 adj_src,
                 adj_ptc,
                 mask,
-                overlap,
-                sobel_kernel_size
+                gen_args
             )
         mask = np.rot90(np.fliplr(mask), 3)
         process_block(np.roll(ref_block_bottom, -overlap, 0), mask)
@@ -250,7 +249,7 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
 def patch_blending_vignette(block_size: num_pixels, overlap: num_pixels,
                             left: bool, right: bool, top: bool, bottom: bool) -> np.ndarray:
     margin = 1  # must be small !
-    power = 2.5  # controls drop-off
+    power = 4.5  # controls drop-off
     p = 6  # controls the shape
 
     def corner_distance(y, x):
@@ -309,10 +308,11 @@ def patch_blending_vignette(block_size: num_pixels, overlap: num_pixels,
     if right:
         mask[overlap:block_size - overlap, -overlap:] = (np.flip(curve_top_left_corner[-1, :])
                                                          .reshape(1, -1))  # Copy the last row flipped horizontally
+    mask = 1 - mask
     return mask
 
 
-def blur_patch_mask(src_mask:np.ndarray, vignette:np.ndarray):
+def blur_patch_mask(src_mask: np.ndarray, vignette: np.ndarray):
     """
     Uses the distance transform to blur the patch -> dst_grad.
     This mask is composed w/ additional masks to avoid noticeable discontinuities on the generation.
@@ -392,22 +392,51 @@ if importlib.util.find_spec("pyastar2d") is not None:
     def get_min_cut_patch_mask_horizontal_astar(
             block1, block2,
             block_size: num_pixels, overlap: num_pixels,
-            safe_radius: num_pixels = 0):
+            blend_config: BlendConfig = None
+    ):
         """
         @param block1: block to the left, with the overlap on its right edge (should be normalized!)
         @param block2: block to the right, with the overlap on its left edge
 
-        @param safe_radius: used to crop overlap from both sides by this amount and adjust error weights.
-            if a blur is used along the seam, use its maximum possible radius here.
-
         @return: ONLY the mask (not the patched overlap section)
         """
-        # safeguard against big save_radius values
-        safe_radius = min(safe_radius, round(overlap/3))
+        # get min and max safety radii
+        if blend_config is not None:
+            min_safe_rad = blend_config.min_blur_radius
+            max_safe_rad = blend_config.max_blur_radius
+        else:
+            min_safe_rad = 0
+            max_safe_rad = 0
 
         # compute error matrix
-        err = ((block1[:, -overlap+safe_radius:-safe_radius] - block2[:, safe_radius:overlap-safe_radius]) ** 2).mean(2)
-        err = err**2  # make penalty func steeper
+        block1_safe_overlap_view = block1[:, -overlap:]
+        block2_safe_overlap_view = block2[:, :overlap]
+        if min_safe_rad > 0:
+            # trim to avoid unneeded computations
+            block1_safe_overlap_view = block1_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
+            block2_safe_overlap_view = block2_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
+
+        err = block1_safe_overlap_view - block2_safe_overlap_view
+        err **= 2
+        err = err.mean(2)
+
+        # adjust safety_radius
+        safety_radius = min(
+            # try to get more real estate if errors are small instead of defaulting to max possible radius
+            round(min_safe_rad + (max_safe_rad-min_safe_rad) * np.max(err)),
+            # safeguard against big save_radius values
+            round(overlap / 3)
+        )
+        print((max_safe_rad-min_safe_rad) * np.max(err))
+        print(min_safe_rad)
+        print(max_safe_rad)
+        print(safety_radius)
+        # trim the err matrix so that values within the adjusted safety radius are not used
+        to_trim = safety_radius - min_safe_rad
+        if to_trim > 0:
+            err = err[:, to_trim:-to_trim]
+
+        err = err ** 2  # make penalty func steeper
 
         # scale to integer color range and offset by 1 (works for both RGB and LAB)
         #   this is done so that the distance from 0 to the smallest possible error
@@ -437,7 +466,7 @@ if importlib.util.find_spec("pyastar2d") is not None:
                 break
 
         for i, j in path[start_index:]:  # draw path
-            mask[i - 1, j + 1 + safe_radius] = 0
+            mask[i - 1, j + 1 + safety_radius] = 0
             if i >= shape_m2:
                 break
 
@@ -475,4 +504,30 @@ def get_min_cut_patch_both(left_block, top_block, patch_block, gen_args: GenPara
         patch_block, gen_args
     )
 
+
 # endregion
+
+
+def get_seam_mask_from_patch_weights(patch_weights: np.ndarray, gen_args: GenParams) -> np.ndarray:
+    if gen_args.blend_into_patch:
+        # Has blending, compute distance to 0.5
+        #cv.imshow("patch_weights", debug_resize(patch_weights))
+        seam_mask = 1 - np.abs(.5 - patch_weights) * 2
+        #cv.imshow("seam mask", debug_resize(seam_mask))
+        #cv.waitKey()
+        np.clip(seam_mask, 0, 1, out=seam_mask)  # just in case
+        return seam_mask
+    else:
+        # No blending, find seam line
+        gx = cv.Sobel(patch_weights, cv.CV_32F, 1, 0, ksize=cv.FILTER_SCHARR)
+        gy = cv.Sobel(patch_weights, cv.CV_32F, 0, 1, ksize=cv.FILTER_SCHARR)
+        np.multiply(gx, gx, out=gx)
+        np.multiply(gy, gy, out=gy)
+        gx += gy
+        mags = gx / 256
+        np.clip(mags, 0, 1, out=mags)
+        return mags
+
+
+def clear_seam_overlapped_by_patch(seam_map_view: np.ndarray, patch_weights: np.ndarray):
+    seam_map_view *= 1 - patch_weights

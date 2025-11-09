@@ -60,6 +60,16 @@ class UiCoordData:
 
 
 @dataclass
+class BlendConfig:
+    use_vignette: bool    # TODO? could add vignette params here, but might be overkill
+
+    blend_scale: float
+    sobel_kernel_size: num_pixels
+    min_blur_radius: num_pixels
+    max_blur_radius: num_pixels
+
+
+@dataclass
 class GenParams:
     """
     Data used across multiple quilting subroutines.
@@ -68,8 +78,13 @@ class GenParams:
     block_size: num_pixels
     overlap: num_pixels
     tolerance: percentage
-    blend_into_patch: bool
+    #blend_into_patch: bool
+    blend_config: BlendConfig | None
     version: int
+
+    @property
+    def blend_into_patch(self) -> bool:
+        return self.blend_config is not None
 
     @property
     def bo(self):

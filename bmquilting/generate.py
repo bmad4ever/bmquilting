@@ -1,6 +1,7 @@
 from .synthesis_subroutines import (
     get_find_patch_to_the_right_method, get_find_patch_below_method, get_find_patch_both_method,
-    get_min_cut_patch_horizontal_method, get_min_cut_patch_vertical_method, get_min_cut_patch_both_method)
+    get_min_cut_patch_horizontal_method, get_min_cut_patch_vertical_method, get_min_cut_patch_both_method,
+    clear_seam_overlapped_by_patch, get_seam_mask_from_patch_weights)
 from multiprocessing.shared_memory import SharedMemory
 from dataclasses import dataclass
 from .types import UiCoordData, GenParams
@@ -49,20 +50,45 @@ import numpy as np
 
 # region     methods adapted from jena2020 for re-usability & node compliance
 
+
+def update_cut_map_view(cut_map_view, gen_args, patch_weights):
+    cut_map_block = get_seam_mask_from_patch_weights(patch_weights, gen_args)
+    #print(f"min, max patch weights values = {(np.min(patch_weights), np.max(patch_weights))}")
+    #print(f"max cut block value = {np.max(cut_map_block)}")
+    clear_seam_overlapped_by_patch(cut_map_view, patch_weights)
+    cut_map_view += cut_map_block
+    print(f"max_cut_value={np.max(cut_map_block)}")
+    return
+    # temporarily, for debug purposes
+    cut_map_view[0, :] = 0.1
+    cut_map_view[-1, :] = 0.1
+    cut_map_view[:, 0] = 0.1
+    cut_map_view[:, -1] = 0.1
+    cut_map_view[gen_args.overlap, :] = 0.1
+    cut_map_view[:, gen_args.overlap] = 0.1
+
+
 def fill_column(image, initial_block, gen_args: GenParams, rows: int, rng: np.random.Generator):
     find_patch_below = get_find_patch_below_method(gen_args.version)
     get_min_cut_patch = get_min_cut_patch_vertical_method(gen_args.version)
     block_size = initial_block.shape[0]
     overlap = gen_args.overlap
+
     texture_map = np.zeros(
         ((block_size + rows * (block_size - overlap)), block_size, image.shape[2])).astype(image.dtype)
     texture_map[:block_size, :block_size, :] = initial_block
+
+    cut_map = np.zeros((texture_map.shape[0], block_size)).astype(np.float32)
+
     for i, blk_idx in enumerate(range((block_size - overlap), texture_map.shape[0] - overlap, (block_size - overlap))):
         ref_block = texture_map[(blk_idx - block_size + overlap):(blk_idx + overlap), :block_size]
         patch_block = find_patch_below(ref_block, image, gen_args, rng)
-        min_cut_patch, _ = get_min_cut_patch(ref_block, patch_block, gen_args)
+        min_cut_patch, patch_weights = get_min_cut_patch(ref_block, patch_block, gen_args)
         texture_map[blk_idx:(blk_idx + block_size), :block_size] = min_cut_patch
-    return texture_map
+
+        cut_map_view = cut_map[blk_idx:(blk_idx + block_size), :block_size]
+        update_cut_map_view(cut_map_view, gen_args, patch_weights)
+    return texture_map, cut_map
 
 
 def fill_row(image, initial_block, gen_args: GenParams, columns: int, rng: np.random.Generator):
@@ -70,18 +96,25 @@ def fill_row(image, initial_block, gen_args: GenParams, columns: int, rng: np.ra
     get_min_cut_patch = get_min_cut_patch_horizontal_method(gen_args.version)
     block_size = initial_block.shape[0]
     overlap = gen_args.overlap
+
     texture_map = np.zeros(
         (block_size, (block_size + columns * (block_size - overlap)), image.shape[2])).astype(image.dtype)
     texture_map[:block_size, :block_size, :] = initial_block
+
+    cut_map = np.zeros((block_size, texture_map.shape[1])).astype(np.float32)
+
     for i, blk_idx in enumerate(range((block_size - overlap), texture_map.shape[1] - overlap, (block_size - overlap))):
         ref_block = texture_map[:block_size, (blk_idx - block_size + overlap):(blk_idx + overlap)]
         patch_block = find_patch_to_the_right(ref_block, image, gen_args, rng)
-        min_cut_patch, _ = get_min_cut_patch(ref_block, patch_block, gen_args)
+        min_cut_patch, patch_weights = get_min_cut_patch(ref_block, patch_block, gen_args)
         texture_map[:block_size, blk_idx:(blk_idx + block_size)] = min_cut_patch
-    return texture_map
+
+        cut_map_view = cut_map[:block_size, blk_idx:(blk_idx + block_size)]
+        update_cut_map_view(cut_map_view, gen_args, patch_weights)
+    return texture_map, cut_map
 
 
-def fill_quad(rows: int, columns: int, gen_args: GenParams, texture_map, image,
+def fill_quad(rows: int, columns: int, gen_args: GenParams, texture_map, image, cut_map,
               rng: np.random.Generator, uicd: UiCoordData | None):
     find_patch_both = get_find_patch_both_method(gen_args.version)
     get_min_cut_patch = get_min_cut_patch_both_method(gen_args.version)
@@ -99,13 +132,16 @@ def fill_quad(rows: int, columns: int, gen_args: GenParams, texture_map, image,
                             blk_index_j:(blk_index_j + block_size)]
 
             patch_block = find_patch_both(ref_block_left, ref_block_top, image, gen_args, rng)
-            min_cut_patch, _ = get_min_cut_patch(ref_block_left, ref_block_top, patch_block, gen_args)
+            min_cut_patch, patch_weights = get_min_cut_patch(ref_block_left, ref_block_top, patch_block, gen_args)
 
             texture_map[blk_index_i:(blk_index_i + block_size), blk_index_j:(blk_index_j + block_size)] = min_cut_patch
 
+            cut_map_view = cut_map[blk_index_i:(blk_index_i + block_size), blk_index_j:(blk_index_j + block_size)]
+            update_cut_map_view(cut_map_view, gen_args, patch_weights)
+
         if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(columns):
             break
-    return texture_map
+    return texture_map, cut_map
 
 
 # endregion
@@ -447,6 +483,8 @@ def generate_texture(image, gen_args: GenParams, out_h, out_w, rng: np.random.Ge
          (block_size + n_w * (block_size - overlap)),
          image.shape[2])).astype(image.dtype)
 
+    cut_map = np.zeros((texture_map.shape[0], texture_map.shape[1])).astype(image.dtype)
+
     # Starting index and block
     h, w = image.shape[:2]
     rand_h = rng.integers(h - block_size)
@@ -456,19 +494,22 @@ def generate_texture(image, gen_args: GenParams, out_h, out_w, rng: np.random.Ge
     texture_map[:block_size, :block_size, :] = start_block
 
     # fill 1st row
-    texture_map[:block_size, :] = fill_row(image, start_block, gen_args, n_w, rng)
+    texture_map[:block_size, :], cut_map[:block_size, :] = fill_row(image, start_block, gen_args, n_w, rng)
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w):
         return None
 
     # fill 1st column
-    texture_map[:, :block_size] = fill_column(image, start_block, gen_args, n_h, rng)
+    texture_map[:, :block_size], cut_map[:, :block_size] = fill_column(image, start_block, gen_args, n_h, rng)
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_h):
         return None
 
     # fill the rest
-    texture_map = fill_quad(n_h, n_w, gen_args, texture_map, image, rng, uicd)
+    texture_map, cut_map = fill_quad(n_h, n_w, gen_args, texture_map, image, cut_map, rng, uicd)
+
+    # fix overvalues due to seams overlap
+    np.clip(cut_map, 0, 1, out=cut_map)
 
     # crop to final size
-    return texture_map[:out_h, :out_w]
+    return texture_map[:out_h, :out_w], cut_map[:out_h, :out_w]
 
 # endregion
