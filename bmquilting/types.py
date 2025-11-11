@@ -65,8 +65,8 @@ class BlendConfig:
 
     blend_scale: float
     sobel_kernel_size: num_pixels
-    min_blur_radius: num_pixels
-    max_blur_radius: num_pixels
+    min_blur_diameter: num_pixels
+    max_blur_diameter: num_pixels
 
 
 @dataclass
@@ -78,7 +78,6 @@ class GenParams:
     block_size: num_pixels
     overlap: num_pixels
     tolerance: percentage
-    #blend_into_patch: bool
     blend_config: BlendConfig | None
     version: int
 

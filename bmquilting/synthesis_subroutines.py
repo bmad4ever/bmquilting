@@ -8,7 +8,7 @@ import cv2 as cv
 from .jena2020.generate import (inf, findPatchHorizontal, findPatchVertical, findPatchBoth,
                                 getMinCutPatchHorizontal, getMinCutPatchVertical, getMinCutPatchBoth)
 from .types import GenParams, BlendConfig, num_pixels
-from .seam_smartblur import compute_adaptive_blend_mask, auto_max_blend_size, auto_min_blend_size
+from .seam_smartblur import compute_adaptive_blend_mask, auto_max_blend_diameter, auto_min_blend_size
 from .misc.dry import apply_mask
 
 epsilon = np.finfo(float).eps
@@ -402,8 +402,8 @@ if importlib.util.find_spec("pyastar2d") is not None:
         """
         # get min and max safety radii
         if blend_config is not None:
-            min_safe_rad = blend_config.min_blur_radius
-            max_safe_rad = blend_config.max_blur_radius
+            min_safe_rad = blend_config.min_blur_diameter//2
+            max_safe_rad = blend_config.max_blur_diameter//2
         else:
             min_safe_rad = 0
             max_safe_rad = 0
@@ -423,7 +423,10 @@ if importlib.util.find_spec("pyastar2d") is not None:
         # adjust safety_radius
         safety_radius = min(
             # try to get more real estate if errors are small instead of defaulting to max possible radius
-            round(min_safe_rad + (max_safe_rad-min_safe_rad) * np.max(err)),
+            # mind that this guess is heuristic, err here does not translate directly to the seam diff map
+            # meaning that: without opting for the max blur radius
+            #   there is always the risk of getting a blur near the edges
+            (round(min_safe_rad + (max_safe_rad-min_safe_rad) * np.max(err))+max_safe_rad)//2,
             # safeguard against big save_radius values
             round(overlap / 3)
         )
