@@ -1,6 +1,5 @@
 import numpy as np
 import cv2
-from scipy.ndimage import maximum_filter
 from functools import lru_cache
 from math import ceil
 
@@ -89,69 +88,81 @@ def get_max_possible_gradient_diff(dtype_str, sobel_ksize) -> float:
     return max_diff
 
 
-
 @lru_cache(maxsize=None)
-def circular_kernel(radius: int, dtype: np.dtype = np.uint8) -> np.ndarray:
-    """
-    Returns & caches a circular kernel.
-    Use uint8 for openCV morph operations.
-    """
-    if radius <= 0:
-        return np.ones((1, 1), dtype)
-    y, x = np.ogrid[-radius:radius + 1, -radius:radius + 1]
-    mask = (x ** 2 + y ** 2) <= radius ** 2
-    return mask.astype(dtype)
+def circular_kernel(radius: int) -> np.ndarray:
+    """Cached circular structuring element."""
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*radius + 1, 2*radius + 1))
 
 
-def quantized_dilation_cv(radius_map: np.ndarray,
-                          n_levels: int = 6,
-                          gamma: float = 1.0,   # 1 for linear
-                          overreach: int = 0,
-                          min_radius: float = None,
-                          max_radius: float = None,
-                          borderType=cv2.BORDER_CONSTANT,
-                          debug=False) -> np.ndarray:
+def adaptive_maximum_filter(
+    radius_map: np.ndarray,
+    n_levels: int = 6,
+    gamma: float = 1.0,
+    overreach: int = 0,
+    min_radius: float | None = None,
+    max_radius: float | None = None,
+) -> np.ndarray:
     """
-    Perform quantized dilation using OpenCV's cv2.dilate,
-    reusing preallocated buffers for speed and lower memory pressure.
+    Perform spatially adaptive morphological dilation
+    (a variable-radius maximum filter).
+
+    Each pixel expands according to its local radius value,
+    producing a smooth, radius-guided maximum field.
+
+    Parameters
+    ----------
+    radius_map : np.ndarray
+        2D map of per-pixel radii.
+    n_levels : int
+        Number of quantization levels.
+    gamma : float
+        Nonlinear exponent shaping the spacing of quantized radii.
+    overreach : int
+        Optional additive dilation to slightly extend each radius band.
+    min_radius, max_radius : float, optional
+        Bounds for quantization. Inferred from data if None.
+
+    Returns
+    -------
+    np.ndarray
+        Smoothed / dilated radius map.
     """
     radius_map = np.asarray(radius_map, np.float32)
     if min_radius is None:
-        min_radius = float(np.min(radius_map))
+        min_radius = float(radius_map.min())
     if max_radius is None:
-        max_radius = float(np.max(radius_map))
+        max_radius = float(radius_map.max())
 
-    # radii = np.linspace(min_radius, max_radius, n_levels)
-    steps = np.linspace(0, 1, n_levels+1)[1:]  # add 1 level and discard the lowest possible value
+    # Nonlinear quantization of radius levels
+    steps = np.linspace(0, 1, n_levels + 1)[1:]
     radii = min_radius + (max_radius - min_radius) * (steps ** gamma)
+    radii = np.unique(np.ceil(radii).astype(int))
+
+    # Preallocate
     h, w = radius_map.shape
-
-    # int-quantized radii without repetitions
-    radii = np.unique(np.round(radii).astype(int))
-    print(radii)
-
-    # Allocate reusable buffers
-    mask = np.empty((h, w), np.uint8)
-    dilated = np.empty_like(mask)
-    expanded = np.ones((h, w), np.float32) * min_radius
+    result = np.full((h, w), min_radius, np.float32)
+    processed_mask = np.zeros((h, w), np.bool_)  # tracks done pixels
+    temp_mask = np.zeros_like(processed_mask)
 
     for r in radii:
-        # Threshold mask: 255 where radius >= current level
-        np.greater_equal(radius_map, float(r), out=mask)
-        #mask *= 255  # bool → 0/255 in-place  (does not seem to be needed)
+        # Determine current active pixels: not processed yet & <= current radius
+        np.less_equal(radius_map, float(r), out=temp_mask)
+        active_mask = np.logical_and(temp_mask, ~processed_mask)
 
+        # Build masked layer (float for dilation)
+        layer = np.where(active_mask, radius_map, 0).astype(np.float32)
+
+        # Perform dilation (local maximum) with circular kernel
         kernel = circular_kernel(r + overreach)
-        cv2.dilate(mask, kernel, dst=dilated, borderType=borderType)
+        cv2.dilate(layer, kernel, dst=layer)
 
-        # Convert dilated mask to boolean without allocation
-        dilated_bool = dilated > 0
-        #dilated_bool = np.not_equal(dilated, 0, out=mask)  # re-use mask as bool temp  (not working)
-        expanded[dilated_bool] = np.maximum(expanded[dilated_bool], r)
+        # Merge results
+        np.maximum(result, layer, out=result)
 
-        if debug:
-            print(f"r={r:.2f}, kernel={kernel.shape}, active px={np.count_nonzero(dilated_bool)}")
+        # Mark these pixels as processed
+        processed_mask |= temp_mask
 
-    return expanded
+    return result
 
 
 def create_adaptive_blend_mask(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
@@ -236,13 +247,8 @@ def create_adaptive_blend_mask(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
 
     #print(f"hey!!!!! {max_blur_diameter_found, min_blur_diameter}")
     if max_blur_diameter_found > min_blur_diameter:  # if they are equal then there is nothing to dilate
-        # (prior solution) maximum_filter(footprint=circular_kernel(round(max_blur_diameter_found/2), bool), input=blend_radii, output=blend_radii)
-
-        # TODO, cache once the formula is settled
         sigma = (min_blur_diameter + 1)/6
-        #print(f"mid_rad, sigma = {mid_rad, sigma}")
-
-        blend_radii = quantized_dilation_cv(
+        blend_radii = adaptive_maximum_filter(
             radius_map=blend_radii,
             n_levels=3,  # TODO -> add to blend config if used in final solution!
             max_radius=round(max_blur_diameter_found/2),
@@ -250,21 +256,10 @@ def create_adaptive_blend_mask(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
         )
         cv2.GaussianBlur(blend_radii, (0, 0), sigmaX=sigma, sigmaY=sigma, dst=blend_radii)
 
-    cv2.imshow("norm radii",
-               debug_resize(
-                   blend_radii / (max_blur_diameter/2)
-                   #cv2.normalize(blend_radii, None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
-               ))
+    cv2.imshow("norm radii layered max-filt.",
+               debug_resize(blend_radii / (max_blur_diameter / 2))
+               )
 
-
-    # -- DEBUG --
-    #normalized_widths = np.empty_like(blend_widths, dtype=np.float32)
-    #cv2.normalize(src=blend_widths, dst=normalized_widths)
-    #normalized_widths -= np.min(blend_widths)
-    #normalized_widths /= (np.max(blend_widths) - np.min(blend_widths))
-
-    # Get binary mask from min-cut
-    #mcp_binary = (mcp_mask_overlap > 0.5).astype(float) # unneeded r.n., already in the correct format
     mcp_binary = mcp_mask_overlap
 
     # Calculate signed distance from transition line
@@ -282,7 +277,7 @@ def create_adaptive_blend_mask(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
     # Create smooth transition using sigmoid function
     t = signed_distance / blend_radii  # min should be min_diameter, never zero
     cv2.GaussianBlur(t, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=t)
-    np.clip(t, -8, 8, out=t)  # required to prevent overflows
+    #np.clip(t, -8, 8, out=t)  # required to prevent overflows
     blend_mask = 1.0 / (1.0 + np.exp(-5 * t))  # sigmoid func.
 
     cv2.imshow("t", debug_resize(np.abs(t) / max(np.max(np.abs(t)), 1e-8)))
