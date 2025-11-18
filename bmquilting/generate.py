@@ -1,7 +1,7 @@
 from .synthesis_subroutines import (
     get_find_patch_to_the_right_method, get_find_patch_below_method, get_find_patch_both_method,
     get_min_cut_patch_horizontal_method, get_min_cut_patch_vertical_method, get_min_cut_patch_both_method,
-    clear_seam_overlapped_by_patch, get_seam_mask_from_patch_weights)
+    update_seams_map_view)
 from multiprocessing.shared_memory import SharedMemory
 from dataclasses import dataclass
 from .types import UiCoordData, GenParams
@@ -52,13 +52,6 @@ import numpy as np
 
 # region     methods adapted from jena2020 for re-usability & node compliance
 
-
-def _update_seams_map_view(seams_map_view, gen_args, patch_weights):
-    seam_map_block = get_seam_mask_from_patch_weights(patch_weights, gen_args)
-    clear_seam_overlapped_by_patch(seams_map_view, patch_weights)
-    seams_map_view += seam_map_block
-
-
 def fill_column(image, initial_block, gen_args: GenParams, rows: int, rng: np.random.Generator):
     find_patch_below = get_find_patch_below_method(gen_args.version)
     get_min_cut_patch = get_min_cut_patch_vertical_method(gen_args.version)
@@ -78,7 +71,7 @@ def fill_column(image, initial_block, gen_args: GenParams, rows: int, rng: np.ra
         texture_map[blk_idx:(blk_idx + block_size), :block_size] = min_cut_patch
 
         seams_map_view = seams_map[blk_idx:(blk_idx + block_size), :block_size]
-        _update_seams_map_view(seams_map_view, gen_args, patch_weights)
+        update_seams_map_view(seams_map_view, gen_args, patch_weights)
     return texture_map, seams_map
 
 
@@ -101,7 +94,7 @@ def fill_row(image, initial_block, gen_args: GenParams, columns: int, rng: np.ra
         texture_map[:block_size, blk_idx:(blk_idx + block_size)] = min_cut_patch
 
         seams_map_view = seams_map[:block_size, blk_idx:(blk_idx + block_size)]
-        _update_seams_map_view(seams_map_view, gen_args, patch_weights)
+        update_seams_map_view(seams_map_view, gen_args, patch_weights)
     return texture_map, seams_map
 
 
@@ -128,7 +121,7 @@ def fill_quad(rows: int, columns: int, gen_args: GenParams, texture_map, image, 
             texture_map[blk_index_i:(blk_index_i + block_size), blk_index_j:(blk_index_j + block_size)] = min_cut_patch
 
             seams_map_view = seams_map[blk_index_i:(blk_index_i + block_size), blk_index_j:(blk_index_j + block_size)]
-            _update_seams_map_view(seams_map_view, gen_args, patch_weights)
+            update_seams_map_view(seams_map_view, gen_args, patch_weights)
 
         if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(columns):
             break
@@ -527,7 +520,7 @@ def fill_rows_ps(pid: int, job: ParaRowsJobInfo, jobs_events: list, uicd: UiCoor
             texture[blk_index_i:(blk_index_i + block_size), blk_index_j:(blk_index_j + block_size)] = min_cut_patch
 
             seams_map_view = seams_map[blk_index_i:(blk_index_i + block_size), blk_index_j:(blk_index_j + block_size)]
-            _update_seams_map_view(seams_map_view, gen_args, patch_weights)
+            update_seams_map_view(seams_map_view, gen_args, patch_weights)
 
             coord_list[pid * 2 + 1] = j
             jobs_events[pid].set()

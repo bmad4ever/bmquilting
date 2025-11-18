@@ -385,6 +385,12 @@ def get_min_cut_patch_mask_horizontal_jena2020(block1, block2, block_size: num_p
     return mask
 
 
+def update_seams_map_view(seams_map_view, gen_args, patch_weights):
+    seam_map_block = get_seam_mask_from_patch_weights(patch_weights, gen_args)
+    clear_seam_overlapped_by_patch(seams_map_view, patch_weights)
+    seams_map_view += seam_map_block
+
+
 if importlib.util.find_spec("pyastar2d") is not None:
     import pyastar2d
 
