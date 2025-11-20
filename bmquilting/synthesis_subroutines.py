@@ -11,6 +11,8 @@ from .types import GenParams, BlendConfig, num_pixels
 from .seam_smartblur import compute_adaptive_blend_mask, auto_max_blend_diameter, auto_min_blend_size
 from .misc.dry import apply_mask
 
+from .misc.shmem_utils import SharedTextureList
+
 epsilon = np.finfo(float).eps
 
 
@@ -119,39 +121,103 @@ def get_match_template_method(version: int) -> int:
 
 # region  custom implementation of: patch search & min cut + auxiliary methods
 
-def find_patch_vx(ref_block_left, ref_block_right, ref_block_top, ref_block_bottom,
-                  texture, gen_args: GenParams,
-                  rng: np.random.Generator):
-    block_size, overlap, tolerance = gen_args.bot
-    blks_diffs = []
-    template_method = get_match_template_method(gen_args.version)
-    if ref_block_left is not None:
-        blks_diffs.append(cv.matchTemplate(
-            image=texture[:, :-block_size + overlap],
-            templ=ref_block_left[:, -overlap:], method=template_method))
-    if ref_block_right is not None:
-        blks_diffs.append(cv.matchTemplate(
-            image=np.roll(texture, -block_size + overlap, axis=1)[:, :-block_size + overlap],
-            templ=ref_block_right[:, :overlap], method=template_method))
-    if ref_block_top is not None:
-        blks_diffs.append(cv.matchTemplate(
-            image=texture[:-block_size + overlap, :],
-            templ=ref_block_top[-overlap:, :], method=template_method))
-    if ref_block_bottom is not None:
-        blks_diffs.append(cv.matchTemplate(
-            image=np.roll(texture, -block_size + overlap, axis=0)[:-block_size + overlap, :],
-            templ=ref_block_bottom[:overlap, :], method=template_method))
 
-    err_mat = compute_errors(blks_diffs, gen_args.version)
-    if tolerance > 0:
-        # attempt to ignore zeroes in order to apply tolerance, but mind edge case (e.g., blank image)
-        min_val = np.min(pos_vals) if (pos_vals := err_mat[err_mat > 0]).size > 0 else 0
-    else:
-        min_val = np.min(err_mat)
-    y, x = np.nonzero(err_mat <= (1.0 + tolerance) * min_val)
-    c = rng.integers(len(y))
-    y, x = y[c], x[c]
-    return texture[y:y + block_size, x:x + block_size]
+def find_patch_vx(ref_block_left: np.ndarray | None,
+                  ref_block_right: np.ndarray | None,
+                  ref_block_top: np.ndarray | None,
+                  ref_block_bottom: np.ndarray | None,
+                  lookup_textures: list[np.ndarray] | SharedTextureList,
+                  gen_args: GenParams,
+                  rng: np.random.Generator) -> np.ndarray:
+    """
+    Finds the best-matching block across all textures in lookup_textures
+    that satisfies the boundary constraints, applying tolerance to the
+    absolute global minimum error.
+    """
+    block_size, overlap, tolerance = gen_args.bot
+    template_method = get_match_template_method(gen_args.version)
+
+    # List to store error matrices (Pass 1) or final candidates (Pass 2)
+    err_mats: list[np.ndarray | None] = []
+    global_min_error = np.inf
+
+    # --- PASS 1: Find the absolute global minimum error ---
+    for texture in lookup_textures:
+
+        # Skip if texture is too small for a block
+        if texture.shape[0] < block_size or texture.shape[1] < block_size:
+            err_mats.append(None)  # Keep placeholder for alignment
+            continue
+
+        blks_diffs: list[np.ndarray] = []
+
+        # Template Matching
+        if ref_block_left is not None:
+            blks_diffs.append(cv.matchTemplate(
+                image=texture[:, :-block_size + overlap],
+                templ=ref_block_left[:, -overlap:], method=template_method))
+        if ref_block_right is not None:
+            blks_diffs.append(cv.matchTemplate(
+                image=np.roll(texture, -block_size + overlap, axis=1)[:, :-block_size + overlap],
+                templ=ref_block_right[:, :overlap], method=template_method))
+        if ref_block_top is not None:
+            blks_diffs.append(cv.matchTemplate(
+                image=texture[:-block_size + overlap, :],
+                templ=ref_block_top[-overlap:, :], method=template_method))
+        if ref_block_bottom is not None:
+            blks_diffs.append(cv.matchTemplate(
+                image=np.roll(texture, -block_size + overlap, axis=0)[:-block_size + overlap, :],
+                templ=ref_block_bottom[:overlap, :], method=template_method))
+
+        # Compute combined error matrix for this texture
+        #if not blks_diffs:
+        #    # If no constraints, assume zero error (best case)
+        #    h = texture.shape[0] - block_size + 1
+        #    w = texture.shape[1] - block_size + 1
+        #    err_mat = np.zeros((h, w), dtype=np.float32)
+        #else:
+        err_mat = compute_errors(blks_diffs, gen_args.version)
+        err_mats.append(err_mat)
+
+        # Update global minimum
+        global_min_error = min(global_min_error, np.min(err_mat))
+
+    # --- Check for impossible match ---
+    if global_min_error == np.inf:
+        raise ValueError(
+            "Could not find a suitable patch in any lookup texture (all textures were too small or had matching issues).")
+
+    # --- PASS 2: Collect all candidates within the final tolerance window ---
+
+    final_candidates: list[tuple[int, int, int]] = []  # (texture_idx, y, x)
+    acceptable_error = (1.0 + tolerance) * global_min_error
+
+    for texture_idx, err_mat in enumerate(err_mats):
+        if err_mat is None:  # Skip small textures
+            continue
+
+        # Find all positions (y, x) that satisfy the global tolerance threshold
+        y_T, x_T = np.nonzero(err_mat <= acceptable_error)
+
+        # Record all valid patch coordinates
+        for y, x in zip(y_T, x_T):
+            final_candidates.append((texture_idx, y, x))
+
+    # 3. Random Selection and Patch Extraction
+    if not final_candidates:
+        # This occurs if the tolerance factor is so small it filters out everything,
+        # but the check for global_min_error == np.inf should usually catch the
+        # true impossible cases.
+        raise ValueError("No patches met the final tolerance criteria.")
+
+    # Randomly select one candidate from the final set
+    c = rng.integers(len(final_candidates))
+    best_texture_idx, best_y, best_x = final_candidates[c]
+
+    # Extract the patch from the winning texture (This triggers a single read from the memmap)
+    winning_texture = lookup_textures[best_texture_idx]
+
+    return winning_texture[best_y:best_y + block_size, best_x:best_x + block_size]
 
 
 def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_block_bottom,
