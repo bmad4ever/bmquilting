@@ -1,4 +1,4 @@
-# An alternative approach to making the texture seamless
+# An alternative approach to making the texture seamless using a single large patch
 from .synthesis_subroutines import compute_errors, get_match_template_method, get_min_cut_patch_horizontal, update_seams_map_view
 from .make_seamless import patch_horizontal_seam
 from .types import UiCoordData, GenParams
@@ -10,7 +10,8 @@ import cv2 as cv
 RETURN_VALUE_WHEN_INTERRUPTED = (None, None)
 
 
-def seamless_horizontal(image, lookup_texture, gen_args: GenParams, rng, seams_map=None, uicd: UiCoordData | None = None):
+def seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
+                        gen_args: GenParams, rng, seams_map=None, uicd: UiCoordData | None = None):
     block_size, overlap = gen_args.bo
     lookup_texture = image if lookup_texture is None else lookup_texture
     image = np.roll(image, +block_size // 2, axis=1)  # move seam to addressable space
@@ -69,7 +70,8 @@ def seamless_horizontal(image, lookup_texture, gen_args: GenParams, rng, seams_m
     return image, seams_map
 
 
-def seamless_vertical(image, lookup_texture, gen_args: GenParams, rng, uicd: UiCoordData | None = None):
+def seamless_vertical(image: np.ndarray, lookup_texture: np.ndarray,
+                      gen_args: GenParams, rng, uicd: UiCoordData | None = None):
     texture, seams = seamless_horizontal(image=np.rot90(image), gen_args=gen_args, rng=rng, uicd=uicd,
                                          lookup_texture=None if lookup_texture is None else np.rot90(lookup_texture))
     if texture is None:
@@ -78,7 +80,8 @@ def seamless_vertical(image, lookup_texture, gen_args: GenParams, rng, uicd: UiC
         return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
 
 
-def seamless_both(image, lookup_texture, gen_args: GenParams, rng, uicd: UiCoordData | None = None):
+def seamless_both(image: np.ndarray, lookup_texture: np.ndarray,
+                  gen_args: GenParams, rng, uicd: UiCoordData | None = None):
     lookup_texture = image if lookup_texture is None else lookup_texture
     block_size = gen_args.block_size
 
@@ -95,6 +98,6 @@ def seamless_both(image, lookup_texture, gen_args: GenParams, rng, uicd: UiCoord
     for m in [texture, seams]:
         m[:] = np.roll(m, texture.shape[0] // 2, axis=0)
         m[:] = np.roll(m, texture.shape[1] // 2 - block_size // 2, axis=1)
-    texture, seams = patch_horizontal_seam(texture, lookup_texture, seams, gen_args, rng, uicd)
+    texture, seams = patch_horizontal_seam(texture, seams, [lookup_texture], gen_args, rng, uicd)
 
     return texture, seams
