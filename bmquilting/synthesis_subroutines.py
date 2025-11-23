@@ -128,7 +128,8 @@ def find_patch_vx(ref_block_left: np.ndarray | None,
                   ref_block_bottom: np.ndarray | None,
                   lookup_textures: list[np.ndarray] | SharedTextureList,
                   gen_args: GenParams,
-                  rng: np.random.Generator) -> np.ndarray:
+                  rng: np.random.Generator
+                  ) -> np.ndarray:
     """
     Finds the best-matching block across all textures in lookup_textures
     that satisfies the boundary constraints, applying tolerance to the
@@ -140,6 +141,19 @@ def find_patch_vx(ref_block_left: np.ndarray | None,
     # List to store error matrices (Pass 1) or final candidates (Pass 2)
     err_mats: list[np.ndarray | None] = []
     global_min_error = np.inf
+
+    mask = None
+    if gen_args.vignette_on_match_template:
+        mask = patch_blending_vignette(
+            gen_args.block_size, gen_args.overlap,
+            ref_block_left is not None,
+            ref_block_right is not None,
+            ref_block_top is not None,
+            ref_block_bottom is not None
+        ).copy()  # mind that the vignette is cached
+        # invert mask inplace
+        mask *= -1
+        mask += 1
 
     # --- PASS 1: Find the absolute global minimum error ---
     for texture in lookup_textures:
@@ -155,40 +169,48 @@ def find_patch_vx(ref_block_left: np.ndarray | None,
         if ref_block_left is not None:
             blks_diffs.append(cv.matchTemplate(
                 image=texture[:, :-block_size + overlap],
-                templ=ref_block_left[:, -overlap:], method=template_method))
+                templ=ref_block_left[:, -overlap:],
+                method=template_method,
+                mask=mask[:, :overlap] if mask is not None else None
+            ))
         if ref_block_right is not None:
             blks_diffs.append(cv.matchTemplate(
                 image=np.roll(texture, -block_size + overlap, axis=1)[:, :-block_size + overlap],
-                templ=ref_block_right[:, :overlap], method=template_method))
+                templ=ref_block_right[:, :overlap],
+                method=template_method,
+                mask=mask[:, -overlap:] if mask is not None else None
+            ))
         if ref_block_top is not None:
             blks_diffs.append(cv.matchTemplate(
                 image=texture[:-block_size + overlap, :],
-                templ=ref_block_top[-overlap:, :], method=template_method))
+                templ=ref_block_top[-overlap:, :],
+                method=template_method,
+                mask=mask[:overlap, :] if mask is not None else None
+            ))
         if ref_block_bottom is not None:
             blks_diffs.append(cv.matchTemplate(
                 image=np.roll(texture, -block_size + overlap, axis=0)[:-block_size + overlap, :],
-                templ=ref_block_bottom[:overlap, :], method=template_method))
+                templ=ref_block_bottom[:overlap, :],
+                method=template_method,
+                mask=mask[-overlap:, :] if mask is not None else None
+            ))
 
         # Compute combined error matrix for this texture
-        #if not blks_diffs:
-        #    # If no constraints, assume zero error (best case)
-        #    h = texture.shape[0] - block_size + 1
-        #    w = texture.shape[1] - block_size + 1
-        #    err_mat = np.zeros((h, w), dtype=np.float32)
-        #else:
         err_mat = compute_errors(blks_diffs, gen_args.version)
+        err_mat = np.maximum(err_mat, 1e-8)  # clip floor to zero
         err_mats.append(err_mat)
 
         # Update global minimum
         global_min_error = min(global_min_error, np.min(err_mat))
 
     # --- Check for impossible match ---
+    print(f"gme = {global_min_error}")
+
     if global_min_error == np.inf:
-        raise ValueError(
-            "Could not find a suitable patch in any lookup texture (all textures were too small or had matching issues).")
+        raise ValueError("Could not find a suitable patch in any lookup texture "
+                         "(all textures were too small or had matching issues).")
 
     # --- PASS 2: Collect all candidates within the final tolerance window ---
-
     final_candidates: list[tuple[int, int, int]] = []  # (texture_idx, y, x)
     acceptable_error = (1.0 + tolerance) * global_min_error
 

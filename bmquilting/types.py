@@ -79,6 +79,7 @@ class GenParams:
     overlap: num_pixels
     tolerance: percentage
     blend_config: BlendConfig | None
+    vignette_on_match_template: bool   # whether to use the blending vignette as a mask when searching for a matching patch
     version: int
 
     @property
