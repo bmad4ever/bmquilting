@@ -94,6 +94,9 @@ def make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.r
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
         return RETURN_VALUE_WHEN_INTERRUPTED
 
+    # fix overvalues due to seams overlap
+    np.clip(seams_map, 0, 1, out=seams_map)
+
     return texture_map, seams_map
 
 
@@ -106,6 +109,7 @@ def make_seamless_vertically(image: np.ndarray, gen_args: GenParams, rng: np.ran
     if texture is None:
         return RETURN_VALUE_WHEN_INTERRUPTED
     else:
+        # seams should have been already fixed by seamless_horizontal
         return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
 
 
@@ -170,5 +174,8 @@ def patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, l
     update_seams_map_view(seams_map[ys:ye, xs + overlap:xe + overlap], gen_args, patch_weights)
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
         return RETURN_VALUE_WHEN_INTERRUPTED
+
+    # fix overvalues due to seams overlap
+    np.clip(seams_map, 0, 1, out=seams_map)
 
     return texture_to_patch, seams_map

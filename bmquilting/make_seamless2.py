@@ -67,6 +67,9 @@ def seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
     update_seams_map_view(seams_map[:, :overlap], gen_args, left_weights[:, :overlap])
     update_seams_map_view(seams_map[:, block_size - overlap:block_size], gen_args, right_weights[:, -overlap:])
 
+    # fix overvalues due to seams overlap
+    np.clip(seams_map, 0, 1, out=seams_map)
+
     return image, seams_map
 
 
@@ -77,6 +80,7 @@ def seamless_vertical(image: np.ndarray, lookup_texture: np.ndarray,
     if texture is None:
         return RETURN_VALUE_WHEN_INTERRUPTED
     else:
+        # seams should have been already fixed by seamless_horizontal
         return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
 
 
@@ -99,5 +103,8 @@ def seamless_both(image: np.ndarray, lookup_texture: np.ndarray,
         m[:] = np.roll(m, texture.shape[0] // 2, axis=0)
         m[:] = np.roll(m, texture.shape[1] // 2 - block_size // 2, axis=1)
     texture, seams = patch_horizontal_seam(texture, seams, [lookup_texture], gen_args, rng, uicd)
+
+    # fix overvalues due to seams overlap
+    np.clip(seams, 0, 1, out=seams)
 
     return texture, seams
