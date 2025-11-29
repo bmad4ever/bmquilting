@@ -534,7 +534,7 @@ if importlib.util.find_spec("pyastar2d") is not None:
         if to_trim > 0:
             err = err[:, to_trim:-to_trim]
 
-        err = err ** 2  # make penalty func steeper
+        err **= 2  # make penalty func steeper
 
         # scale to integer color range and offset by 1 (works for both RGB and LAB)
         #   this is done so that the distance from 0 to the smallest possible error
