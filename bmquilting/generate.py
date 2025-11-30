@@ -2,7 +2,7 @@ from .synthesis_subroutines import (
     get_find_patch_to_the_right_method, get_find_patch_below_method, get_find_patch_both_method,
     get_min_cut_patch_horizontal_method, get_min_cut_patch_vertical_method, get_min_cut_patch_both_method,
     update_seams_map_view)
-from .types import UiCoordData, GenParams
+from .types import UiCoordData, GenParams, num_pixels
 from .misc.shmem_utils import SharedTextureList
 
 from multiprocessing.shared_memory import SharedMemory
@@ -147,7 +147,7 @@ def fill_quad(rows: int, columns: int, gen_args: GenParams, texture_map, seams_m
 
 
 def generate_texture_parallel(src_textures: list[np.ndarray],
-                              gen_args: GenParams, out_h, out_w, nps,
+                              gen_args: GenParams, out_h: num_pixels, out_w: num_pixels, nps: int,
                               rng: np.random.Generator, uicd: UiCoordData | None):
     """
     @param out_h: output's height in pixels
@@ -608,7 +608,7 @@ def fill_rows_ps(pid: int, job: ParaRowsJobInfo, jobs_events: list, uicd: UiCoor
 
 def generate_texture(src_textures: list[np.ndarray],
                      gen_args: GenParams,
-                     out_h: int, out_w: int,
+                     out_h: num_pixels, out_w: num_pixels,
                      rng: np.random.Generator,
                      uicd: UiCoordData | None):
     """
