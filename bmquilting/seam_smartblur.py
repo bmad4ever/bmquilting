@@ -165,12 +165,8 @@ def adaptive_maximum_filter(
     return result
 
 
-def create_adaptive_blend_mask(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
-                               blend_scale=1.0,
-                               min_blur_diameter=None,
-                               max_blur_diameter=None,
-                               overlap_size=None,
-                               max_blend_ratio=DEFAULT_MAX_BLEND_RATIO,
+def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarray,
+                               blend_config: BlendConfig,
                                dtype=np.uint8):
     """
     Create adaptive blend mask with transition width based on gradient differences.
@@ -179,21 +175,10 @@ def create_adaptive_blend_mask(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
     -----------
     tdiff_map : np.ndarray (H, W)
         Seam gradient difference map (higher values = more difficult transition)
-    mcp_mask_overlap : np.ndarray (H, W)
+    mc_mask_overlap : np.ndarray (H, W)
         Min-cut mask (0 = source side, 1 = patch side)
-    sobel_ksize : int
-        Sobel kernel size used to compute tdiff_map
-    blend_scale : float
-        Exponent for mapping tdiff_map to blend widths (higher = more aggressive)
-    min_blend_width : int or None
-        Minimum blend width in pixels. If None, equals sobel_ksize
-    max_blend_width : int or None
-        Maximum blend width in pixels. If None, scales with sobel_ksize (1.75x)
-        and is capped by max_blend_ratio of overlap_size
-    overlap_size : int or None
-        Side length of the square patch. Used to cap max_blend_width
-    max_blend_ratio : float
-        Maximum blend width as a fraction of patch size (default: 0.2 = 20%)
+    blend_config: BlendConfig
+        Blending params set for the generation, such as the minimum blur diameter.
     dtype : numpy dtype
         Data type of source images (for calculating theoretical max)
 
@@ -201,22 +186,12 @@ def create_adaptive_blend_mask(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
     --------
     np.ndarray (H, W): Blend mask (0 = source, 1 = patch)
     """
-    # Auto-scale blend widths based on Sobel kernel size
-    # Technically they could made be independent, but this is done in order to keep things simple
-    if min_blur_diameter is None:
-        min_blur_diameter = auto_min_blend_size(sobel_ksize)
-
-    if max_blur_diameter is None:
-        max_blur_diameter = _auto_max_blur_diameter(max_blend_ratio, overlap_size, sobel_ksize)
-
-    # Ensure max > min
-    if max_blur_diameter <= min_blur_diameter:
-        max_blur_diameter = min_blur_diameter + 1
+    min_blur_diameter, max_blur_diameter = blend_config.min_blur_diameter, blend_config.max_blur_diameter
 
     # Calculate theoretical maximum (cached)
     # Convert dtype to string for hashable cache key
     dtype_str = np.dtype(dtype).name
-    max_gradient_diff = get_max_possible_gradient_diff(dtype_str, sobel_ksize)
+    max_gradient_diff = get_max_possible_gradient_diff(dtype_str, blend_config.sobel_kernel_size)
 
     # Normalize from 0 to theoretical maximum
     #tdiff_norm = np.clip(tdiff_map / max_gradient_diff, 0, 1, dtype=tdiff_map.dtype)
@@ -224,6 +199,7 @@ def create_adaptive_blend_mask(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
     print(f"max_blend_w = {max_blur_diameter}")
     # normalize & map to func
     # these params are somewhat arbitrary; eyeballing ( <*>__<*>)
+    # TODO func should be an arg, and the currently used func should be plotted in some extra.py for documentation purposes!
     gain = 100.0  # steeper response curve
     top = 1.0 / 2.0  # 1/3 would be when the diffs sum in all channels equals the range
 
@@ -235,32 +211,30 @@ def create_adaptive_blend_mask(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
     np.clip(tdiff_norm, 0, 1, out=tdiff_norm)
 
     # -- DEBUG --
-    cv2.imshow("_tdiff", debug_resize(tdiff_norm / max(1e-8, np.max(tdiff_norm))))
+    #cv2.imshow("_tdiff", debug_resize(tdiff_norm / max(1e-8, np.max(tdiff_norm))))
 
     # Map normalized tdiff values to blend widths
-    blend_diameters = min_blur_diameter + (max_blur_diameter - min_blur_diameter) * (tdiff_norm ** blend_scale)
+    blend_diameters = min_blur_diameter + (max_blur_diameter - min_blur_diameter) * (tdiff_norm ** blend_config.blend_scale)
     max_blur_diameter_found = round(np.max(blend_diameters))
     blend_radii = np.divide(blend_diameters, 2, out=blend_diameters)
 
     print(f"min diam, max diam, overlap, max diam found = {
-    min_blur_diameter, max_blur_diameter, mcp_mask_overlap.shape[1], max_blur_diameter_found}")
+    min_blur_diameter, max_blur_diameter, mc_mask_overlap.shape[1], max_blur_diameter_found}")
 
     #print(f"hey!!!!! {max_blur_diameter_found, min_blur_diameter}")
     if max_blur_diameter_found > min_blur_diameter:  # if they are equal then there is nothing to dilate
         sigma = (min_blur_diameter + 1)/6
         blend_radii = adaptive_maximum_filter(
             radius_map=blend_radii,
-            n_levels=3,  # TODO -> add to blend config if used in final solution!
+            n_levels=blend_config.adaptive_maximum_filter_number_of_levels,
             max_radius=round(max_blur_diameter_found/2),
             overreach=min_blur_diameter//2  # ksize 10
         )
         cv2.GaussianBlur(blend_radii, (0, 0), sigmaX=sigma, sigmaY=sigma, dst=blend_radii)
 
-    cv2.imshow("norm radii layered max-filt.",
-               debug_resize(blend_radii / (max_blur_diameter / 2))
-               )
-
-    mcp_binary = mcp_mask_overlap
+    #cv2.imshow("norm radii layered max-filt.",
+    #           debug_resize(blend_radii / (max_blur_diameter / 2))
+    #           )
 
     # Calculate signed distance from transition line
     # dev note: compared 3 vs cv2.DIST_MASK_PRECISE
@@ -268,8 +242,8 @@ def create_adaptive_blend_mask(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
     #   doesn't seem like something that needs to be further tested
     #   as any minor details will be blured out.
     #   I will choose simples-fastest for now
-    dist_from_source = cv2.distanceTransform((mcp_binary > 0).astype(np.uint8), cv2.DIST_L2, 3)
-    dist_from_patch = cv2.distanceTransform((mcp_binary <= 0).astype(np.uint8), cv2.DIST_L2, 3)
+    dist_from_source = cv2.distanceTransform((mc_mask_overlap > 0).astype(np.uint8), cv2.DIST_L2, 3)
+    dist_from_patch = cv2.distanceTransform((mc_mask_overlap <= 0).astype(np.uint8), cv2.DIST_L2, 3)
     dist_from_patch -= dist_from_source  # compute in place
     signed_distance = dist_from_patch.astype(np.float32)
     cv2.GaussianBlur(signed_distance, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=signed_distance)
@@ -280,8 +254,8 @@ def create_adaptive_blend_mask(tdiff_map, mcp_mask_overlap, sobel_ksize=3,
     #np.clip(t, -8, 8, out=t)  # required to prevent overflows
     blend_mask = 1.0 / (1.0 + np.exp(-5 * t))  # sigmoid func.
 
-    cv2.imshow("t", debug_resize(np.abs(t) / max(np.max(np.abs(t)), 1e-8)))
-    cv2.imshow("blend_mask", debug_resize(blend_mask))
+    #cv2.imshow("t", debug_resize(np.abs(t) / max(np.max(np.abs(t)), 1e-8)))
+    #cv2.imshow("blend_mask", debug_resize(blend_mask))
     #cv2.waitKey()
 
     return blend_mask
@@ -352,7 +326,7 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     # 3. Get the highest difference from both and mask them to only get values near the cut.
 
     # Pre-allocate output arrays for gradients
-    # Determine output shape (handle multi-channel)
+    # Determine output shape (handle multichannel)
     grad_shape = patched_overlap.shape
     assert (source.dtype == np.float32)
     _dtype, ddepth = np.float32, cv2.CV_32F
@@ -422,14 +396,15 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
 
     # Create adaptive blend mask
     blended = create_adaptive_blend_mask(
-        tdiff_map,
-        cut_mask_overlap,
-        sobel_ksize=sobel_ksize,
-        min_blur_diameter=gen_args.blend_config.min_blur_diameter,
-        max_blur_diameter=gen_args.blend_config.max_blur_diameter,
-        blend_scale=gen_args.blend_config.blend_scale,
-        overlap_size=gen_args.overlap,
-        max_blend_ratio=0.15,
+        tdiff_map=tdiff_map,
+        mc_mask_overlap=cut_mask_overlap,
+        blend_config=gen_args.blend_config,
+        #sobel_ksize=sobel_ksize,
+        #min_blur_diameter=gen_args.blend_config.min_blur_diameter,
+        #max_blur_diameter=gen_args.blend_config.max_blur_diameter,
+        #blend_scale=gen_args.blend_config.blend_scale,
+        #overlap_size=gen_args.overlap,
+        #max_blend_ratio=0.15,
         dtype=source.dtype
     )
 

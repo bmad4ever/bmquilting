@@ -61,12 +61,37 @@ class UiCoordData:
 
 @dataclass
 class BlendConfig:
-    use_vignette: bool    # TODO? could add vignette params here, but might be overkill
+    sobel_kernel_size: num_pixels = 3
+    min_blur_diameter: num_pixels = 3
+    max_blur_diameter: num_pixels = 11
 
-    blend_scale: float
-    sobel_kernel_size: num_pixels
-    min_blur_diameter: num_pixels
-    max_blur_diameter: num_pixels
+    use_vignette: bool = True  # TODO? could add vignette params here, but might be overkill
+
+    blend_scale: float = 1
+
+    adaptive_maximum_filter_number_of_levels: int = 3
+    """
+    Purpose: Defines the number of iterations for the adaptive maximum filter used during seam blending.
+
+    Context:
+    1.  Blur Diameter Calculation: When blending a seam, the initial blur diameter is determined based on the **gradient differences** computed near the seam.
+    2.  Diameter Propagation: These initial diameters need to be **propagated** across the texture to determine the correct blend amount for every pixel (i.e., if a pixel's distance to the seam is less than the propagated radius, it needs blending).
+    3.  Adaptive Filter: An **adaptive maximum filter** is used for this propagation/expansion. This filter runs with different kernel sizes across multiple iterations to ensure that locally lower blur diameters aren't overshadowed by higher values during expansion.
+
+    Parameter Effect:
+    This parameter sets the **number of iterations (or levels)** with different kernel sizes that the adaptive maximum filter executes.
+
+    Note on Quantization:
+    The final quantization interval for the diameters is determined by the *min_blur_diameter* and the *maximum diameter found* in the propagation process (it is **not** based on the theoretical possible maximum defined by `max_blur_diameter`).
+    """
+
+    def __post_init__(self):
+        if self.sobel_kernel_size % 2 == 0:
+            raise ValueError(f"{self.sobel_kernel_size=} is invalid, kernel size should be an odd number.")
+
+        if self.max_blur_diameter < self.min_blur_diameter:
+            raise ValueError(f"Invalid range: {self.min_blur_diameter=}"
+                             f" must be less or equal to {self.max_blur_diameter=}")
 
 
 @dataclass
