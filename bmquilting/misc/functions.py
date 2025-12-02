@@ -3,10 +3,10 @@ from abc import abstractmethod, ABC
 
 try:
     from numba import njit
+
     NUMBA_AVAILABLE = True
 except ImportError:
     NUMBA_AVAILABLE = False
-
 
 # ============================================================
 # NUMBA IMPLEMENTATIONS
@@ -14,15 +14,9 @@ except ImportError:
 if NUMBA_AVAILABLE:
     _NJIT_FAST_MATH = True
 
+
     @njit(cache=True, fastmath=_NJIT_FAST_MATH)
     def _nts_no_deadzone_numba_flat(x, k):
-        """
-        NTS without deadzone (in-place on flat array x).
-        Formula:
-            denom = 1 + k*(1 - 2|x|)
-            y_nts = x*(1-k)/denom
-            y = (1 + y_nts)/2
-        """
         eps = 1e-12
         one_minus_k = 1.0 - k
         n = x.size
@@ -58,9 +52,6 @@ if NUMBA_AVAILABLE:
 
     @njit(cache=True, fastmath=_NJIT_FAST_MATH)
     def _nts_with_deadzone_numba_flat(x, k, deadzone, beta):
-        """
-        Correct soft-deadzone NTS (in-place on flat array x).
-        """
         eps = 1e-12
         one_minus_k = 1.0 - k
         one_minus_d = 1.0 - deadzone
@@ -69,7 +60,6 @@ if NUMBA_AVAILABLE:
         for i in range(n):
             xi = x[i]
 
-            # clamp input to [-1,1]
             if xi < -1.0:
                 xi = -1.0
             elif xi > 1.0:
@@ -120,29 +110,19 @@ if NUMBA_AVAILABLE:
 
     @njit(cache=True, fastmath=_NJIT_FAST_MATH)
     def _power_curve_numba_flat(x, p, top):
-        """
-        Flat-array version for Numba.
-        """
-        # Precompute scale
         scale = top ** p
 
         for i in range(x.size):
             v = x[i]
 
-            # clamp input
             if v < 0.0:
                 v = 0.0
             elif v > 1.0:
                 v = 1.0
 
-            # v = v^p
-            # Use fast math-friendly exponentiation
             v = v ** p
-
-            # normalize
             v /= scale
 
-            # clamp to [0,1]
             if v < 0.0:
                 v = 0.0
             elif v > 1.0:
@@ -150,43 +130,71 @@ if NUMBA_AVAILABLE:
 
             x[i] = v
 
+
+    @njit(parallel=True, fastmath=_NJIT_FAST_MATH)
+    def _log1p_transform_numba_flat(x, gain, top):
+        scale = np.log1p(gain * top)
+
+        for i in range(x.size):
+            v = x[i]
+
+            if v < 0.0:
+                v = 0.0
+            elif v > 1.0:
+                v = 1.0
+
+            v *= gain
+            v = np.log1p(v)
+            v /= scale
+
+            if v < 0.0:
+                v = 0.0
+            elif v > 1.0:
+                v = 1.0
+
+            x[i] = v
+
+
 # ============================================================
 # region NUMPY IMPLEMENTATIONS
 # ============================================================
 
 
-def _softplus_numpy(z, beta, out):
+def _softplus_numpy(z: np.ndarray, beta: float, out: np.ndarray):
     """
     Compute out = softplus(z)/beta in-place.
     """
-    pos = z > 40
     neg = z < -40
-    mid = ~(pos | neg)
+    mid = z > 40  # pos
+    mid |= neg    # (pos | neg)
+    mid ^= True   # ~(pos | neg)
 
-    out[pos] = z[pos] / beta
-    out[neg] = np.exp(z[neg]) / beta
-    out[mid] = np.log1p(np.exp(z[mid])) / beta
+    out[:] = z                               # pos = mid = neg = z
+    np.exp(out, out=out, where=(neg | mid))  # mid = neg = exp(z)
+    np.log1p(out, out=out, where=mid)        # mid = log1p(exp(z))
+    out /= beta                              # all divided by beta
 
-
-def _nts_no_deadzone_numpy(x, k):
+def _nts_no_deadzone_numpy(x: np.ndarray, k: float):
     """
     In-place NTS without deadzone.
-    Input x should be roughly in [-1,1], we clamp to be safe.
+    Final values are clipped to [0,1].
+
+    Parameters
+    ----------
+    x : array
+        Input array (modified in-place). Expected domain ~[1,1].
+        The function will clip the input at the start to enforce domain bounds.
     """
     eps = 1e-12
 
-    # clamp x to [-1,1]
-    np.clip(x, -1.0, 1.0, out=x)
-
-    # ax = |x|
-    ax = np.abs(x)
+    np.clip(x, -1.0, 1.0, out=x)  # clamp x to [-1,1]
 
     # denom = 1 + k*(1 - 2|x|)   (in-place)
-    ax *= -2.0
-    ax += 1.0
-    ax *= k
-    ax += 1.0
-    denom = ax
+    denom = np.abs(x)  # |x|
+    denom *= -2.0
+    denom += 1.0
+    denom *= k
+    denom += 1.0
 
     # fix tiny denom in-place
     mask = np.abs(denom) < eps
@@ -200,52 +208,58 @@ def _nts_no_deadzone_numpy(x, k):
     # final mapping
     x += 1.0
     x *= 0.5
-
     np.clip(x, 0.0, 1.0, out=x)
 
 
-def _nts_with_deadzone_numpy(x, k, deadzone, beta):
+def _nts_with_deadzone_numpy(x: np.ndarray, k: float, deadzone: float, beta: float):
     """
-    Correct soft deadzone version, in-place, ND.
+    Soft deadzone version, in-place, ND.
+    Final values are clipped to [0,1].
+
+    Parameters
+    ----------
+    x : array
+        Input array (modified in-place). Expected domain ~[1,1].
+        The function will clip the input at the start to enforce domain bounds.
     """
     eps = 1e-12
 
-    # clamp input domain
-    np.clip(x, -1.0, 1.0, out=x)
+    np.clip(x, -1.0, 1.0, out=x)  # clamp input domain
 
     ax = np.abs(x)
-    t = ax - deadzone     # distance from boundary
+    t = ax - deadzone  # distance from boundary
     z = t * beta
     soft_dist = np.empty_like(z)
 
-    # softplus
     _softplus_numpy(z, beta, out=soft_dist)
 
     # normalize into [0,1]
     u = soft_dist / (1.0 - deadzone)
     np.clip(u, 0.0, 1.0, out=u)
 
-    # x_eff = sign(x)*u
     x_eff = np.sign(x) * u
 
     # compute denom = 1 + k*(1 - 2|x_eff|)
-    ae = np.abs(x_eff)
-    ae *= -2.0
-    ae += 1.0
-    ae *= k
-    ae += 1.0
-    denom = ae
+    denom = np.abs(x_eff)
+    denom *= -2.0
+    denom += 1.0
+    denom *= k
+    denom += 1.0
 
     # fix tiny denom
     mask = np.abs(denom) < eps
     if mask.any():
         denom[mask] = np.copysign(eps, denom[mask])
 
-    # y_nts = x_eff * (1-k)/denom
-    x_nts = x_eff * (1.0 - k) / denom
+    # compute  x_nts = x_eff * (1 - k) / denom
+    x_eff *= (1.0 - k)
+    x_eff /= denom
+    # x_nts = x_eff
 
-    # final mapping
-    x[:] = 0.5 * (1.0 + x_nts)
+    # y = .5 * (1 + x_nts)
+    x[:] = x_eff  # x_nts
+    x += 1.0
+    x *= 0.5
     np.clip(x, 0.0, 1.0, out=x)
 
 
@@ -253,32 +267,40 @@ def _power_curve_numpy(x: np.ndarray, p: float, top: float):
     """
     In-place clipped power curve:
 
-        y = (clip(x, 0, 1)^p) / (top^p)
+        y = (x^p) / (top^p)
         final y is clipped to [0,1]
 
     Parameters
     ----------
     x : array
-        Input array (modified in-place). Expected domain ~[-1,1].
-    p : float
-        Exponent controlling curvature.
-    top : float
-        x-value where y reaches 1 (final clipping applied).
+        Input array (modified in-place). Expected domain ~[0,1].
+        The function will clip the input at the start to enforce domain bounds.
     """
-    # clip input first (in case of numerical drift)
-    np.clip(x, 0.0, 1.0, out=x)
-
-    # compute scaling factor
+    np.clip(x, 0.0, 1.0, out=x)  # clip input first (in case of numerical drift)
     scale = top ** p
-
-    # x = x^p
     np.power(x, p, out=x)
+    x /= scale  # final y
+    np.clip(x, 0.0, 1.0, out=x)  # clip output
 
-    # normalize
-    x /= scale
 
-    # output clamp
-    np.clip(x, 0.0, 1.0, out=x)
+def _log1p_transform_numpy(x: np.ndarray, gain: float, top: float):
+    """
+    In-place clipped power curve:
+
+        y = log1p(gain * x) / log1p(gain * top)
+        final y is clipped to [0,1]
+
+    Parameters
+    ----------
+    x : array
+        Input array (modified in-place). Expected domain ~[0,1].
+        The function will clip the input at the start to enforce domain bounds.
+    """
+    np.clip(x, 0.0, 1.0, out=x)  # clip input first (in case of numerical drift)
+    x *= gain
+    np.log1p(x, out=x)
+    x /= np.log1p(gain * top)  # final y
+    np.clip(x, 0.0, 1.0, out=x)  # clip output
 
 
 # endregion
@@ -296,6 +318,7 @@ class FuncWrapper(ABC):
 
     Child classes should also implement get_label for plotting purposes but not required to use in texture generation.
     """
+
     def func(self, x: np.ndarray) -> np.ndarray:
         x_copy = x.copy()
         self.inplace_func(x_copy)
@@ -325,7 +348,7 @@ class NTSWithSoftDeadzone(FuncWrapper):
 
     @property
     def adjusted_beta(self):
-        return (self.beta+.1) * 80 / self.deadzone
+        return (self.beta + .1) * 80 / self.deadzone
 
     @property
     def beta(self):
@@ -377,7 +400,6 @@ class NTSWithSoftDeadzone(FuncWrapper):
             raise ValueError("k must be in [-0.99, +0.99]")
         self._k = value
 
-    # ======================================================================
 
     def inplace_func(self, x: np.ndarray) -> None:
         """
@@ -388,7 +410,6 @@ class NTSWithSoftDeadzone(FuncWrapper):
 
         self._impl(x)
 
-    # ======================================================================
 
     def get_label(self) -> str:
         dz = self.deadzone
@@ -432,7 +453,6 @@ class PowerCurve(FuncWrapper):
 
         # Choose implementation
         if NUMBA_AVAILABLE:
-            # Numba version works on flat array → ravel()
             self._impl = lambda arr: _power_curve_numba_flat(arr.ravel(), self.p, self.top)
         else:
             self._impl = lambda arr: _power_curve_numpy(arr, self.p, self.top)
@@ -457,15 +477,23 @@ class LogScalingFunc(FuncWrapper):
     """Defines the maximum input for the normalizer"""
 
     def __init__(self, gain: float = 100.0, top: float = .5):
-        self.gain = gain
-        self.top = top
+        if top <= 0.0 or top > 1.0:
+            raise ValueError("top must be in the interval (0, 1].")
 
-    def inplace_func(self, x: np.ndarray) -> None:
-        # TODO missing numba impl
-        x *= self.gain
-        np.log1p(x, out=x)
-        x /= np.log1p(self.gain * self.top)
-        np.clip(x, 0.0, 1.0, out=x)
+        self.gain = float(gain)
+        self.top = float(top)
+
+        # Choose implementation
+        if NUMBA_AVAILABLE:
+            self._impl = lambda arr: _log1p_transform_numba_flat(arr.ravel(), self.gain, self.top)
+        else:
+            self._impl = lambda arr: _log1p_transform_numpy(arr, self.gain, self.top)
+
+    def inplace_func(self, x: np.ndarray):
+        if not x.flags["C_CONTIGUOUS"]:
+            raise ValueError("Input array must be C-contiguous for in-place transform.")
+
+        self._impl(x)
 
     def get_label(self) -> str:
         return f'Log Scaling (Gain={self.gain:.2f}, Top={self.top:.2f})'
