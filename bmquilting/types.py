@@ -1,8 +1,10 @@
 from multiprocessing.shared_memory import SharedMemory
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TypeAlias
 from enum import Enum
 import numpy as np
+
+from .misc.functions import FuncWrapper, LogScalingFunc, TwoNTS
 
 num_pixels: TypeAlias = int
 percentage: TypeAlias = float
@@ -67,22 +69,67 @@ class BlendConfig:
 
     use_vignette: bool = True  # TODO? could add vignette params here, but might be overkill
 
-    blend_scale: float = 1
+    blend_scale: float = 1  # TODO... likely to be removed
+
+    blur_size_func: FuncWrapper = field(default_factory=LogScalingFunc)
+    """
+    Function used to remap the Normalized Gradient Differences (NGDs) computed around the seam.
+
+    The remapped values remain within the interval [0, 1], as they are used to 
+    interpolate between the minimum and maximum blur diameters. This remapping 
+    introduces a non-linear relationship between the blur size and the NGDs.
+
+    Note:
+        NGDs are normalized with respect to the theoretical maximum possible value 
+        for the given kernel size used to compute the gradients.
+
+    Default Behavior:
+        The `LogScalingFunc` is used with `gain=100` and `top=0.5`.
+
+        - Setting `top=0.5` ensures the function reaches 1 (the maximum blur radius) 
+        when the NGD value is half of its theoretical maximum.
+        - Setting `gain=100` makes the function concave, steep at the start, meaning 
+        the blur radius increases quickly for small gradients and more slowly as 
+        it approaches the top.
+    """
+
+    blur_shape_func: FuncWrapper = field(default_factory=TwoNTS)
+    """
+    Function used to shape the transition curve when blending two patches (e.g., in a multi-patch surface).
+
+    This function maps the **signed distance to the seam** to an **interpolation weight** 
+    (ranging from 0 to 1) used for blending. It determines how the two patches transition 
+    within the specified blur area, influencing the resulting smoothness or sharp change.
+
+    Default Behavior: 
+        The `TwoNTS` (Two-NormalizedTunableSigmoid) is used with `k=-0.5`.
+
+        The resulting curve shape is composed of **two scaled sigmoid-like curves** that meet 
+        smoothly near the seam (where the distance is zero).
+        Visual Analogy: The transition resembles two gentle "hills" meeting at their bases, 
+        providing a very smooth, Gaussian-kernel-like transition rather than a simple linear ramp. 
+        This makes the blending effect strongest *at* the seam and rapidly decreases away from it.
+    """
 
     adaptive_maximum_filter_number_of_levels: int = 3
     """
-    Purpose: Defines the number of iterations for the adaptive maximum filter used during seam blending.
+    This parameter sets the **number of iterations (or levels)** with different kernel sizes 
+        that the adaptive maximum filter executes when computing the blur diameters.
 
     Context:
-    1.  Blur Diameter Calculation: When blending a seam, the initial blur diameter is determined based on the **gradient differences** computed near the seam.
-    2.  Diameter Propagation: These initial diameters need to be **propagated** across the texture to determine the correct blend amount for every pixel (i.e., if a pixel's distance to the seam is less than the propagated radius, it needs blending).
-    3.  Adaptive Filter: An **adaptive maximum filter** is used for this propagation/expansion. This filter runs with different kernel sizes across multiple iterations to ensure that locally lower blur diameters aren't overshadowed by higher values during expansion.
-
-    Parameter Effect:
-    This parameter sets the **number of iterations (or levels)** with different kernel sizes that the adaptive maximum filter executes.
+    1.  Blur Diameter Calculation: When blending a seam, the initial blur diameter is determined 
+        based on the **gradient differences** computed near the seam.
+    2.  Diameter Propagation: These initial diameters need to be **propagated** across the texture to 
+        determine the correct blend amount for every pixel (i.e., if a pixel's distance to the seam is 
+        less than the propagated radius, it needs blending).
+    3.  Adaptive Filter: An **adaptive maximum filter** is used for this propagation/expansion. 
+        This filter runs with different kernel sizes across multiple iterations to ensure that locally 
+        lower blur diameters aren't overshadowed by higher values during expansion.
 
     Note on Quantization:
-    The final quantization interval for the diameters is determined by the *min_blur_diameter* and the *maximum diameter found* in the propagation process (it is **not** based on the theoretical possible maximum defined by `max_blur_diameter`).
+        The final quantization interval for the diameters is determined by the *min_blur_diameter* 
+        and the *maximum diameter found* in the propagation process (it is **not** based on the 
+        theoretical possible maximum defined by `max_blur_diameter`).
     """
 
     def __post_init__(self):
@@ -104,7 +151,7 @@ class GenParams:
     overlap: num_pixels
     tolerance: percentage
     blend_config: BlendConfig | None
-    vignette_on_match_template: bool   # whether to use the blending vignette as a mask when searching for a matching patch
+    vignette_on_match_template: bool  # whether to use the blending vignette as a mask when searching for a matching patch
     version: int
 
     @property
@@ -118,3 +165,4 @@ class GenParams:
     @property
     def bot(self):
         return self.block_size, self.overlap, self.tolerance
+

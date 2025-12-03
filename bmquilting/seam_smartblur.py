@@ -193,27 +193,17 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     dtype_str = np.dtype(dtype).name
     max_gradient_diff = get_max_possible_gradient_diff(dtype_str, blend_config.sobel_kernel_size)
 
-    # Normalize from 0 to theoretical maximum
-    #tdiff_norm = np.clip(tdiff_map / max_gradient_diff, 0, 1, dtype=tdiff_map.dtype)
-    # --- 2. Normalize tdiff map (robustly) ---
-    print(f"max_blend_w = {max_blur_diameter}")
-    # normalize & map to func
-    # these params are somewhat arbitrary; eyeballing ( <*>__<*>)
-    # TODO func should be an arg, and the currently used func should be plotted in some extra.py for documentation purposes!
-    gain = 100.0  # steeper response curve
-    top = 1.0 / 2.0  # 1/3 would be when the diffs sum in all channels equals the range
+    # --- 2. Normalize & map to func ---
+    tdiff_norm = tdiff_map / max_gradient_diff  # normalize
 
-    tdiff_norm = tdiff_map / max_gradient_diff
-    # compute the following: np.clip(np.log1p(tdiff_norm * gain) / np.log1p(gain * top), 0, 1)
-    tdiff_norm *= gain
-    np.log1p(tdiff_norm, out=tdiff_norm)
-    tdiff_norm /= np.log1p(gain * top)
-    np.clip(tdiff_norm, 0, 1, out=tdiff_norm)
+    # adjusts values instead of using a linear relationship
+    # the function in blend_config SHOULD clip the final values in the [0, 1] range
+    blend_config.blur_size_func.inplace_func(tdiff_norm)
 
     # -- DEBUG --
     #cv2.imshow("_tdiff", debug_resize(tdiff_norm / max(1e-8, np.max(tdiff_norm))))
 
-    # Map normalized tdiff values to blend widths
+    # Map tdiff values to blend widths
     blend_diameters = min_blur_diameter + (max_blur_diameter - min_blur_diameter) * (tdiff_norm ** blend_config.blend_scale)
     max_blur_diameter_found = round(np.max(blend_diameters))
     blend_radii = np.divide(blend_diameters, 2, out=blend_diameters)
@@ -221,7 +211,6 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     print(f"min diam, max diam, overlap, max diam found = {
     min_blur_diameter, max_blur_diameter, mc_mask_overlap.shape[1], max_blur_diameter_found}")
 
-    #print(f"hey!!!!! {max_blur_diameter_found, min_blur_diameter}")
     if max_blur_diameter_found > min_blur_diameter:  # if they are equal then there is nothing to dilate
         sigma = (min_blur_diameter + 1)/6
         blend_radii = adaptive_maximum_filter(
@@ -251,10 +240,14 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     # Create smooth transition using sigmoid function
     t = signed_distance / blend_radii  # min should be min_diameter, never zero
     cv2.GaussianBlur(t, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=t)
-    #np.clip(t, -8, 8, out=t)  # required to prevent overflows
-    blend_mask = 1.0 / (1.0 + np.exp(-5 * t))  # sigmoid func.
 
     #cv2.imshow("t", debug_resize(np.abs(t) / max(np.max(np.abs(t)), 1e-8)))
+
+    # compute blend_mask in place
+    # input and output clipping should be handled by the function
+    blend_config.blur_shape_func.inplace_func(t)
+    blend_mask = t
+
     #cv2.imshow("blend_mask", debug_resize(blend_mask))
     #cv2.waitKey()
 
@@ -399,12 +392,6 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
         tdiff_map=tdiff_map,
         mc_mask_overlap=cut_mask_overlap,
         blend_config=gen_args.blend_config,
-        #sobel_ksize=sobel_ksize,
-        #min_blur_diameter=gen_args.blend_config.min_blur_diameter,
-        #max_blur_diameter=gen_args.blend_config.max_blur_diameter,
-        #blend_scale=gen_args.blend_config.blend_scale,
-        #overlap_size=gen_args.overlap,
-        #max_blend_ratio=0.15,
         dtype=source.dtype
     )
 
