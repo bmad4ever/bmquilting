@@ -1,5 +1,6 @@
 import numpy as np
 from abc import abstractmethod, ABC
+from dataclasses import dataclass
 
 try:
     from numba import njit
@@ -285,7 +286,7 @@ def _power_curve_numpy(x: np.ndarray, p: float, top: float):
 
 def _log1p_transform_numpy(x: np.ndarray, gain: float, top: float):
     """
-    In-place clipped power curve:
+    In-place logarithmic rescaling:
 
         y = log1p(gain * x) / log1p(gain * top)
         final y is clipped to [0,1]
@@ -329,26 +330,47 @@ class FuncWrapper(ABC):
         pass
 
 
-class NTSWithSoftDeadzone(FuncWrapper):
+class NormalizedTunableSigmoid(FuncWrapper):
     """
-    Normalized Tunable Sigmoid (NTS) with soft deadzone, in-place on ND arrays.
-    credits: https://dhemery.github.io/DHE-Modules/technical/sigmoid/
+    Normalized Tunable Sigmoid (NTS) with optional soft deadzone, in-place on ND arrays.
 
+    Parameters
+    ----------
+    k : float
+        Controls the overall shape of the function.
+        Positive values make the graph 'N' shaped.
+        Negative values make the graph 'S' shaped.
+        Default value is -0.5.
+
+    deadzone : float
+        Defines the size of the dead-zone (where y is fixed) around x=0.5.
+        **IMPORTANT: setting deadzone to zero or a negative value selects a faster function variant.**
+        Default value is 0.0, meaning that dead-zone is ignored.
+
+    beta: float
+        Controls how soft/hard does the function blend into the dead-zone.
+        Only applicable for positive dead-zone values.
+        Default value is 0.5.
+
+    Notes
+    -----
     - Supports Numba (flat memory) or NumPy fallback
     - k ∈ [-0.99, 0.99]
     - Input clamped to [-1,1]
     - Output always in [0,1]
-    - deadzone=0 auto-selects fast path
     """
 
-    def __init__(self, k=0.5, deadzone=0.2, beta=0.5):
+    def __init__(self, k=-0.5, deadzone=0.0, beta=0.5):
         self.k = float(k)
         self.beta = float(beta)
         self.deadzone = float(deadzone)  # uses setter
 
     @property
     def adjusted_beta(self):
-        return (self.beta + .1) * 80 / self.deadzone
+        if self.deadzone <= 0:
+            return 0  # ignore
+        # eyeballed, so it behaves somewhat better within "expected" ranges
+        return (self.beta + .1) * 70 * (1.0 + 7.0*(1-self.deadzone)**2.7) * (1.0 + .5*((1-self.k)/2)**2)
 
     @property
     def beta(self):
@@ -357,8 +379,8 @@ class NTSWithSoftDeadzone(FuncWrapper):
     @beta.setter
     def beta(self, value):
         value = float(value)
-        if not 0.0 <= value <= 1.0:
-            raise ValueError("beta must be in [0, 1]")
+        #if not 0.0 <= value <= 1.0:
+        #    raise ValueError("beta must be in [0, 1]")
         self._beta = value
 
     @property
@@ -400,16 +422,11 @@ class NTSWithSoftDeadzone(FuncWrapper):
             raise ValueError("k must be in [-0.99, +0.99]")
         self._k = value
 
-
     def inplace_func(self, x: np.ndarray) -> None:
-        """
-        In-place transform on any ND C-contiguous array.
-        """
         if not x.flags["C_CONTIGUOUS"]:
             raise ValueError("Input array must be C-contiguous.")
 
         self._impl(x)
-
 
     def get_label(self) -> str:
         dz = self.deadzone
@@ -422,7 +439,7 @@ class PowerCurve(FuncWrapper):
     """
     Power-curve mapping in [0,1]:
 
-        y = (clip(x, 0,1)^p) / (top^p)
+        y = (x^p) / (top^p)
         y is clamped into [0,1].
 
     Parameters
@@ -468,7 +485,18 @@ class PowerCurve(FuncWrapper):
 
 
 class LogScalingFunc(FuncWrapper):
-    """Computes log1p(x * gain) / log1p(gain * top), clipped to [0, 1]."""
+    """
+    Logarithmic Rescaling in [0, 1]:
+
+        y = log1p(gain * x) / log1p(gain * top)
+        final y is clipped to [0,1]
+
+    Notes
+    -----
+    - Computation is performed fully in-place.
+    - If Numba is available, a faster JIT version is used.
+    - Input x values are clamped to [0,1] before the transformation.
+    """
 
     gain: float
     """Controls the steepness of the curve"""
@@ -497,3 +525,133 @@ class LogScalingFunc(FuncWrapper):
 
     def get_label(self) -> str:
         return f'Log Scaling (Gain={self.gain:.2f}, Top={self.top:.2f})'
+
+
+@dataclass
+class FuncParams:
+    func_wrapper: FuncWrapper
+    input_scaling: float = 1.0
+    input_offset: float = 0.0
+    """ applied post scaling """
+    output_scaling: float = 1.0
+    output_offset: float = 0.0
+    """ applied post scaling """
+
+    def apply_input_transform(self, x: np.ndarray) -> np.ndarray:
+        """Applies the input scaling and offset: y = x * scale + offset"""
+        return x * self.input_scaling + self.input_offset
+
+    def apply_input_transform_inplace(self, x: np.ndarray) -> np.ndarray:
+        """Applies the input scaling and offset IN-PLACE: y = x * scale + offset"""
+        x *= self.input_scaling
+        x += self.input_offset
+
+    def apply_output_transform(self, y: np.ndarray) -> np.ndarray:
+        """Applies the output scaling and offset: z = y * scale + offset"""
+        return y * self.output_scaling + self.output_offset
+
+    def apply_output_transform_inplace(self, y: np.ndarray) -> None:
+        """Applies the output scaling and offset IN-PLACE: y = y * scale + offset"""
+        y *= self.output_scaling
+        y += self.output_offset
+
+
+class FuncSum(FuncWrapper):   # could be more generic, but would be overkill rn
+    """
+    A FuncWrapper that computes the sum of two underlying function's outputs,
+    each with independent input and output scaling/offset transforms.
+
+    The computation is:
+    result = [ (f1(x * s1_in + o1_in) * s1_out + o1_out) ] +
+             [ (f2(x * s2_in + o2_in) * s2_out + o2_out) ]
+
+    It prioritizes using f2's in-place method to minimize memory allocation
+    for the final sum operation.
+    """
+
+    func_params_1: FuncParams
+    func_params_2: FuncParams
+
+    def __init__(self,
+                 func_params_1: FuncParams,
+                 func_params_2: FuncParams):
+        """
+        Initializes the FuncSum with the parameters for the two constituent functions.
+
+        Args:
+            func_params_1: Configuration for the first function (f1).
+            func_params_2: Configuration for the second function (f2).
+        """
+        self.func_params_1 = func_params_1
+        self.func_params_2 = func_params_2
+
+    def inplace_func(self, x: np.ndarray) -> None:
+        """
+        Computes the sum of the two transformed function outputs, storing the result
+        in the input array 'x' (inplace).
+
+        The calculation order is optimized to use f2's in-place capability:
+        1. Calculate f1_y (out-of-place) and store it.
+        2. Calculate f2_y (in-place in x).
+        3. Add the stored f1_y to x.
+
+        Args:
+            x: The input numpy array (np.ndarray). This array will be overwritten
+               with the final sum result.
+        """
+        p1 = self.func_params_1
+        p2 = self.func_params_2
+
+        # f1_y (out-of-place)
+        x_p1 = p1.apply_input_transform(x)
+        y_p1 = p1.func_wrapper.func(x_p1)  # Assume func() is out-of-place
+        f1_y_transformed = p1.apply_output_transform(y_p1)
+
+        # f2_y (in-place in x)
+        p2.apply_input_transform_inplace(x)
+        p2.func_wrapper.inplace_func(x)
+        p2.apply_output_transform_inplace(x)
+
+        # add f1_y
+        x += f1_y_transformed
+
+
+class TwoNTS(FuncSum):
+    """
+    FuncSum composed of 2 scaled and offset NTS functions (without dead-zones).
+    Input clipped to  [-1, 1] post input scaling & offset.
+    Output clipped to [ 0, 1] prior to output scaling & offset.
+    """
+
+    def __init__(self, k: float = -0.5):
+        nts = NormalizedTunableSigmoid(k=k)
+        func_params_1 = FuncParams(
+            func_wrapper  = nts,
+            input_scaling = +2.0,
+            input_offset  = +1.0,
+            output_scaling= +0.5,
+            output_offset = +0.0
+        )
+        func_params_2 = FuncParams(
+            func_wrapper  = nts,
+            input_scaling = +2.0,
+            input_offset  = -1.0,
+            output_scaling= +0.5,
+            output_offset = +0.0
+        )
+        super().__init__(func_params_1, func_params_2)
+
+
+    @property
+    def k(self):
+        return self.func_params_1.func_wrapper.k
+
+    @k.setter
+    def k(self, value):
+        self.func_params_1.func_wrapper.k = value  # should change func 2 too since is the same object
+
+    def inplace_func(self, x: np.ndarray):
+        super().inplace_func(x)
+
+    def get_label(self) -> str:
+        return f"2NTS (k={self.k})"
