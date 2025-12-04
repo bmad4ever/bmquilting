@@ -65,9 +65,15 @@ def fill_column(lookup_textures: list[np.ndarray]|SharedTextureList,
     block_size = initial_block.shape[0]
     overlap = gen_args.overlap
 
+    # TODO set this up later to avoid fetching the texture
+    #if isinstance(lookup_textures, SharedTextureList):
+    #    shape, dtype = lookup_textures.metadata.global_number_of_channels, lookup_textures.metadata.global_dtype
+    #else:
+    #    shape, dtype = lookup_textures[0].shape, lookup_textures[0].dtype
+
     image = lookup_textures[0]
-    texture_map = np.zeros(
-        ((block_size + rows * (block_size - overlap)), block_size, image.shape[2])).astype(image.dtype)
+    texture_map = np.empty(
+        ((block_size + rows * (block_size - overlap)), block_size, image.shape[2]), dtype=image.dtype)
     texture_map[:block_size, :block_size, :] = initial_block
     del image
 
@@ -81,6 +87,7 @@ def fill_column(lookup_textures: list[np.ndarray]|SharedTextureList,
 
         seams_map_view = seams_map[blk_idx:(blk_idx + block_size), :block_size]
         update_seams_map_view(seams_map_view, gen_args, patch_weights)
+
     return texture_map, seams_map
 
 
@@ -240,8 +247,8 @@ def generate_texture_parallel(src_textures: list[np.ndarray],
         tq1, tq2, tq3, tq4 = text_quads
         sq1, sq2, sq3, sq4 = smap_quads
 
-        texture = np.empty((tq1.shape[0] * 2 - block_size, tq1.shape[1] * 2 - block_size, num_channels)).astype(src_dtype)
-        seams_map = np.empty((texture.shape[0], texture.shape[1])).astype(src_dtype)
+        texture = np.empty((tq1.shape[0] * 2 - block_size, tq1.shape[1] * 2 - block_size, num_channels), dtype=src_dtype)
+        seams_map = np.empty((texture.shape[0], texture.shape[1]), dtype=vis.dtype)
 
         bmo = block_size - overlap
         texture[:tq1.shape[0] - bmo, :tq1.shape[1] - bmo] = tq1[:tq1.shape[0] - bmo, :tq1.shape[1] - bmo]
@@ -281,10 +288,11 @@ def _allocate_arrays(h: int, w: int, channels: int, dtype: np.dtype, use_shm: bo
         shm_smap = SharedMemory(create=True, size=num_pixels * np.float32().itemsize)
         texture = np.ndarray((h, w, channels), dtype=dtype, buffer=shm_text.buf)
         seams_map = np.ndarray((h, w), dtype=np.float32, buffer=shm_smap.buf)
+        seams_map[:] = 0
         return texture, seams_map, shm_text, shm_smap
     else:
         texture = np.empty((h, w, channels), dtype=dtype)
-        seams_map = np.empty((h, w), dtype=np.float32)
+        seams_map = np.zeros((h, w), dtype=np.float32)
         return texture, seams_map, None, None
 
 
