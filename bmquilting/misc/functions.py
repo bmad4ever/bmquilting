@@ -132,7 +132,7 @@ if NUMBA_AVAILABLE:
             x[i] = v
 
 
-    @njit(parallel=True, fastmath=_NJIT_FAST_MATH)
+    @njit(cache=True, fastmath=_NJIT_FAST_MATH)
     def _log1p_transform_numba_flat(x, gain, top):
         scale = np.log1p(gain * top)
 
