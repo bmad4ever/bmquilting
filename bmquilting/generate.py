@@ -120,13 +120,14 @@ def fill_row(lookup_textures: list[np.ndarray]|SharedTextureList,
 def fill_quad(rows: int, columns: int, gen_args: GenParams, texture_map, seams_map,
               lookup_textures: list[np.ndarray]|SharedTextureList,
               rng: np.random.Generator, uicd: UiCoordData | None):
+    """Requires the 1st row and column of blocks to be already filled"""
     find_patch_both = get_find_patch_both_method(gen_args.version)
     get_min_cut_patch = get_min_cut_patch_both_method(gen_args.version)
     block_size, overlap = gen_args.bo
 
     for i in range(1, rows + 1):
+        blk_index_i = i * (block_size - overlap)
         for j in range(1, columns + 1):
-            blk_index_i = i * (block_size - overlap)
             blk_index_j = j * (block_size - overlap)
             ref_block_left = texture_map[
                              blk_index_i:(blk_index_i + block_size),
@@ -144,6 +145,56 @@ def fill_quad(rows: int, columns: int, gen_args: GenParams, texture_map, seams_m
             update_seams_map_view(seams_map_view, gen_args, patch_weights)
 
         if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(columns):
+            break
+    return texture_map, seams_map
+
+
+def fill_quad_2(rows: int, columns: int, gen_args: GenParams, texture_map, seams_map,
+              lookup_textures: list[np.ndarray]|SharedTextureList,
+              rng: np.random.Generator, uicd: UiCoordData | None):
+    """
+        Only requires the first Row already filled.
+        A "purist" solution, where there is no apriori column generation.
+    """
+    find_patch_below = get_find_patch_below_method(gen_args.version)
+    get_min_cut_v = get_min_cut_patch_vertical_method(gen_args.version)
+    find_patch_both = get_find_patch_both_method(gen_args.version)
+    get_min_cut_b = get_min_cut_patch_both_method(gen_args.version)
+    block_size, overlap = gen_args.bo
+
+    for i in range(1, rows + 1):
+        blk_index_i = i * (block_size - overlap)
+
+        ref_block_top = texture_map[
+                        (blk_index_i - block_size + overlap):(blk_index_i + overlap), :block_size]
+
+        patch_block = find_patch_below(ref_block_top, lookup_textures, gen_args, rng)
+        min_cut_patch, patch_weights = get_min_cut_v(ref_block_top, patch_block, gen_args)
+
+        texture_map[blk_index_i:(blk_index_i + block_size), :block_size] = min_cut_patch
+
+        seams_map_view = seams_map[blk_index_i:(blk_index_i + block_size), :block_size]
+        update_seams_map_view(seams_map_view, gen_args, patch_weights)
+
+        for j in range(1, columns + 1):
+            blk_index_j = j * (block_size - overlap)
+            print(blk_index_i, blk_index_j)
+            ref_block_left = texture_map[
+                             blk_index_i:(blk_index_i + block_size),
+                             (blk_index_j - block_size + overlap):(blk_index_j + overlap)]
+            ref_block_top = texture_map[
+                            (blk_index_i - block_size + overlap):(blk_index_i + overlap),
+                            blk_index_j:(blk_index_j + block_size)]
+
+            patch_block = find_patch_both(ref_block_left, ref_block_top, lookup_textures, gen_args, rng)
+            min_cut_patch, patch_weights = get_min_cut_b(ref_block_left, ref_block_top, patch_block, gen_args)
+
+            texture_map[blk_index_i:(blk_index_i + block_size), blk_index_j:(blk_index_j + block_size)] = min_cut_patch
+
+            seams_map_view = seams_map[blk_index_i:(blk_index_i + block_size), blk_index_j:(blk_index_j + block_size)]
+            update_seams_map_view(seams_map_view, gen_args, patch_weights)
+
+        if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(columns + 1):
             break
     return texture_map, seams_map
 
@@ -274,6 +325,7 @@ def generate_texture_parallel(src_textures: list[np.ndarray],
             shm_txt_list.release()
 
 # region    sub-routines for quadX functions
+
 
 def _allocate_arrays(h: int, w: int, channels: int, dtype: np.dtype, use_shm: bool):
     """
@@ -653,13 +705,8 @@ def generate_texture(src_textures: list[np.ndarray],
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w):
         return None
 
-    # fill 1st column
-    texture_map[:, :block_size], seams_map[:, :block_size] = fill_column(src_textures, start_block, gen_args, n_h, rng)
-    if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_h):
-        return None
-
     # fill the rest
-    texture_map, seams_map = fill_quad(n_h, n_w, gen_args, texture_map, seams_map, src_textures, rng, uicd)
+    texture_map, seams_map = fill_quad_2(n_h, n_w, gen_args, texture_map, seams_map, src_textures, rng, uicd)
 
     # fix overvalues due to seams overlap
     np.clip(seams_map, 0, 1, out=seams_map)
