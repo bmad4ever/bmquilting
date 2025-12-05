@@ -86,7 +86,7 @@ def fill_column_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray
     get_min_cut_patch = get_min_cut_patch_vertical_method(gen_args.version)
     b, o = gen_args.block_size, gen_args.overlap
 
-    for blk_idx in range((b - o), texture_map_view.shape[0] - o, (b - o)):
+    for blk_idx in range((b - o), texture_map_view.shape[0] - b + 1, (b - o)):
         ref_block = texture_map_view[(blk_idx - b + o):(blk_idx + o), :b]
         patch_block = find_patch_below(ref_block, lookup_textures, gen_args, rng)
         min_cut_patch, patch_weights = get_min_cut_patch(ref_block, patch_block, gen_args)
@@ -121,7 +121,7 @@ def fill_row_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
     get_min_cut_patch = get_min_cut_patch_horizontal_method(gen_args.version)
     b, o = gen_args.block_size, gen_args.overlap
 
-    for blk_idx in range((b - o), texture_map_view.shape[1] - o, (b - o)):
+    for blk_idx in range((b - o), texture_map_view.shape[1] - b + 1, (b - o)):
         ref_block = texture_map_view[:b, (blk_idx - b + o):(blk_idx + o)]
         patch_block = find_patch_to_the_right(ref_block, lookup_textures, gen_args, rng)
         min_cut_patch, patch_weights = get_min_cut_patch(ref_block, patch_block, gen_args)
@@ -678,7 +678,7 @@ def fill_rows_ps(pid: int, job: ParaRowsJobInfo, jobs_events: list, uicd: UiCoor
 
 # endregion     parallel solution
 
-# region    non-parallel solution adapted from jena2020 for node compliance & error function optionality
+# region    non-parallel solutions
 
 
 def generate_texture(src_textures: list[np.ndarray],
@@ -728,5 +728,91 @@ def generate_texture(src_textures: list[np.ndarray],
 
     # crop to final size
     return texture_map[:out_h, :out_w], seams_map[:out_h, :out_w]
+
+
+def generate_texture_diagonal(src_textures: list[np.ndarray],
+                              gen_args: GenParams,
+                              out_h: num_pixels, out_w: num_pixels,
+                              rng: np.random.Generator,
+                              uicd: UiCoordData | None):
+    """
+        I've wondered if going diagonally with an overlap sized offset while covering the corners shared by 4 patches
+         could improve the generation quality, and perhaps help avoid "loose" seams.
+        For the most part doesn't seem to make that big of a difference.
+    """
+    b, o = gen_args.block_size, gen_args.overlap
+    assert o * 2 < b
+
+    bm2o = b - 2 * o
+    _n_h = n_h = ceil(out_h / bm2o)
+    _n_w = n_w = ceil(out_w / bm2o)
+    if out_h % bm2o <= o:
+        _n_h -= 1
+    if out_w % bm2o <= o:
+        _n_w -= 1
+
+    n_d = min(_n_h, _n_w)  # number of diagonal iterations
+
+    # select random image for the starting block
+    image = src_textures[rng.integers(len(src_textures))]
+
+    # texture needs to be generated w/ an overlap sized offset due to the auxiliary functions receiving a block sized
+    #  patch instead of just the overlap section
+    # mind that we need to over-estimate the size of the texture to make room for the adjacent patches to be filled
+    # in rows that may not be aligned
+    texture_map = np.empty((o + b*2 + n_h*bm2o, o + b*2 + n_w*bm2o, image.shape[2]), dtype=image.dtype)
+    seams_map = np.zeros(texture_map.shape[:2], dtype=np.float32)
+
+    # Starting index and block
+    h, w = image.shape[:2]
+    rand_h = rng.integers(h - b)
+    rand_w = rng.integers(w - b)
+
+    start_block = image[rand_h:rand_h + b, rand_w:rand_w + b]
+    texture_map[o:o + b, o:o + b, :] = start_block
+
+    # --- generation ----
+    d_ixd = o  # texture offset ( both for x & y )
+
+    # fill the 1st row & column
+    fill_row_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_textures, gen_args, rng)
+    fill_column_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_textures, gen_args, rng)
+
+    # fill the rest iterating diagonally
+    find_patch = get_find_patch_both_method(gen_args.version)
+    find_cut = get_min_cut_patch_both_method(gen_args.version)
+    for d in range(1, n_d):
+        d_ixd += bm2o
+
+        ref_block_left = texture_map[d_ixd:(d_ixd + b), (d_ixd - b + o):(d_ixd + o)]
+        ref_block_top = texture_map[(d_ixd - b + o):(d_ixd + o), d_ixd:(d_ixd + b)]
+
+        patch_block = find_patch(ref_block_left, ref_block_top, src_textures, gen_args, rng)
+        min_cut_patch, patch_weights = find_cut(ref_block_left, ref_block_top, patch_block, gen_args)
+        texture_map[d_ixd:d_ixd + b, d_ixd:d_ixd + b] = min_cut_patch
+        seams_map_view = seams_map[d_ixd:d_ixd + b, d_ixd:d_ixd + b]
+        update_seams_map_view(seams_map_view, gen_args, patch_weights)
+
+        # columns
+        for blk_idx in range(d_ixd+b-o, texture_map.shape[1] - b + 1, (b - o)):
+            ref_block_left = texture_map[d_ixd:d_ixd + b, blk_idx - b + o:blk_idx + o]
+            ref_block_top = texture_map[d_ixd-b+o:d_ixd+o, blk_idx:blk_idx + b]
+            patch_block = find_patch(ref_block_left, ref_block_top, src_textures, gen_args, rng)
+            min_cut_patch, patch_weights = find_cut(ref_block_left, ref_block_top, patch_block, gen_args)
+            texture_map[d_ixd:d_ixd+b, blk_idx:blk_idx + b] = min_cut_patch
+            seams_map_view = seams_map[d_ixd:d_ixd+b, blk_idx:blk_idx + b]
+            update_seams_map_view(seams_map_view, gen_args, patch_weights)
+
+        # rows
+        for blk_idx in range(d_ixd+b-o, texture_map.shape[0] - b + 1, (b - o)):
+            ref_block_left = texture_map[blk_idx:blk_idx+b, d_ixd-b+o:d_ixd+o]
+            ref_block_top = texture_map[blk_idx-b+o:blk_idx+o, d_ixd:d_ixd+b]
+            patch_block = find_patch(ref_block_left, ref_block_top, src_textures, gen_args, rng)
+            min_cut_patch, patch_weights = find_cut(ref_block_left, ref_block_top, patch_block, gen_args)
+            texture_map[blk_idx:blk_idx + b, d_ixd:d_ixd+b] = min_cut_patch
+            seams_map_view = seams_map[blk_idx:blk_idx + b, d_ixd:d_ixd+b]
+            update_seams_map_view(seams_map_view, gen_args, patch_weights)
+
+    return texture_map[o:o+out_h, o:o+out_w], seams_map[o:o+out_h, o:o+out_w]
 
 # endregion
