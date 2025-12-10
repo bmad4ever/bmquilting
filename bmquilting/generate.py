@@ -257,16 +257,6 @@ def generate_texture_parallel(src_textures: list[np.ndarray],
     num_channels = image.shape[2]
     src_dtype = image.dtype
 
-    # Starting block
-    source_height, source_width = image.shape[:2]
-    corner_y = rng.integers(source_height - block_size)
-    corner_x = rng.integers(source_width - block_size)
-    start_block = image[corner_y:corner_y + block_size, corner_x:corner_x + block_size]
-
-    # get the vertical and horizontal flipped variants of the starting block
-    #vi_start_block = np.flipud(start_block)
-    #hi_start_block = np.fliplr(start_block)
-
     del image  # access textures list instead after this point
 
     # Get flipped textures to build the quadrants
