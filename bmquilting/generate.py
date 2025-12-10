@@ -61,17 +61,14 @@ def fill_column(lookup_textures: list[np.ndarray] | SharedTextureList,
                 initial_block, gen_args: GenParams, rows: int, rng: np.random.Generator):
     block_size, overlap = gen_args.block_size, gen_args.overlap
 
-    # TODO set this up later to avoid fetching the texture
-    #if isinstance(lookup_textures, SharedTextureList):
-    #    shape, dtype = lookup_textures.metadata.global_number_of_channels, lookup_textures.metadata.global_dtype
-    #else:
-    #    shape, dtype = lookup_textures[0].shape, lookup_textures[0].dtype
+    if isinstance(lookup_textures, SharedTextureList):
+        num_channels, dtype = lookup_textures.metadata.global_number_of_channels, lookup_textures.metadata.global_dtype
+    else:
+        num_channels, dtype = lookup_textures[0].shape, lookup_textures[0].dtype
 
-    image = lookup_textures[0]
     texture_map = np.empty(
-        ((block_size + rows * (block_size - overlap)), block_size, image.shape[2]), dtype=image.dtype)
+        ((block_size + rows * (block_size - overlap)), block_size, num_channels), dtype=dtype)
     texture_map[:block_size, :block_size, :] = initial_block
-    del image
 
     seams_map = np.zeros((texture_map.shape[0], block_size), dtype=np.float32)
 
@@ -102,11 +99,14 @@ def fill_row(lookup_textures: list[np.ndarray] | SharedTextureList,
              initial_block, gen_args: GenParams, columns: int, rng: np.random.Generator):
     block_size, overlap = gen_args.block_size, gen_args.overlap
 
-    image = lookup_textures[0]
+    if isinstance(lookup_textures, SharedTextureList):
+        num_channels, dtype = lookup_textures.metadata.global_number_of_channels, lookup_textures.metadata.global_dtype
+    else:
+        num_channels, dtype = lookup_textures[0].shape, lookup_textures[0].dtype
+
     texture_map = np.empty(
-        (block_size, (block_size + columns * (block_size - overlap)), image.shape[2]), dtype=image.dtype)
+        (block_size, (block_size + columns * (block_size - overlap)), num_channels), dtype=dtype)
     texture_map[:block_size, :block_size, :] = initial_block
-    del image
 
     seams_map = np.zeros((block_size, texture_map.shape[1])).astype(np.float32)
 
@@ -313,8 +313,7 @@ def generate_texture_parallel(src_textures: list[np.ndarray],
         tq1, tq2, tq3, tq4 = text_quads
         sq1, sq2, sq3, sq4 = smap_quads
 
-        texture = np.empty((tq1.shape[0] * 2 - block_size, tq1.shape[1] * 2 - block_size, num_channels),
-                           dtype=src_dtype)
+        texture = np.empty((tq1.shape[0] * 2 - block_size, tq1.shape[1] * 2 - block_size, num_channels), dtype=src_dtype)
         seams_map = np.empty((texture.shape[0], texture.shape[1]), dtype=vis.dtype)
 
         bmo = block_size - overlap
