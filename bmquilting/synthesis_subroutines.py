@@ -8,7 +8,7 @@ import cv2 as cv
 from .jena2020.generate import (inf, findPatchHorizontal, findPatchVertical, findPatchBoth,
                                 getMinCutPatchHorizontal, getMinCutPatchVertical, getMinCutPatchBoth)
 from .types import GenParams, BlendConfig, num_pixels
-from .seam_smartblur import compute_adaptive_blend_mask, auto_max_blend_diameter, auto_min_blend_size
+from .seam_smartblur import compute_adaptive_blend_mask
 from .misc.dry import apply_mask
 
 from .misc.shmem_utils import SharedTextureList
