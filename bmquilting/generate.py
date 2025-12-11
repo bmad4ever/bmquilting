@@ -4,6 +4,7 @@ from .synthesis_subroutines import (
     update_seams_map_view)
 from .types import UiCoordData, GenParams, num_pixels
 from .misc.shmem_utils import SharedTextureList
+from .misc.texture_utils import quick_checksum
 
 from multiprocessing.shared_memory import SharedMemory
 from joblib import Parallel, delayed
@@ -68,7 +69,8 @@ def fill_column(lookup_textures: list[np.ndarray] | SharedTextureList,
     else:
         num_channels, dtype = lookup_textures[0].shape, lookup_textures[0].dtype
 
-    texture_map = np.empty(((initial_block.shape[0] + rows * (block_size - overlap)), block_size, num_channels), dtype=dtype)
+    texture_map = np.empty(((initial_block.shape[0] + rows * (block_size - overlap)), block_size, num_channels),
+                           dtype=dtype)
     texture_map[:initial_block.shape[0], :, :] = initial_block
     texture_map_view = texture_map[initial_block.shape[0] - block_size:, :]
 
@@ -110,7 +112,8 @@ def fill_row(lookup_textures: list[np.ndarray] | SharedTextureList,
     else:
         num_channels, dtype = lookup_textures[0].shape, lookup_textures[0].dtype
 
-    texture_map = np.empty((block_size, (initial_block.shape[1] + columns * (block_size - overlap)), num_channels), dtype=dtype)
+    texture_map = np.empty((block_size, (initial_block.shape[1] + columns * (block_size - overlap)), num_channels),
+                           dtype=dtype)
     texture_map[:, :initial_block.shape[1], :] = initial_block
     texture_map_view = texture_map[:, initial_block.shape[1] - block_size:]
 
@@ -260,8 +263,6 @@ def generate_texture_parallel(src_textures: list[np.ndarray],
     del image  # access textures list instead after this point
 
     # Get flipped textures to build the quadrants
-    # Note: this step might be redundant in some use cases,
-    #       but without passing some additional metadata there is no way to know
     hi_ltxts: list[np.ndarray] = []
     vi_ltxts: list[np.ndarray] = []
     for ltxt in src_textures:
@@ -269,11 +270,19 @@ def generate_texture_parallel(src_textures: list[np.ndarray],
         vi_ltxts.append(np.flipud(ltxt))
     # note: inverted both ways is computed later when filling the top-left quadrant/section
 
+    # check if lists match; if so there is no need to use a separate SharedTextureList
+    src_txt_ids: set[int] = {quick_checksum(txt) for txt in src_textures}
+    hi_txt_ids: set[int] = {quick_checksum(txt) for txt in hi_ltxts}
+    vi_txt_ids: set[int] = {quick_checksum(txt) for txt in vi_ltxts}
+    hi_eq_src = src_txt_ids == hi_txt_ids
+    vi_eq_src = src_txt_ids == vi_txt_ids
+    del src_txt_ids, hi_txt_ids, vi_txt_ids
+
     # init stuff that will have to be released eventually
     parallel = Parallel(n_jobs=4, backend="loky", timeout=None, verbose=0)
     shm_ltxts = SharedTextureList.from_list(src_textures)
-    shm_hi_ltxts = SharedTextureList.from_list(hi_ltxts)
-    shm_vi_ltxts = SharedTextureList.from_list(vi_ltxts)
+    shm_hi_ltxts = shm_ltxts if hi_eq_src else SharedTextureList.from_list(hi_ltxts)
+    shm_vi_ltxts = shm_ltxts if vi_eq_src else SharedTextureList.from_list(vi_ltxts)
 
     try:
         # auxiliary variables
@@ -287,17 +296,17 @@ def generate_texture_parallel(src_textures: list[np.ndarray],
         central_patch, cp_seams = generate_texture(
             src_textures,
             gen_args,
-            block_size + 2 * (block_size-overlap),  # 2*overlap would suffice, but seams would have an offset
-            block_size + 2 * (block_size-overlap),
+            block_size + 2 * (block_size - overlap),  # 2*overlap would suffice, but seams would have an offset
+            block_size + 2 * (block_size - overlap),
             rng,
             None
         )
 
         bmo = block_size - overlap
-        hor_start_block = central_patch[bmo:-bmo, -block_size-bmo:]
-        hor_inv_start_block = np.fliplr(central_patch[bmo:-bmo, :block_size+bmo])
-        ver_start_block = central_patch[-block_size-bmo:, bmo:-bmo]
-        ver_inv_start_block = np.flipud(central_patch[:block_size+bmo, bmo:-bmo])
+        hor_start_block = central_patch[bmo:-bmo, -block_size - bmo:]
+        hor_inv_start_block = np.fliplr(central_patch[bmo:-bmo, :block_size + bmo])
+        ver_start_block = central_patch[-block_size - bmo:, bmo:-bmo]
+        ver_inv_start_block = np.flipud(central_patch[:block_size + bmo, bmo:-bmo])
 
         hor_start_block_seams = cp_seams[bmo:-bmo, -block_size - bmo:]
         hor_inv_start_block_seams = np.fliplr(cp_seams[bmo:-bmo, :block_size + bmo])
@@ -310,10 +319,10 @@ def generate_texture_parallel(src_textures: list[np.ndarray],
         # the center, where the stripes connect, shares the same tile
         # image, initial_block, gen_args: GenParams, columns: int, rng: np.random.Generator
         args = [
-            (shm_ltxts, hor_start_block, gen_args, cols_per_quad-1, rng, hor_start_block_seams),
-            (shm_hi_ltxts, hor_inv_start_block, gen_args, cols_per_quad-1, rng, hor_inv_start_block_seams),
-            (shm_ltxts, ver_start_block, gen_args, rows_per_quad-1, rng, ver_start_block_seams),
-            (shm_vi_ltxts, ver_inv_start_block, gen_args, rows_per_quad-1, rng, ver_inv_start_block_seams)
+            (shm_ltxts, hor_start_block, gen_args, cols_per_quad - 1, rng, hor_start_block_seams),
+            (shm_hi_ltxts, hor_inv_start_block, gen_args, cols_per_quad - 1, rng, hor_inv_start_block_seams),
+            (shm_ltxts, ver_start_block, gen_args, rows_per_quad - 1, rng, ver_start_block_seams),
+            (shm_vi_ltxts, ver_inv_start_block, gen_args, rows_per_quad - 1, rng, ver_inv_start_block_seams)
         ]
         funcs = [fill_row, fill_row, fill_column, fill_column]
 
@@ -339,7 +348,8 @@ def generate_texture_parallel(src_textures: list[np.ndarray],
         tq1, tq2, tq3, tq4 = text_quads
         sq1, sq2, sq3, sq4 = smap_quads
 
-        texture = np.empty((tq1.shape[0] * 2 - block_size, tq1.shape[1] * 2 - block_size, num_channels), dtype=src_dtype)
+        texture = np.empty((tq1.shape[0] * 2 - block_size, tq1.shape[1] * 2 - block_size, num_channels),
+                           dtype=src_dtype)
         seams_map = np.empty((texture.shape[0], texture.shape[1]), dtype=vis.dtype)
 
         bmo = block_size - overlap
@@ -362,8 +372,11 @@ def generate_texture_parallel(src_textures: list[np.ndarray],
         # otherwise deleting the temporary may fail
         get_reusable_executor().shutdown(wait=True)
 
-        for shm_txt_list in [shm_ltxts, shm_hi_ltxts, shm_vi_ltxts]:
-            shm_txt_list.release()
+        shm_ltxts.release()
+        if not hi_eq_src:
+            shm_hi_ltxts.release()
+        if not vi_eq_src:
+            shm_vi_ltxts.release()
 
 
 # region    sub-routines for quadX functions
@@ -785,7 +798,7 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
     #  patch instead of just the overlap section
     # mind that we need to over-estimate the size of the texture to make room for the adjacent patches to be filled
     # in rows that may not be aligned
-    texture_map = np.empty((o + b*2 + n_h*bm2o, o + b*2 + n_w*bm2o, image.shape[2]), dtype=image.dtype)
+    texture_map = np.empty((o + b * 2 + n_h * bm2o, o + b * 2 + n_w * bm2o, image.shape[2]), dtype=image.dtype)
     seams_map = np.zeros(texture_map.shape[:2], dtype=np.float32)
 
     # Starting index and block
@@ -819,25 +832,25 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
         update_seams_map_view(seams_map_view, gen_args, patch_weights)
 
         # columns
-        for blk_idx in range(d_ixd+b-o, texture_map.shape[1] - b + 1, (b - o)):
+        for blk_idx in range(d_ixd + b - o, texture_map.shape[1] - b + 1, (b - o)):
             ref_block_left = texture_map[d_ixd:d_ixd + b, blk_idx - b + o:blk_idx + o]
-            ref_block_top = texture_map[d_ixd-b+o:d_ixd+o, blk_idx:blk_idx + b]
+            ref_block_top = texture_map[d_ixd - b + o:d_ixd + o, blk_idx:blk_idx + b]
             patch_block = find_patch(ref_block_left, ref_block_top, src_textures, gen_args, rng)
             min_cut_patch, patch_weights = find_cut(ref_block_left, ref_block_top, patch_block, gen_args)
-            texture_map[d_ixd:d_ixd+b, blk_idx:blk_idx + b] = min_cut_patch
-            seams_map_view = seams_map[d_ixd:d_ixd+b, blk_idx:blk_idx + b]
+            texture_map[d_ixd:d_ixd + b, blk_idx:blk_idx + b] = min_cut_patch
+            seams_map_view = seams_map[d_ixd:d_ixd + b, blk_idx:blk_idx + b]
             update_seams_map_view(seams_map_view, gen_args, patch_weights)
 
         # rows
-        for blk_idx in range(d_ixd+b-o, texture_map.shape[0] - b + 1, (b - o)):
-            ref_block_left = texture_map[blk_idx:blk_idx+b, d_ixd-b+o:d_ixd+o]
-            ref_block_top = texture_map[blk_idx-b+o:blk_idx+o, d_ixd:d_ixd+b]
+        for blk_idx in range(d_ixd + b - o, texture_map.shape[0] - b + 1, (b - o)):
+            ref_block_left = texture_map[blk_idx:blk_idx + b, d_ixd - b + o:d_ixd + o]
+            ref_block_top = texture_map[blk_idx - b + o:blk_idx + o, d_ixd:d_ixd + b]
             patch_block = find_patch(ref_block_left, ref_block_top, src_textures, gen_args, rng)
             min_cut_patch, patch_weights = find_cut(ref_block_left, ref_block_top, patch_block, gen_args)
-            texture_map[blk_idx:blk_idx + b, d_ixd:d_ixd+b] = min_cut_patch
-            seams_map_view = seams_map[blk_idx:blk_idx + b, d_ixd:d_ixd+b]
+            texture_map[blk_idx:blk_idx + b, d_ixd:d_ixd + b] = min_cut_patch
+            seams_map_view = seams_map[blk_idx:blk_idx + b, d_ixd:d_ixd + b]
             update_seams_map_view(seams_map_view, gen_args, patch_weights)
 
-    return texture_map[o:o+out_h, o:o+out_w], seams_map[o:o+out_h, o:o+out_w]
+    return texture_map[o:o + out_h, o:o + out_w], seams_map[o:o + out_h, o:o + out_w]
 
 # endregion

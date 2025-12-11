@@ -185,8 +185,8 @@ class SharedTextureList:
         # Get the directory (which is the temp directory we created)
         temp_dir = os.path.dirname(self.metadata.filepath)
 
-        # In a real-world multi-process scenario, cleanup is safest *after* # all worker processes have exited. This cleanup method is designed
-        # to be called by the main process once the Parallel job is done.
+        # In a real-world multi-process scenario, cleanup is safest *after* all worker processes have exited.
+        # This cleanup method is designed to be called by the main process once the Parallel job is done.
         try:
             # Explicitly remove the memmap reference from the cache in the current process.
             filepath = self.metadata.filepath

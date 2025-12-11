@@ -1,4 +1,5 @@
 import numpy as np
+import hashlib
 import cv2
 
 # region OPTIONAL NUMBA NJIT, ONLY USED IF NUMBA IS INSTALLED
@@ -177,3 +178,15 @@ def get_texture_rotated_variants(
         variants.append(cropped)
 
     return variants
+
+
+def quick_checksum(tensor: np.ndarray, check_ratio: float = 0.05) -> int:
+    """
+    Computes a quick, position-sensitive checksum by hashing a strategic
+    slice (the first N% of the array) of the tensor's raw bytes.
+    """
+    slice_size_elements = int(tensor.size * check_ratio)
+    sample_slice = tensor.flat[:slice_size_elements]
+    data_bytes = sample_slice.tobytes()
+    hex_digest = hashlib.sha1(data_bytes).hexdigest()
+    return int(hex_digest, 16)
