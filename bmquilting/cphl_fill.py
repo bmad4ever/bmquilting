@@ -426,7 +426,7 @@ def min_cut_circ(block, patch, roi, non_overlap_radius):
     #cv2.waitKey(0)
 
     path = pyastar2d.astar_path(maze, start, end, allow_diagonal=True)
-    mask = np.zeros((errs.shape[0], errs.shape[1] + 1), dtype=roi.dtype)
+    mask = np.zeros(errs.shape[:2], dtype=roi.dtype)
 
     print(f"mask.shape={mask.shape}")
     for i, j in path:  # draw path
