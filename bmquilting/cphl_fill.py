@@ -2,7 +2,16 @@ import cv2
 import numpy as np
 import math
 from numpy import random
-from .synthesis_subroutines import apply_mask
+from dataclasses import dataclass
+from functools import cached_property
+
+
+try:
+    from .synthesis_subroutines import apply_mask
+    from .types import num_pixels, percentage
+except:
+    from bmquilting.synthesis_subroutines import apply_mask
+    from bmquilting.types import num_pixels, percentage
 
 
 # quilting using Circular Patches over a Hexagonal Lattice (CPHL)
@@ -16,6 +25,23 @@ from .synthesis_subroutines import apply_mask
 # -> expose patch "hole" function
 # -> implement comfyui node
 # -> implement "radial" parallel texture generation using this quilting variant
+
+@dataclass
+class CircularPatchingConfig:
+    radius: num_pixels
+    overlap_r: num_pixels
+    tolerance: percentage
+    outer_corners_weighted_template_matching: bool
+    spacing_factor: float
+
+    def __post_init__(self):
+        if not (0.0 <= self.tolerance <= 1.0):
+            raise ValueError(f"{self.tolerance = } tolerance should be in the [0,1] range.")
+
+    @cached_property
+    def non_overlap_radius(self) -> int:
+        """Calculates the radius of the central non-overlap region."""
+        return self.radius - self.overlap_r
 
 
 def showInMovedWindow(winname, img, x, y):
@@ -39,7 +65,7 @@ def find_annulus_outer_corners(mask: np.ndarray, inner_radius: int, outer_radius
     extended_mask[4:-4, 4:-4] = mask
 
     dst = cv2.cornerHarris(extended_mask, blockSize=2, ksize=5, k=0.06)
-    corners = np.where(dst > int(0.01 * dst.max()))  # return [[xs], [ys]]
+    corners = np.nonzero(dst > int(0.01 * dst.max()))
     corners = zip(corners[1], corners[0])  # generator to iterate all corners; also swaps y & x
     corners = ((c[0] - margin, c[1] - margin) for c in corners)  # offset w/ margin
 
@@ -184,105 +210,149 @@ def reverse_blured_circle_mask(mask, overlap_radius):
     return blured_mask
 
 
-def circle_quilt(img, roi_mask, lookup, radius=80, spacing_factor=.9, overlap_r=40, debug_img=None):
-    # for a spacing factor of .9, non-overlap must be at least half the radius
-    # so overlap beyond half the radius may leave holes in the generation
-    # instead of limiting the overlap though, it may be preferable to circle_quilt each hole individually recursively
-    # not entirely sure this would lead to a better generation... something to think about
+# Helper function: Signature updated to accept only config
+def _process_patch_at_location(img, filled_mask, lookup, x, y, config: CircularPatchingConfig, debug_img):
+    """
+    Finds and applies a single circular patch at location (x, y) using min-cut blending.
 
+    Reads patch parameters (radius, overlap, tolerance) from the config object.
+
+    Returns the updated image block and the blending mask.
+    """
+    # --- Fetch Config Parameters ---
+    radius = config.radius
+    f_radius = float(radius)
+    non_overlap_radius = config.non_overlap_radius
+    tolerance = config.tolerance
+
+    # 1. Calculate the bounding box for the current circle/patch
+    y1, y2, x1, x2 = y - radius, y + radius, x - radius, x + radius
+
+    # 2. Extract the current image block and the region of interest (ROI)
+    block = img[y1:y2, x1:x2]
+    roi = filled_mask[y1:y2, x1:x2]
+
+    # Create the circular and annular masks used for this patch
+    circ_roi = np.zeros((radius * 2, radius * 2), dtype=np.uint8)
+    cv2.circle(circ_roi, (radius, radius), radius, (1,), -1)
+
+    annulus_roi_block = np.zeros((radius * 2, radius * 2), dtype=np.uint8)
+    cv2.circle(annulus_roi_block, (radius, radius), radius, (1,), -1)
+    cv2.circle(annulus_roi_block, (radius, radius), round(non_overlap_radius), (0,), -1)
+
+    roi = annulus_roi_block * roi  # Confines the ROI to the annulus (overlap) region
+
+    # 3. Weighted Template Matching Setup
+    # The 'outer_corners_weighted_template_matching' flag can be used here later
+    corners = find_annulus_outer_corners(roi, non_overlap_radius, radius)
+    weighted_roi = distance_to_points(roi.shape[:2], corners)
+    weighted_roi = weighted_roi * roi
+    showInMovedWindow("weighted roi", weighted_roi, 50 + radius * 2 * 3, 25)
+
+    print(f"shapes  block={block.shape}  roi={roi.shape}")
+
+    # 4. Find the best matching patch from the lookup texture
+    # Now using the config's tolerance
+    patch: np.ndarray = find_circular_patch(lookup, block, roi, tolerance, radius * 2)
+
+    # 5. Min-Cut Blending using Polar Coordinates
+
+    center = [d / 2 - .5 for d in circ_roi.shape]
+    warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
+
+    # Warp current block, new patch, and overlap ROI to polar coordinates
+    polar_block, polar_patch, polar_roi = [
+        cv2.warpPolar(i, (radius, round(radius * 2 * np.pi)), center, f_radius, warp_flags)
+        for i in [block, patch, roi]]
+
+    # Find the optimal seam (min-cut)
+    mask = min_cut_circ(polar_block, polar_patch, polar_roi, non_overlap_radius)
+
+    # Warp the seam mask back to Cartesian coordinates
+    mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius,
+                         cv2.WARP_INVERSE_MAP | warp_flags)
+
+    showInMovedWindow("mask", mask * 255, 50 + radius * 2 * 4, 25)
+
+    # 6. Apply Blending
+    img[y1:y2, x1:x2] = apply_mask(img[y1:y2, x1:x2], (1 - mask)) + apply_mask(patch, mask)
+    showInMovedWindow("patched single", img, 1920 - img.shape[1], 25)
+    cv2.waitKey(0)
+
+    # 7. Update the filled mask state
+    np.maximum(mask, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
+    cv2.imshow("filled state", filled_mask * 255)
+    cv2.waitKey(0)
+
+    return img[y1:y2, x1:x2], mask
+
+
+def circle_quilt(img: np.ndarray, roi_mask: np.ndarray, lookup: np.ndarray, config: CircularPatchingConfig,
+                 debug_img: np.ndarray = None) -> np.ndarray:
+    """
+    Applies texture synthesis to the ROI by tiling circular patches on a hexagonal lattice
+    and blending them using min-cut in polar coordinates, driven by a configuration object.
+    """
+
+    # --- 0. Fetch Config Parameters ---
+    radius = config.radius
+    spacing_factor = config.spacing_factor
+
+    # --- 1. Initial Setup and Padding ---
+
+    # Pad the image and mask
     img = cv2.copyMakeBorder(img, radius, radius, radius, radius, borderType=cv2.BORDER_REFLECT_101)
     roi_mask = cv2.copyMakeBorder(roi_mask, radius, radius, radius, radius, borderType=cv2.BORDER_REFLECT_101)
 
-    f_radius = float(radius)
-
+    # Get the bounding box of the ROI (in the padded image coordinates)
     min_x, min_y, w, h = get_bounding_box(roi_mask)
     max_x, max_y = min_x + w, min_y + h
 
+    # filled_mask tracks which areas have already been patched (used for overlap region)
     filled_mask = roi_mask.copy()
 
-    cv2.morphologyEx(roi_mask, cv2.MORPH_ERODE, kernel=kernelx3, iterations=radius // 2, dst=roi_mask)
+    # Erode the ROI mask to prevent against cases where there is little nearby texture to grab for template matching
+    kernel_size = 2 * radius//3 + 1
+    circular_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    cv2.morphologyEx(roi_mask, cv2.MORPH_ERODE, kernel=circular_kernel, dst=roi_mask)
+    del kernel_size, circular_kernel
+    cv2.imshow("eroded roi_mask", roi_mask * 255)
 
-    cv2.rectangle(debug_img, (int(min_x - radius), int(min_y - radius)), (int(max_x - radius), int(max_y - radius)),
-                  (255, 0, 0), 2)  # TODO remove debug
+    # Debug visualization for the bounding box
+    if debug_img is not None:
+        cv2.rectangle(debug_img, (int(min_x - radius), int(min_y - radius)), (int(max_x - radius), int(max_y - radius)),
+                      (1.0, 0.0, 0.0), 2)  # TODO remove debug
 
-    overlap_r_kernel_adj = overlap_r + 1 if overlap_r % 2 == 0 else overlap_r
-    overlap_kernel = (overlap_r_kernel_adj, overlap_r_kernel_adj)
-    del overlap_r_kernel_adj
+    # --- 2. Hexagonal Lattice Iteration ---
+    # Calculates the spacing for the patch centers based on config.spacing_factor
+    #
+    x_spacing = int(radius * 2 / 1.5 * math.cos(math.pi / 6) * spacing_factor)
+    y_spacing = int(radius * spacing_factor)
 
-    non_overlap_radius = radius - overlap_r
-    circ_roi = np.zeros((int(radius * 2), int(radius * 2)), dtype=np.uint8)
-    cv2.circle(circ_roi, (radius, radius), radius, (1,), -1)
-    annulus_roi = circ_roi.copy()  # used as mask for template matching
-    cv2.circle(annulus_roi, (radius, radius), round(non_overlap_radius), (0,), -1)
-
-    #weighted_circle_roi = 1-reverse_blured_circle_mask(circ_roi*255, overlap_r)  # weights less near the center
-    #showInMovedWindow("wc", weighted_circle_roi, 500, 25)
-
-    #cv2.imshow("annulus_roi", circ_roi); cv2.waitKey(0); quit()
-
-    center = [d / 2 - .5 for d in circ_roi.shape]
-    polar_unwrapped_size = (radius, round(radius * 2 * np.pi))
-
-    # iterate hexagonal lattice
-    x_spacing = int(radius * 2 / 1.5 * math.cos(math.pi / 6) * spacing_factor)  # Horizontal spacing
-    y_spacing = int(radius * spacing_factor)  # Vertical spacing
     for y in range(int(min_y), int(max_y + y_spacing), y_spacing):
         for x in range(int(min_x), int(max_x + x_spacing), x_spacing):
+
+            # Offset every odd row to create a hexagonal pattern
             if (y // y_spacing) % 2 != 0:
                 x += x_spacing // 2
 
-            if roi_mask[y, x] == 0:  # point within delimited roi
-                # TODO likely a good idea to extract the code below into a method!
+            # Skip if the patch center is outside the eroded ROI
+            if roi_mask[y, x] > 0:
+                continue
 
-                if debug_img is not None:
-                    color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-                    cv2.circle(debug_img, (int(x - radius), int(y - radius)), radius, color, -1)
-                    cv2.circle(debug_img, (int(x - radius), int(y - radius)), 5, (0, 0, 0), -1)
+            # --- Debug Visualization ---
+            if debug_img is not None:
+                color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+                cv2.circle(debug_img, (int(x - radius), int(y - radius)), radius, color, -1)
+                cv2.circle(debug_img, (int(x - radius), int(y - radius)), 5, (0, 0, 0), -1)
 
-                y1, y2, x1, x2 = y - radius, y + radius, x - radius, x + radius
-                block, roi = img[y1:y2, x1:x2], filled_mask[y1:y2, x1:x2]
-                roi = annulus_roi * roi
-                corners = find_annulus_outer_corners(roi, non_overlap_radius, radius)
-                weighted_roi = distance_to_points(roi.shape[:2], corners)
-                #weighted_roi = np.maximum(weighted_circle_roi, weighted_roi)
-                #weighted_roi = cv2.GaussianBlur(weighted_roi, overlap_kernel, sigmaX=0, sigmaY=0)
-                #cv2.normalize(weighted_roi, weighted_roi, 0, 1, cv2.NORM_MINMAX)
-                weighted_roi = weighted_roi * roi
-                #weighted_roi = np.float32(roi)  # only use roi
-                showInMovedWindow("weighted roi", weighted_roi, 50 + radius * 2 * 3, 25)
+            # --- Process the patch at the current lattice point ---
+            _process_patch_at_location(img, filled_mask, lookup, x, y, config, debug_img)
 
-                print(f"shapes  block={block.shape}  roi={roi.shape}")
-                patch: np.ndarray = find_circular_patch(lookup, block, roi, 0.0,
-                                                        radius * 2)  # TODO tolerance should not be hardcoded
+    # --- 3. Final Cleanup ---
 
-                #cv2.imshow("block", block)
-                cv2.imshow("roi", roi * 255)
-                #cv2.imshow("Patch", apply_mask(patch, circ_roi));
-                #cv2.waitKey(0); quit()
-
-                warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
-                polar_block, polar_patch, polar_roi = [
-                    cv2.warpPolar(i, (radius, round(radius * 2 * np.pi)), center, f_radius, warp_flags)
-                    for i in [block, patch, roi]]
-                #cv2.imshow("n", polar_patch);
-                #cv2.waitKey(0); quit()
-                mask = min_cut_circ(polar_block, polar_patch, polar_roi, non_overlap_radius)
-                mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius,
-                                     cv2.WARP_INVERSE_MAP | warp_flags)
-
-                showInMovedWindow("mask", mask * 255, 50 + radius * 2 * 4, 25)
-                #cv2.waitKey(0); quit()
-
-                img[y1:y2, x1:x2] = apply_mask(img[y1:y2, x1:x2], (1 - mask)) + apply_mask(patch, mask)
-                showInMovedWindow("patched single", img, 1920 - img.shape[1], 25)
-                cv2.waitKey(0)  #;quit()
-
-                #update filled mask
-                #np.maximum(circ_roi, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
-                np.maximum(mask, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
-                #cv2.imshow("filled state", filled_mask*255); cv2.waitKey(0)
+    # Remove the padding from the final image before returning
     return img[radius:-radius, radius:-radius]
-
 
 def find_first_2adjacent_all_zero_rows(mask):
     """return the index of the second all zero row"""
@@ -384,10 +454,14 @@ def find_min_cut_circ_endpoints(errs, roi, half_section_size):
     maze = np.ones((errs.shape[0] + 2, errs.shape[1]), dtype=np.float32)
     maze_area = maze[1:-1, :]
     maze_area[:, :] = errs
-    #maze_area[roi == 0] = 1 #errs.shape[1]
-    maze *= errs.shape[0] ** 3
+
+    # same logic as err adjustment in synthesis_subroutines
+    maze **= 2  # make penalty func steeper
+    # keep the 'distance' between values the same
+    maze *= 255
     maze += 1
-    maze *= errs.shape[0] ** 3
+
+    maze *= errs.shape[0] ** 2
     maze[0, :] = 1
     maze[-1, :] = 1
     maze[1:-1, -1] = roi[:, -1] * maze[1:-1, -1] + (1 - roi[:, -1])  # bottom holes escape path
@@ -448,8 +522,8 @@ def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  
 
 if __name__ == "__main__":
     text_idx = "16"
-    src = cv2.imread(f"results/t{text_idx}.png", cv2.IMREAD_COLOR)
-    src2 = cv2.imread(f"textures/t{text_idx}.png", cv2.IMREAD_COLOR)
+    src = cv2.imread(f"test_data/results/t{text_idx}.png", cv2.IMREAD_COLOR)
+    src2 = cv2.imread(f"test_data/textures/t{text_idx}.png", cv2.IMREAD_COLOR)
     src = np.float32(src) / 255
     src2 = np.float32(src2) / 255
 
@@ -460,8 +534,16 @@ if __name__ == "__main__":
     print(f"shapes {(img.shape, mask.shape)}")
     img[mask == 0] = (0, 0, 0)
 
+    config = CircularPatchingConfig(
+        radius=80,
+        overlap_r=40,
+        spacing_factor=0.9,
+        tolerance=0.0,
+        outer_corners_weighted_template_matching=True
+    )
+
     debug_img = np.stack((mask.copy(),) * 3, axis=-1)
-    img = circle_quilt(img=img, roi_mask=mask, lookup=lookup, debug_img=debug_img)
+    img = circle_quilt(img=img, roi_mask=mask, lookup=lookup, debug_img=debug_img, config=config)
     cv2.imshow("Result", img)
     cv2.imshow("Patches Visualizer", debug_img)
     cv2.waitKey(0)
