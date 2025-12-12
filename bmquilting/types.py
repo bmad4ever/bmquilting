@@ -7,7 +7,9 @@ import numpy as np
 from .misc.functions import FuncWrapper, LogScalingFunc, TwoNTS
 
 num_pixels: TypeAlias = int
+"""the number of pixels (integer)"""
 percentage: TypeAlias = float
+"""a float value in the range [0,1]"""
 
 
 class Orientation(Enum):
@@ -134,11 +136,11 @@ class BlendConfig:
 
     def __post_init__(self):
         if self.sobel_kernel_size % 2 == 0:
-            raise ValueError(f"{self.sobel_kernel_size=} is invalid, kernel size should be an odd number.")
+            raise ValueError(f"{self.sobel_kernel_size = } is invalid, kernel size should be an odd number.")
 
         if self.max_blur_diameter < self.min_blur_diameter:
-            raise ValueError(f"Invalid range: {self.min_blur_diameter=}"
-                             f" must be less or equal to {self.max_blur_diameter=}")
+            raise ValueError(f"Invalid range: {self.min_blur_diameter = }"
+                             f" must be less or equal to {self.max_blur_diameter = }")
 
 
 @dataclass
@@ -153,6 +155,10 @@ class GenParams:
     blend_config: BlendConfig | None
     vignette_on_match_template: bool  # whether to use the blending vignette as a mask when searching for a matching patch
     version: int
+
+    def __post_init__(self):
+        if not (0.0 <= self.tolerance <= 1.0):
+            raise ValueError(f"{self.tolerance = } tolerance should be in the [0,1] range.")
 
     @property
     def blend_into_patch(self) -> bool:
