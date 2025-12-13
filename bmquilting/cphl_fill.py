@@ -7,10 +7,12 @@ from functools import cached_property
 
 
 try:
-    from .synthesis_subroutines import apply_mask
+    from .synthesis_subroutines import (
+        apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace)
     from .types import num_pixels, percentage
 except:
-    from bmquilting.synthesis_subroutines import apply_mask
+    from bmquilting.synthesis_subroutines import (
+        apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace)
     from bmquilting.types import num_pixels, percentage
 
 
@@ -258,18 +260,21 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     # Now using the config's tolerance
     patch: np.ndarray = find_circular_patch(lookup, block, tmpl_mask, tolerance, radius * 2)
 
-    # 5. Min-Cut Blending using Polar Coordinates
+    # 5. Compute Errors prior to warping
+    errors = avg_squared_diff(block, patch)
+
+    # 6. Find Seam using Polar Coordinates
 
     center = [d / 2 - .5 for d in circ_roi.shape]
     warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
 
     # Warp current block, new patch, and overlap ROI to polar coordinates
-    polar_block, polar_patch, polar_roi = [
+    polar_errors, polar_roi = (
         cv2.warpPolar(i, (radius, round(radius * 2 * np.pi)), center, f_radius, warp_flags)
-        for i in [block, patch, roi]]
+        for i in [errors, roi])
 
     # Find the "optimal" seam
-    mask = min_cut_circ(polar_block, polar_patch, polar_roi, non_overlap_radius)
+    mask = min_cut_circ(polar_errors, polar_roi, non_overlap_radius)
 
     # Warp the seam mask back to Cartesian coordinates
     mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius,
@@ -277,12 +282,12 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
 
     showInMovedWindow("mask", mask * 255, 50 + radius * 2 * 4, 25)
 
-    # 6. Apply Blending
+    # 7. Apply Blending
     image[y1:y2, x1:x2] = apply_mask(image[y1:y2, x1:x2], (1 - mask)) + apply_mask(patch, mask)
     showInMovedWindow("patched single", image, 1920 - image.shape[1], 25)
     cv2.waitKey(0)
 
-    # 7. Update the filled mask state
+    # 8. Update the filled mask state
     np.maximum(mask, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
     cv2.imshow("filled state", filled_mask * 255)
     cv2.waitKey(0)
@@ -370,15 +375,10 @@ def find_first_2adjacent_all_zero_rows(mask):
     return None
 
 
-def min_cut_circ(block, patch, roi, non_overlap_radius):
+def min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: num_pixels) -> np.ndarray:
     """
-    Args:
-        block: polar unwrapped block
-        patch: polar unwrapped patch
-        roi:  polar unwrapped overlap roi ( stored in filled mask )
-        non_overlap_radius: inner radius where there is no overlap
-    Returns:
-
+    @param errors: warped matrix with the pre-computed errors
+    @param roi: warped binary mask of the region of interest
     """
     import pyastar2d
 
@@ -390,43 +390,35 @@ def min_cut_circ(block, patch, roi, non_overlap_radius):
     #   however, this approach comes with some new problems.
     #  I've thus decided to keep the solution simple.
 
-    errs = ((patch - block) ** 2).mean(2)
-    #empty_row = find_first_all_zero_row(roi)
     offset_row = find_first_2adjacent_all_zero_rows(roi[:, non_overlap_radius:])
-    #offset_row = find_edge_escape_path_with_at_least_2pixels(roi)
     if offset_row is not None:
-        errs = np.roll(errs, -offset_row, axis=0)
+        errors = np.roll(errors, -offset_row, axis=0)
         roi = np.roll(roi, -offset_row, axis=0)
-        block = np.roll(block, -offset_row, axis=0)
+        #block = np.roll(block, -offset_row, axis=0)
 
     showInMovedWindow("rolled polar roi", roi * 255, 100, 200)
-    showInMovedWindow("rolled polar block", block, 100 + 8 + roi.shape[1], 200)
-    errs[roi == 0] = 0
-    showInMovedWindow("errs", errs / np.max(errs), 100 + (8 + roi.shape[1]) * 2, 200)
+    #showInMovedWindow("rolled polar block", block, 100 + 8 + roi.shape[1], 200)
+    errors[roi == 0] = 0
+    showInMovedWindow("errors", errors / np.max(errors), 100 + (8 + roi.shape[1]) * 2, 200)
 
-    start_x = end_x = errs.shape[1] - 1
+    start_x = end_x = errors.shape[1] - 1
     if offset_row is None:
         # when no empty row is found, search for the cut endpoints at the top & bottom so that the path is not broken
-        start_x, end_x = find_min_cut_circ_endpoints(errs, roi, errs.shape[0] // 4)
+        start_x, end_x = find_min_cut_circ_endpoints(errors, roi, errors.shape[0] // 4)
 
-    maze = errs.copy()
-    # same logic as err adjustment in synthesis_subroutines
-    maze **= 2  # make penalty func steeper
-    # keep the 'distance' between values the same
-    maze *= 255
-    maze += 1
+    errors = np.ascontiguousarray(errors)
+    adjust_errors_func_inplace(errors)
+    adjust_errors_for_pystar2d_inplace(errors, errors.shape[0])
 
-    maze *= errs.shape[0] ** 2
-
-    maze[:, -1] = roi[:, -1] * maze[:, -1] + (1 - roi[:, -1])  # bottom holes escape path
-    maze[:, :-1][roi[:, :-1] == 0] = np.inf  # don't travel outside the mask, unless via the escape path
+    errors[:, -1] = roi[:, -1] * errors[:, -1] + (1 - roi[:, -1])  # bottom holes escape path
+    errors[:, :-1][roi[:, :-1] == 0] = np.inf  # don't travel outside the mask, unless via the escape path
 
     start = (0, start_x)
-    end = (maze.shape[0] - 1, end_x)
+    end = (errors.shape[0] - 1, end_x)
     #cv2.waitKey(0)
 
-    path = pyastar2d.astar_path(maze, start, end, allow_diagonal=True)
-    mask = np.zeros(errs.shape[:2], dtype=roi.dtype)
+    path = pyastar2d.astar_path(errors, start, end, allow_diagonal=True)
+    mask = np.zeros_like(roi)
 
     print(f"mask.shape={mask.shape}")
     for i, j in path:  # draw path
@@ -516,7 +508,6 @@ def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  
     # according to documentation only TM_SQDIFF and TM_CCORR_NORMED accept a mask
     # also, if given as a float it can be weighted... may come in handy later
     err_mat = cv2.matchTemplate(image=lookup, templ=block, mask=mask, method=cv2.TM_SQDIFF)
-    print(mask)
 
     #err_mat = 1 - ncs  # for TM_CCOEFF_NORMED
     if tolerance > 0:
@@ -525,7 +516,6 @@ def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  
     else:
         min_val = np.min(err_mat)
     print(f"{min_val = }    err_threshhold = {(1.0 + tolerance) * min_val}      {np.any(min_val <= (1.0 + tolerance) * min_val)}")
-    print(np.argwhere(err_mat <= 0))
     y, x = np.nonzero(err_mat <= (1.0 + tolerance) * min_val)
     c = np.random.randint(len(y))  # rng.integers(len(y)) # TODO replace w/ generator
     y, x = y[c], x[c]

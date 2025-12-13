@@ -16,6 +16,13 @@ from .misc.shmem_utils import SharedTextureList
 epsilon = np.finfo(float).eps
 
 
+#   DevNote:
+#  could be relevant to allow the use of optional filters in case the texture is noisy
+#  however this would also need to be applied when searching for the patch
+#  and the result would have to be stored to avoid re-computing.
+#  Seems a bit overkill for now, but could be something to consider in the future for completion sake.
+
+
 def debug_resize(arr, factor=8):
     return cv2.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
 
@@ -511,9 +518,7 @@ if importlib.util.find_spec("pyastar2d") is not None:
             block1_safe_overlap_view = block1_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
             block2_safe_overlap_view = block2_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
 
-        err = block1_safe_overlap_view - block2_safe_overlap_view
-        err **= 2
-        err = err.mean(2)
+        err = avg_squared_diff(block1_safe_overlap_view, block2_safe_overlap_view)
 
         # adjust safety_radius
         safety_radius = min(
@@ -534,20 +539,10 @@ if importlib.util.find_spec("pyastar2d") is not None:
         if to_trim > 0:
             err = err[:, to_trim:-to_trim]
 
-        err **= 2  # make penalty func steeper
+        adjust_errors_func_inplace(err)
+        adjust_errors_for_pystar2d_inplace(err, block_size)
 
-        # scale to integer color range and offset by 1 (works for both RGB and LAB)
-        #   this is done so that the distance from 0 to the smallest possible error
-        #   keeps the same proportion relative to other error values
-        #   otherwise there would be a relative penalty mismatch for pixels with error equal to zero
-        #   when offsetting the errors, which is required for both pyastar2d (min. value accepted as weight is 1)
-        err *= 255
-        err += 1
-
-        # make the lowest value big enough for 1 to be negligible and pad extremes with weight 1
-        #   this is done so that the extremes work as 'free corridors';
-        #   to make the start and end points arbitrary
-        err *= block_size ** 2
+        # Create 'free-corridors' at both extremes, so that the X starting point is arbitrary
         err = np.pad(err, ((1, 1), (0, 0)), 'constant', constant_values=(1, 1))
 
         start = (0, err.shape[1] // 2)
@@ -576,6 +571,33 @@ if importlib.util.find_spec("pyastar2d") is not None:
 else:
     get_min_cut_patch_mask_horizontal = get_min_cut_patch_mask_horizontal_jena2020
 
+
+def avg_squared_diff(block1: np.ndarray, block2: np.ndarray) -> np.ndarray:
+    err = block1 - block2
+    err **= 2
+    err = err.mean(2)
+    return err
+
+
+def adjust_errors_func_inplace(errors: np.ndarray) -> None:
+    # make penalty func steeper
+    # TODO consider making this a custom function, or adding params in the config to control it
+    errors **= 2
+
+
+def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: num_pixels) -> None:
+    """Adjust the errors so that 1s can be used to create 'free-corridors'"""
+
+    # scale to integer color range and offset by 1 (works for both RGB and LAB)
+    #   this is done so that the distance from 0 to the smallest possible error
+    #   keeps the same proportion relative to other error values
+    #   otherwise there would be a relative penalty mismatch for pixels with error equal to zero
+    #   when offsetting the errors, which is required for both pyastar2d (min. value accepted as weight is 1)
+    errors *= 255
+    errors += 1
+
+    # make the lowest value big enough for 1 to be negligible (paths created w/ 1s become "free-corridors")
+    errors *= block_len ** 2
 
 # endregion
 
