@@ -262,9 +262,9 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
 
     # 5. Compute Errors prior to warping
     errors = avg_squared_diff(block, patch)
+    adjust_errors_func_inplace(errors)
 
     # 6. Find Seam using Polar Coordinates
-
     center = [d / 2 - .5 for d in circ_roi.shape]
     warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
 
@@ -390,25 +390,22 @@ def min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: num_pi
     #   however, this approach comes with some new problems.
     #  I've thus decided to keep the solution simple.
 
+    adjust_errors_for_pystar2d_inplace(errors, errors.shape[0])
+
     offset_row = find_first_2adjacent_all_zero_rows(roi[:, non_overlap_radius:])
     if offset_row is not None:
         errors = np.roll(errors, -offset_row, axis=0)
         roi = np.roll(roi, -offset_row, axis=0)
-        #block = np.roll(block, -offset_row, axis=0)
 
     showInMovedWindow("rolled polar roi", roi * 255, 100, 200)
-    #showInMovedWindow("rolled polar block", block, 100 + 8 + roi.shape[1], 200)
-    errors[roi == 0] = 0
+
+    errors[roi == 0] = 0  # TODO only for DEBUG purposes, can be removed later
     showInMovedWindow("errors", errors / np.max(errors), 100 + (8 + roi.shape[1]) * 2, 200)
 
     start_x = end_x = errors.shape[1] - 1
     if offset_row is None:
         # when no empty row is found, search for the cut endpoints at the top & bottom so that the path is not broken
-        start_x, end_x = find_min_cut_circ_endpoints(errors, roi, errors.shape[0] // 4)
-
-    errors = np.ascontiguousarray(errors)
-    adjust_errors_func_inplace(errors)
-    adjust_errors_for_pystar2d_inplace(errors, errors.shape[0])
+        start_x, end_x = find_min_cut_circ_endpoints(errors, roi)
 
     errors[:, -1] = roi[:, -1] * errors[:, -1] + (1 - roi[:, -1])  # bottom holes escape path
     errors[:, :-1][roi[:, :-1] == 0] = np.inf  # don't travel outside the mask, unless via the escape path
@@ -436,33 +433,43 @@ def min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: num_pi
     return mask
 
 
-def find_min_cut_circ_endpoints(errs, roi, half_section_size):
+def _x_squared_distance_1D(A_1D: np.ndarray, B_1D: np.ndarray):
     """
+    Computes the squared distance matrix based on 1D arrays of X-coordinates.
+    """
+    # Reshape for broadcasting: (N, 1) and (1, M)
+    a_coords = A_1D.reshape(-1, 1)
+    b_coords = B_1D.reshape(1, -1)
+    squared_dist_matrix = (a_coords - b_coords) ** 2
+    return squared_dist_matrix
+
+
+def find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[int, int]:
+    """
+    Consider the roi as the following sections: | A | B | C | D |
+    This functions rolls & crops it to get the section: | D | A |
+    Then finds the best path to go from the start of D to the end of A.
+    The points in the middle of the path, where D and A meet, are the points of interest.
+
+    There may be multiple points at this boarder, since A* can noodle around.
+    The coordinates of the pair of points nearest each other at y_center and y_center -1 is returned.
+    If multiple pairs have the same minimum distance, only one is returned.
 
     Args:
-        errs:
+        errors: polar unwrapped errors
         roi: polar unwrapped overlap roi
-        section_size: number of rows to use in the "mock" sample
     Returns: a tuple containing the top and bottom row endpoints (column idx) for the min cut
     """
     import pyastar2d
-    from scipy.spatial.distance import cdist
 
-    errs = np.roll(errs, -half_section_size, axis=0)[half_section_size * 2:, :]
-    roi = np.roll(roi, -half_section_size, axis=0)[half_section_size * 2:, :]
+    err_len_div4 = errors.shape[0] // 4
+    errors = np.roll(errors, -err_len_div4, axis=0)[err_len_div4 * 2:, :]
+    roi = np.roll(roi, -err_len_div4, axis=0)[err_len_div4*2:, :]
     showInMovedWindow("rolled roi section", roi * 255, 100 + (8 + roi.shape[1]) * 5, 200)
 
-    maze = np.ones((errs.shape[0] + 2, errs.shape[1]), dtype=np.float32)
+    maze = np.ones((errors.shape[0] + 2, errors.shape[1]), dtype=np.float32)
     maze_area = maze[1:-1, :]
-    maze_area[:, :] = errs
-
-    # same logic as err adjustment in synthesis_subroutines
-    maze **= 2  # make penalty func steeper
-    # keep the 'distance' between values the same
-    maze *= 255
-    maze += 1
-
-    maze *= errs.shape[0] ** 2
+    maze_area[:, :] = errors
 
     maze[0, :] = 1
     maze[-1, :] = 1
@@ -473,31 +480,29 @@ def find_min_cut_circ_endpoints(errs, roi, half_section_size):
     end = (maze.shape[0] - 1, maze.shape[1] - 1)
 
     path = pyastar2d.astar_path(maze, start, end, allow_diagonal=True)
-    mask = np.ones((errs.shape[0], errs.shape[1] + 1), dtype=roi.dtype)
 
-    print(f"mask.shape={mask.shape}")
-    half_section_size_m1 = half_section_size - 1
-    points_of_interest_top = [(y - 1, x) for (y, x) in path if y - 1 == half_section_size]
-    points_of_interest_bottom = [(y - 1, x) for (y, x) in path if y - 1 == half_section_size_m1]
-
-    # Compute the distance matrix between points in la and lb
-    dist_matrix = cdist(points_of_interest_top, points_of_interest_bottom, metric='euclidean')
+    # Compute the distance matrix between points (y is ignored since it is fixed)
+    err_len_div4_minus1 = err_len_div4 - 1
+    points_of_interest_top = [x for (y, x) in path if y - 1 == err_len_div4]
+    points_of_interest_bottom = [x for (y, x) in path if y - 1 == err_len_div4_minus1]
+    dist_matrix = _x_squared_distance_1D(np.array(points_of_interest_top), np.array(points_of_interest_bottom))
 
     # Find the indices of the minimum distance
     min_index = np.unravel_index(np.argmin(dist_matrix), dist_matrix.shape)
     top_point = points_of_interest_top[min_index[0]]
     bottom_point = points_of_interest_bottom[min_index[1]]
-    #min_distance = dist_matrix[min_index]
-
     print(f"points of interest = {(top_point, bottom_point)}")
 
     # TODO debug code, not actually needed, remove later
     mask = np.zeros_like(maze)
     for i, j in path:
         mask[i, j] = 1
+        if i - 1 == err_len_div4:
+            mask[i, :max(0, j-4):4] = 1
+
     showInMovedWindow("aux_cut", mask, 100 + (8 + roi.shape[1]) * 6, 200)
 
-    return top_point[1], bottom_point[1]
+    return top_point, bottom_point
 
 
 def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  # TODO rng
