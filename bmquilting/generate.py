@@ -5,6 +5,7 @@ from .synthesis_subroutines import (
 from .types import UiCoordData, GenParams, num_pixels
 from .misc.shmem_utils import SharedTextureList
 from .misc.texture_utils import quick_checksum
+from .misc.custom_decorators import clear_cache_post_exec
 
 from multiprocessing.shared_memory import SharedMemory
 from joblib import Parallel, delayed
@@ -231,6 +232,7 @@ def fill_quad_2(rows: int, columns: int, gen_args: GenParams, texture_map, seams
 # region    parallel solution
 
 
+@clear_cache_post_exec()
 def generate_texture_parallel(src_textures: list[np.ndarray],
                               gen_args: GenParams, out_h: num_pixels, out_w: num_pixels, nps: int,
                               rng: np.random.Generator, uicd: UiCoordData | None):
@@ -293,7 +295,7 @@ def generate_texture_parallel(src_textures: list[np.ndarray],
         # might get 1 more row or column than needed here
 
         # Patch the central area containing the central block shared by in all the stripes
-        central_patch, cp_seams = generate_texture(
+        central_patch, cp_seams = generate_texture.__wrapped__(  # access wrapped to avoid clearing cache
             src_textures,
             gen_args,
             block_size + 2 * (block_size - overlap),  # 2*overlap would suffice, but seams would have an offset
@@ -719,6 +721,7 @@ def fill_rows_ps(pid: int, job: ParaRowsJobInfo, jobs_events: list, uicd: UiCoor
 # region    non-parallel solutions
 
 
+@clear_cache_post_exec()
 def generate_texture(src_textures: list[np.ndarray],
                      gen_args: GenParams,
                      out_h: num_pixels, out_w: num_pixels,
@@ -768,6 +771,7 @@ def generate_texture(src_textures: list[np.ndarray],
     return texture_map[:out_h, :out_w], seams_map[:out_h, :out_w]
 
 
+@clear_cache_post_exec()
 def generate_texture_diagonal(src_textures: list[np.ndarray],
                               gen_args: GenParams,
                               out_h: num_pixels, out_w: num_pixels,

@@ -5,13 +5,13 @@ from .types import UiCoordData, GenParams
 import dataclasses
 import numpy as np
 import cv2 as cv
-
+from .misc.custom_decorators import clear_cache_post_exec
 
 RETURN_VALUE_WHEN_INTERRUPTED = (None, None)
 
 
-def seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
-                        gen_args: GenParams, rng, seams_map=None, uicd: UiCoordData | None = None):
+def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
+                         gen_args: GenParams, rng, seams_map=None, uicd: UiCoordData | None = None):
     block_size, overlap = gen_args.bo
     lookup_texture = image if lookup_texture is None else lookup_texture
     image = np.roll(image, +block_size // 2, axis=1)  # move seam to addressable space
@@ -73,10 +73,10 @@ def seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
     return image, seams_map
 
 
-def seamless_vertical(image: np.ndarray, lookup_texture: np.ndarray,
-                      gen_args: GenParams, rng, uicd: UiCoordData | None = None):
-    texture, seams = seamless_horizontal(image=np.rot90(image), gen_args=gen_args, rng=rng, uicd=uicd,
-                                         lookup_texture=None if lookup_texture is None else np.rot90(lookup_texture))
+def _seamless_vertical(image: np.ndarray, lookup_texture: np.ndarray,
+                       gen_args: GenParams, rng, uicd: UiCoordData | None = None):
+    texture, seams = _seamless_horizontal(image=np.rot90(image), gen_args=gen_args, rng=rng, uicd=uicd,
+                                          lookup_texture=None if lookup_texture is None else np.rot90(lookup_texture))
     if texture is None:
         return RETURN_VALUE_WHEN_INTERRUPTED
     else:
@@ -84,17 +84,30 @@ def seamless_vertical(image: np.ndarray, lookup_texture: np.ndarray,
         return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
 
 
+@clear_cache_post_exec()
+def seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
+                         gen_args: GenParams, rng, seams_map=None, uicd: UiCoordData | None = None):
+    return _seamless_horizontal(image, lookup_texture, gen_args, rng, seams_map, uicd)
+
+
+@clear_cache_post_exec()
+def seamless_vertical(image: np.ndarray, lookup_texture: np.ndarray,
+                      gen_args: GenParams, rng, uicd: UiCoordData | None = None):
+    return _seamless_vertical(image, lookup_texture, gen_args, rng, uicd)
+
+
+@clear_cache_post_exec()
 def seamless_both(image: np.ndarray, lookup_texture: np.ndarray,
                   gen_args: GenParams, rng, uicd: UiCoordData | None = None):
     lookup_texture = image if lookup_texture is None else lookup_texture
     block_size = gen_args.block_size
 
-    texture, seams = seamless_vertical(image, lookup_texture, gen_args, rng, uicd)
+    texture, seams = _seamless_vertical(image, lookup_texture, gen_args, rng, uicd)
     if texture is None:
         return RETURN_VALUE_WHEN_INTERRUPTED
     for m in [texture, seams]:
         m[:] = np.roll(m, -block_size // 2, axis=0)  # center future seam at stripes interception
-    texture, seams = seamless_horizontal(texture, lookup_texture, gen_args, rng, seams, uicd)
+    texture, seams = _seamless_horizontal(texture, lookup_texture, gen_args, rng, seams, uicd)
     if texture is None:
         return RETURN_VALUE_WHEN_INTERRUPTED
 

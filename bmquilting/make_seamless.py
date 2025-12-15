@@ -2,6 +2,7 @@ from .synthesis_subroutines import get_4way_min_cut_patch, find_patch_vx, update
 from .types import UiCoordData, GenParams
 from math import ceil
 import numpy as np
+from .misc.custom_decorators import clear_cache_post_exec
 
 RETURN_VALUE_WHEN_INTERRUPTED = (None, None)
 
@@ -10,7 +11,7 @@ def get_numb_of_blocks_to_fill_stripe(block_size, overlap, dim_length):
     return int(ceil((dim_length - block_size) / (block_size - overlap)))
 
 
-def make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.random.Generator,
+def _make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.random.Generator,
                                lookup_textures: list[np.ndarray] = None, seams_map: np.ndarray | None = None,
                                uicd: UiCoordData | None = None):
     """
@@ -100,9 +101,16 @@ def make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.r
     return texture_map, seams_map
 
 
-def make_seamless_vertically(image: np.ndarray, gen_args: GenParams, rng: np.random.Generator,
+@clear_cache_post_exec()
+def make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.random.Generator,
+                               lookup_textures: list[np.ndarray] = None, seams_map: np.ndarray | None = None,
+                               uicd: UiCoordData | None = None):
+    return _make_seamless_horizontally(image, gen_args, rng, lookup_textures, seams_map, uicd)
+
+
+def _make_seamless_vertically(image: np.ndarray, gen_args: GenParams, rng: np.random.Generator,
                              lookup_textures: list[np.ndarray] = None, uicd: UiCoordData | None = None):
-    texture, seams = make_seamless_horizontally(
+    texture, seams = _make_seamless_horizontally(
         np.rot90(image, 1), gen_args, rng=rng, uicd=uicd,
         lookup_textures=None if lookup_textures is None else [np.rot90(txt) for txt in lookup_textures])
 
@@ -113,17 +121,24 @@ def make_seamless_vertically(image: np.ndarray, gen_args: GenParams, rng: np.ran
         return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
 
 
+@clear_cache_post_exec()
+def make_seamless_vertically(image: np.ndarray, gen_args: GenParams, rng: np.random.Generator,
+                             lookup_textures: list[np.ndarray] = None, uicd: UiCoordData | None = None):
+    return _make_seamless_vertically(image, gen_args, rng, lookup_textures, uicd)
+
+
+@clear_cache_post_exec()
 def make_seamless_both(image, gen_args: GenParams, rng: np.random.Generator,
                        lookup_textures: list[np.ndarray] = None, uicd: UiCoordData | None = None):
     lookup_textures = [image] if lookup_textures is None else lookup_textures
     block_size = gen_args.block_size
 
     # patch the texture in both directions. the last stripe's endpoints won't loop yet.
-    texture, seams = make_seamless_vertically(image, gen_args, rng, lookup_textures=lookup_textures, uicd=uicd)
+    texture, seams = _make_seamless_vertically(image, gen_args, rng, lookup_textures=lookup_textures, uicd=uicd)
     if texture is not None:
         for m in [texture, seams]:
             m[:] = np.roll(m, -block_size // 2, axis=0)  # center future seam at stripes interception
-        texture, seams = make_seamless_horizontally(
+        texture, seams = _make_seamless_horizontally(
             texture, gen_args, rng,
             lookup_textures=lookup_textures,
             seams_map=seams,
