@@ -270,12 +270,25 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
         if gen_args.blend_into_patch and gen_args.blend_config.use_vignette:
             vignette = patch_blending_vignette(block_size, overlap, has_left, has_right, has_top, has_bottom)
             mask *= vignette
+            # dev note:
+            #   Might seem strange to multiply these instead of choosing the maximum here;
+            #   the thing about the vignette is that, although initially devised as a workaround
+            #   to avoid having the seams' blur reaching the edges of the overlap which would
+            #   create potential "visual seam" artifacts at the edge of a new patch, this variant had an unforeseen
+            #   effect that I did not think of when implementing it:
+            #       It roughly aligns the generated patches' seams into a grid, which somewhat mitigates the
+            #   problem of having loose seam ends creating the occasional visual discontinuity.
+            #       The results seamed interesting, so I eventually settled on leaving this solution as it is.
+            #       Despite not preventing the seams' blur from reaching the edge in the current implementation,
+            #   the effect seemed better than the alternative. 
+            #       I've also noticed that using two vignettes,
+            #   one more steep for the maximum and the other for seam alignment, seems to create
+            #   more visual artifacts than it solves.
         masks_list.append(mask)
         np.add(apply_mask(rolled_block, mask, True), res_block, out=res_block)
 
     if has_left:
         mask = get_min_cut_patch_mask_horizontal(ref_block_left, patch_block, block_size, overlap, gen_args.blend_config)
-        #print(f"prior mask = {mask}")
 
         if gen_args.blend_into_patch:
             compute_adaptive_blend_mask(
@@ -284,7 +297,6 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
                 mask,
                 gen_args
             )
-        #print(f"post mask = {mask}")
         process_block(np.roll(ref_block_left, overlap, 1), mask)
 
     if has_right:
@@ -405,40 +417,6 @@ def patch_blending_vignette(block_size: num_pixels, overlap: num_pixels,
                                                          .reshape(1, -1))  # Copy the last row flipped horizontally
     mask = 1 - mask
     return mask
-
-
-def blur_patch_mask(src_mask: np.ndarray, vignette: np.ndarray):
-    """
-    Uses the distance transform to blur the patch -> dst_grad.
-    This mask is composed w/ additional masks to avoid noticeable discontinuities on the generation.
-
-    Args:
-        src_mask: patch mask complement in f32; patch area as 0s and outside as 1s
-        vignette: mask that fades from 1s to 0s on the edges,
-
-    Returns: (vignette * dst_grad) + ((1 - vignette) * edge_blurred_source)
-    """
-    # compute dst_grad & edge_blurred
-    blurred_a = np.ascontiguousarray(src_mask * 255, dtype=np.uint8)
-    blurred_b = np.empty_like(blurred_a, order='c')
-    cv.morphologyEx(blurred_a, cv.MORPH_ERODE, iterations=1, dst=blurred_b,
-                    kernel=cv.getStructuringElement(cv.MORPH_ELLIPSE, (3, 3)))
-    cv.blur(blurred_b, (3, 3), dst=blurred_a)
-    edge_blurred = np.float32(blurred_a) / 255
-
-    # devnote: L2 only does not work w/ uint8, only L1 works w/ uint8 I think...
-    #  prior micro optimization using blurred_a & b actually removed the gradient mask, and the blured was being used instead
-    dst_grad = cv.distanceTransform(blurred_b, cv.DIST_L2, maskSize=0)
-    dst_grad_aux = cv.blur(dst_grad, (5, 5))
-    np.divide(dst_grad_aux, max(np.max(dst_grad_aux), 1), out=dst_grad)
-
-    # compute formula re-using already allocated memory
-    #   formula: (vignette * dst_grad) + ((1 - vignette) * edge_blurred)
-    weighted_blurred = np.multiply(vignette, dst_grad, out=dst_grad)
-    one_minus_vignette = 1 - vignette  # vignette is cached, can't edit it
-    weighted_src = np.multiply(edge_blurred, one_minus_vignette, out=one_minus_vignette)
-    result = np.add(weighted_blurred, weighted_src, out=weighted_blurred)
-    return np.clip(result, 0, 1, out=result)  # better safe than sorry
 
 
 def get_min_cut_patch_mask_horizontal_jena2020(block1, block2, block_size: num_pixels, overlap: num_pixels):
