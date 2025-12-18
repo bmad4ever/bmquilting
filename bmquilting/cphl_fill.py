@@ -9,13 +9,16 @@ from functools import cached_property
 try:
     from .synthesis_subroutines import (
         apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace)
-    from .types import num_pixels, percentage
+    from .types import num_pixels, percentage, BlendConfig
+    from .seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_2
 except:
     from bmquilting.synthesis_subroutines import (
         apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace)
-    from bmquilting.types import num_pixels, percentage
+    from bmquilting.types import num_pixels, percentage, BlendConfig
+    from bmquilting.seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_2
 
 
+TEMP_BLEND_CONFIG = auto_blend_config_2(9, 40, 1, True)
 # quilting using Circular Patches over a Hexagonal Lattice (CPHL)
 
 
@@ -255,7 +258,6 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
             tmpl_mask *= roi
         del corners
 
-
     # 4. Find the best matching patch from the lookup texture
     # Now using the config's tolerance
     patch: np.ndarray = find_circular_patch(lookup, block, tmpl_mask, tolerance, radius * 2)
@@ -282,12 +284,32 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
 
     showInMovedWindow("mask", mask * 255, 50 + radius * 2 * 4, 25)
 
-    # 7. Apply Blending
-    image[y1:y2, x1:x2] = apply_mask(image[y1:y2, x1:x2], (1 - mask)) + apply_mask(patch, mask)
+    # 7. Compute patched result
+    patched = apply_mask(image[y1:y2, x1:x2], (1 - mask)) + apply_mask(patch, mask)
+
+    # TODO CURRENT START
+
+    tdiff_map = gradients_differences_at_the_seam(TEMP_BLEND_CONFIG.sobel_kernel_size,  # TODO remove hardcoding
+                                                  mask, block, patch, patched)
+
+    blended = create_adaptive_blend_mask(
+        tdiff_map=tdiff_map,
+        mc_mask_overlap=mask,
+        blend_config=TEMP_BLEND_CONFIG, # TODO replace with actual configs
+        radii_limiter_mask=roi,
+        dtype=block.dtype
+    )
+
+    #showInMovedWindow("blended", blended * 255, 50 + radius * 2 * 5, 25)
+
+    # TODO END
+
+    # 8. Paste into the source image
+    image[y1:y2, x1:x2] = apply_mask(image[y1:y2, x1:x2], blended) + apply_mask(patch, 1-blended)
     showInMovedWindow("patched single", image, 1920 - image.shape[1], 25)
     cv2.waitKey(0)
 
-    # 8. Update the filled mask state
+    # 9. Update the filled mask state
     np.maximum(mask, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
     cv2.imshow("filled state", filled_mask * 255)
     cv2.waitKey(0)
@@ -326,7 +348,7 @@ def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
     filled_mask = roi_mask.copy()
 
     # Erode the ROI mask to prevent against cases where there is little nearby texture to grab for template matching
-    kernel_size = 2 * radius//3 + 1
+    kernel_size = 2 * radius//2 + 1
     circular_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
     cv2.morphologyEx(roi_mask, cv2.MORPH_ERODE, kernel=circular_kernel, dst=roi_mask)
     del kernel_size, circular_kernel
@@ -528,7 +550,7 @@ def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  
 
 
 if __name__ == "__main__":
-    text_idx = "16"
+    text_idx = "18"
     src = cv2.imread(f"test_data/results/t{text_idx}.png", cv2.IMREAD_COLOR)
     src2 = cv2.imread(f"test_data/textures/t{text_idx}.png", cv2.IMREAD_COLOR)
     src = np.float32(src) / 255
