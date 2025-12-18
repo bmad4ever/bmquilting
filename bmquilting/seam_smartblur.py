@@ -14,7 +14,7 @@ DEFAULT_BLEND_SCALE = 1.0
 USE_SCHAAR_WHEN_KSIZE_EQUALS_3 = True
 
 
-def debug_resize(arr, factor=8):
+def debug_resize(arr, factor=2):
     return cv2.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
 
 
@@ -167,6 +167,7 @@ def adaptive_maximum_filter(
 
 def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarray,
                                blend_config: BlendConfig,
+                               radii_limiter_mask: np.ndarray | None = None,
                                dtype=np.uint8):
     """
     Create adaptive blend mask with transition width based on gradient differences.
@@ -208,6 +209,21 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     max_blur_diameter_found = round(np.max(blend_diameters))
     blend_radii = np.divide(blend_diameters, 2, out=blend_diameters)
 
+    # Limit radii with respect to the mask boundaries, to avoid having near or out bounds blur
+    if radii_limiter_mask is not None:       # TODO
+        radii_limiter = radii_limiter_mask.astype(np.uint8, copy=True)
+        radii_limiter = cv2.distanceTransform(radii_limiter.astype(np.uint8), cv2.DIST_L2, 3).astype(np.float32)
+        #sigma = (min_blur_diameter + 1)/6
+        #cv2.GaussianBlur(radii_limiter, (0, 0), sigmaX=sigma, sigmaY=sigma, dst=radii_limiter)
+        cv2.imshow("radii limiter", radii_limiter/np.max(radii_limiter))
+
+        cv2.imshow("BR", blend_radii/np.max(blend_radii))
+        print(f"{ np.max(blend_radii) = }")
+
+        np.minimum(radii_limiter, blend_radii, out=blend_radii)#, where=blend_radii > 0)
+        blend_radii[blend_radii<=0] = .001  # can't use zero here due to division later
+        cv2.imshow("clipped BR", blend_radii/np.max(blend_radii))
+
     print(f"min diam, max diam, overlap, max diam found = {
     min_blur_diameter, max_blur_diameter, mc_mask_overlap.shape[1], max_blur_diameter_found}")
 
@@ -241,14 +257,15 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     t = signed_distance / blend_radii  # min should be min_diameter, never zero
     cv2.GaussianBlur(t, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=t)
 
-    #cv2.imshow("t", debug_resize(np.abs(t) / max(np.max(np.abs(t)), 1e-8)))
+    cv2.imshow("t", debug_resize(np.abs(t) / max(np.max(np.abs(t)), 1e-8)))
+    cv2.waitKey()
 
     # compute blend_mask in place
     # input and output clipping should be handled by the function
     blend_config.blur_shape_func.inplace_func(t)
     blend_mask = t
 
-    #cv2.imshow("blend_mask", debug_resize(blend_mask))
+    cv2.imshow("blend_mask", debug_resize(blend_mask))
     #cv2.waitKey()
 
     return blend_mask
@@ -279,11 +296,10 @@ def auto_min_blend_size(sobel_ksize):
 
 def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask: np.ndarray,
                                 gen_args: GenParams,
-                                #overlap: int, sobel_ksize: int = 3,
-                                debug: bool = False):
+                                debug: bool = False) -> None:
     """
     Compute adaptive blend mask based on gradient differences.
-    Optimized for performance with pre-allocated arrays and minimal allocations.
+    The output is copied to cut_mask to avoid additional allocations.
 
     @param source: existing texture, to the LEFT of the patch. (rotate/flip the block for other orientations)
         The source should not have been rolled to match the overlap section on the final patched block.
@@ -313,73 +329,9 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     # Get patched overlap region
     patched_overlap = apply_mask(source_overlap, 1.0 - cut_mask_overlap) + apply_mask(patch_overlap, cut_mask_overlap)
 
-    # The next section does the following, albeit minimizing mem. allocations (thus being harder to read)
-    # 1. Get the gradients for all patches;
-    # 2. Compute the difference between source & patched, and patch & patched
-    # 3. Get the highest difference from both and mask them to only get values near the cut.
-
-    # Pre-allocate output arrays for gradients
-    # Determine output shape (handle multichannel)
-    grad_shape = patched_overlap.shape
-    assert (source.dtype == np.float32)
-    _dtype, ddepth = np.float32, cv2.CV_32F
-
-    # Allocate gradient arrays once (reuse for different images)
-    gx = np.empty(grad_shape, dtype=_dtype)
-    gy = np.empty(grad_shape, dtype=_dtype)
-
-    # Compute gradients for patched_overlap
-    cv2.Sobel(patched_overlap, ddepth, 1, 0, dst=gx, ksize=sobel_ksize)
-    cv2.Sobel(patched_overlap, ddepth, 0, 1, dst=gy, ksize=sobel_ksize)
-
-    # Pre-allocate diff array (will reuse)
-    diff_source = np.empty(grad_shape, dtype=_dtype)
-
-    # Compute diff_source in-place
-    # diff_source = sqrt((gx_patched - gx_source)² + (gy_patched - gy_source)²)
-    cv2.Sobel(source_overlap, ddepth, 1, 0, dst=diff_source, ksize=sobel_ksize)
-    diff_source -= gx  # diff_source now has (gx_patched - gx_source)
-    diff_source *= diff_source  # Square in-place
-
-    # Temporary for gy difference
-    temp_gy = np.empty(grad_shape, dtype=_dtype)
-    cv2.Sobel(source_overlap, ddepth, 0, 1, dst=temp_gy, ksize=sobel_ksize)
-    temp_gy -= gy  # (gy_patched - gy_source)
-    temp_gy *= temp_gy  # Square in-place
-
-    diff_source += temp_gy  # Add squared differences
-    np.sqrt(diff_source, out=diff_source)  # In-place sqrt
-
-    # Compute diff_patch (reuse temp_gy)
-    diff_patch = temp_gy  # Reuse the allocation
-    cv2.Sobel(patch_overlap, ddepth, 1, 0, dst=diff_patch, ksize=sobel_ksize)
-    diff_patch -= gx  # (gx_patched - gx_patch)
-    diff_patch *= diff_patch  # Square
-
-    # Reuse gx for temporary gy computation
-    cv2.Sobel(patch_overlap, ddepth, 0, 1, dst=gx, ksize=sobel_ksize)
-    gx -= gy  # (gy_patched - gy_patch)
-    gx *= gx  # Square
-
-    diff_patch += gx  # Add squared differences
-    np.sqrt(diff_patch, out=diff_patch)  # In-place sqrt
-
-    # Take maximum across channels
-    if len(diff_source.shape) == 3:
-        max_diffs_source = np.max(diff_source, axis=2)
-        max_diffs_patch = np.max(diff_patch, axis=2)
-    else:
-        # suppose shape == 2
-        max_diffs_source = diff_source
-        max_diffs_patch = diff_patch
-
-    # Compute "transition diff. map" in-place using max_diffs_source as output buffer
-    tdiff_map = max_diffs_source  # Reuse allocation
-    np.multiply(max_diffs_source, 1 - cut_mask_overlap, out=tdiff_map)
-
-    # Use max_diffs_patch as temporary
-    np.multiply(max_diffs_patch, cut_mask_overlap, out=max_diffs_patch)
-    np.maximum(tdiff_map, max_diffs_patch, out=tdiff_map)
+    # Gradients Diffs Map
+    tdiff_map = gradients_differences_at_the_seam(sobel_ksize, cut_mask_overlap,
+                                                  source_overlap, patch_overlap, patched_overlap)
 
     if debug:
         print(f"tdiff shape: {tdiff_map.shape}, max: {np.max(tdiff_map):.2f}, min: {np.min(tdiff_map):.2f}")
@@ -402,8 +354,10 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
         max_actual = min(max_proposed, max_allowed)
         print(f"Blend widths: min={min_blend}px, max={max_actual}px")
 
-    # Update min-cut mask with adaptive blend
-    cut_mask[:block_size, :overlap] = 1 - blended
+    # Update min-cut mask with adaptive blend  -> (1 - blended)
+    blended *= -1
+    blended += 1
+    cut_mask[:block_size, :overlap] = blended
 
     if debug:
         #print(f"Final patch shape: {final_patch.shape}, dtype: {final_patch.dtype}")
@@ -429,8 +383,85 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
-    #return cut
 
+def gradients_differences_at_the_seam(
+        sobel_ksize: int, cut_mask_overlap: np.ndarray,
+        source_overlap: np.ndarray, patch_overlap: np.ndarray, patched_overlap: np.ndarray) -> np.ndarray:
+    """
+    This function does the following, albeit minimizing mem. allocations (thus being harder to read)
+    # 1. Get the gradients for all provided textures (source, patch, and patched) @newline
+    # 2. Compute the difference between source & patched, and patch & patched gradients \n
+    # 3. Get the highest difference from both and mask them to only get values near the cut.
 
-if __name__ == "__main__":
-    print(get_max_possible_gradient_diff("float32", 3))
+    @param _dtype: dtype used for the computations and final output, should match the input arrays
+    @param ddepth: cv type code (e.g. cv2.CV_32F)
+    @param grad_shape: the shape of the gradients tensor (should be the same as the sources)
+    @param sobel_ksize: ksize argument when using cv2.Sobel function
+    @param cut_mask_overlap: cut mask view of the area where source and patch overlap
+    @param source_overlap: source view of the area which overlaps with the patch
+    @param patch_overlap: patch view of the area which overlaps with the source
+    @param patched_overlap: patched view of the area where source and patch overlap
+    @return:
+    """
+    assert (source_overlap.dtype == np.float32)
+
+    # Setup types and shape
+    grad_shape = patched_overlap.shape
+    _dtype, ddepth = np.float32, cv2.CV_32F
+
+    # Allocate gradient arrays once (reuse for different images)
+    gx = np.empty(grad_shape, dtype=_dtype)
+    gy = np.empty(grad_shape, dtype=_dtype)
+
+    # Compute gradients for patched_overlap
+    cv2.Sobel(patched_overlap, ddepth, 1, 0, dst=gx, ksize=sobel_ksize)
+    cv2.Sobel(patched_overlap, ddepth, 0, 1, dst=gy, ksize=sobel_ksize)
+
+    # Pre-allocate diff array (will reuse)
+    diff_source = np.empty(grad_shape, dtype=_dtype)
+
+    # Compute diff_source in-place
+    # diff_source = sqrt((gx_patched - gx_source)² + (gy_patched - gy_source)²)
+    cv2.Sobel(source_overlap, ddepth, 1, 0, dst=diff_source, ksize=sobel_ksize)
+    diff_source -= gx  # diff_source now has (gx_patched - gx_source)
+    diff_source *= diff_source  # Square in-place
+
+    # Temporary for gy difference
+    temp_gy = np.empty(grad_shape, dtype=_dtype)
+    cv2.Sobel(source_overlap, ddepth, 0, 1, dst=temp_gy, ksize=sobel_ksize)
+    temp_gy -= gy  # (gy_patched - gy_source)
+    temp_gy *= temp_gy  # Square in-place
+    diff_source += temp_gy  # Add squared differences
+    np.sqrt(diff_source, out=diff_source)  # In-place sqrt
+
+    # Compute diff_patch (reuse temp_gy)
+    diff_patch = temp_gy  # Reuse the allocation
+    cv2.Sobel(patch_overlap, ddepth, 1, 0, dst=diff_patch, ksize=sobel_ksize)
+    diff_patch -= gx  # (gx_patched - gx_patch)
+    diff_patch *= diff_patch  # Square
+
+    # Reuse gx for temporary gy computation
+    cv2.Sobel(patch_overlap, ddepth, 0, 1, dst=gx, ksize=sobel_ksize)
+    gx -= gy  # (gy_patched - gy_patch)
+    gx *= gx  # Square
+    diff_patch += gx  # Add squared differences
+    np.sqrt(diff_patch, out=diff_patch)  # In-place sqrt
+
+    # TODO consider adding different methods here, such as the average
+    # Take maximum across channels
+    if len(diff_source.shape) == 3:
+        max_diffs_source = np.max(diff_source, axis=2)
+        max_diffs_patch = np.max(diff_patch, axis=2)
+    else:
+        # suppose shape == 2
+        max_diffs_source = diff_source
+        max_diffs_patch = diff_patch
+
+    # Compute "transition diff. map" in-place using max_diffs_source as output buffer
+    tdiff_map = max_diffs_source  # Reuse allocation
+    np.multiply(max_diffs_source, 1 - cut_mask_overlap, out=tdiff_map)
+
+    # Use max_diffs_patch as temporary
+    np.multiply(max_diffs_patch, cut_mask_overlap, out=max_diffs_patch)
+    np.maximum(tdiff_map, max_diffs_patch, out=tdiff_map)
+    return tdiff_map

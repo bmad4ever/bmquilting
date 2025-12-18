@@ -1,558 +1,467 @@
-import cv2
 import numpy as np
-import math
-from numpy import random
-from dataclasses import dataclass
-from functools import cached_property
+import cv2
+from functools import lru_cache
+from math import ceil
 
+from .misc.dry import apply_mask
+from .types import UiCoordData, GenParams, BlendConfig, num_pixels
 
-try:
-    from .synthesis_subroutines import (
-        apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace)
-    from .types import num_pixels, percentage
-except:
-    from bmquilting.synthesis_subroutines import (
-        apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace)
-    from bmquilting.types import num_pixels, percentage
+import traceback  # for debug purposes
 
+DEFAULT_MAX_BLEND_RATIO = 0.95  # percentage of the overlap size that can be used for blending purposes
+DEFAULT_BLEND_SCALE = 1.0
 
-# quilting using Circular Patches over a Hexagonal Lattice (CPHL)
+USE_SCHAAR_WHEN_KSIZE_EQUALS_3 = True
 
 
-# TODO
-# -> test: test w/ additional textures
-# -> cleanup: remove comments & unused
-# -> tolerance must be an argument
-# -> blend into patch feature
-# -> expose patch "hole" function
-# -> implement comfyui node
-# -> implement "radial" parallel texture generation using this quilting variant
+def debug_resize(arr, factor=2):
+    return cv2.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
 
-@dataclass
-class CircularPatchingConfig:
-    radius: num_pixels
-    overlap_r: num_pixels
-    tolerance: percentage
-    outer_corners_weighted_template_matching: bool
-    spacing_factor: float
 
-    def __post_init__(self):
-        if not (0.0 <= self.tolerance <= 1.0):
-            raise ValueError(f"{self.tolerance = } tolerance should be in the [0,1] range.")
-
-    @cached_property
-    def non_overlap_radius(self) -> int:
-        """Calculates the radius of the central non-overlap region."""
-        return self.radius - self.overlap_r
-
-
-def showInMovedWindow(winname, img, x, y):
-    cv2.namedWindow(winname)  # Create a named window
-    cv2.moveWindow(winname, x, y)  # Move it to (x,y)
-    cv2.imshow(winname, img)
-
-
-def find_annulus_outer_corners(mask: np.ndarray, inner_radius: int, outer_radius: int) -> list[tuple[int, int]]:
-    """
-    Args:
-        mask: the mask w/ the annulus
-        inner_radius: inner radius of the annulus
-        outer_radius: outer radius of the annulus
-
-    Returns:
-        list of points in the following tuple format: (y, x)
-    """
-    margin: int = 4
-    extended_mask = np.zeros((margin * 2 + mask.shape[0], margin * 2 + mask.shape[1]), dtype=mask.dtype)
-    extended_mask[4:-4, 4:-4] = mask
-
-    dst = cv2.cornerHarris(extended_mask, blockSize=2, ksize=5, k=0.06)
-    corners = np.nonzero(dst > int(0.01 * dst.max()))
-    corners = zip(corners[1], corners[0])  # generator to iterate all corners; also swaps y & x
-    corners = ((c[0] - margin, c[1] - margin) for c in corners)  # offset w/ margin
-
-    # ___ filter out inner corners __________
-    center = (outer_radius + margin, outer_radius + margin)
-    sqr_cut_off_radius = ((outer_radius + inner_radius) / 2) ** 2
-
-    def corner_filter_predicate(corner):
-        nonlocal center, sqr_cut_off_radius
-        return sqr_cut_off_radius < (corner[0] - center[0]) ** 2 + (corner[1] - center[1]) ** 2
-
-    outer_corners = [c for c in corners if corner_filter_predicate(c)]
-    return outer_corners
-
-
-def distance_to_points(shape: tuple[int, int], points: list[tuple[int, int]]) -> np.ndarray:
-    """
-    Args:
-        shape: output mask shape
-        points: list of points in the format: (y, x).
-
-    Returns:
-        a float32 mask with the distance transform
-    """
-    corners = np.zeros(shape, dtype=np.uint8)
-    for p in points:  # paint points
-        # points are drawn using cv.circle to avoid out of bound errors at the edges
-        cv2.circle(corners, p, 3, (255,), -1)
-
-    showInMovedWindow("annulus corners", corners, 50 + shape[0] * 1, 25)
-
-    distance_map = cv2.distanceTransform(255 - corners, cv2.DIST_L2, 5, dst=corners)
-    cv2.GaussianBlur(distance_map, (15, 15), sigmaX=0, sigmaY=0,
-                     dst=distance_map)  # TODO this requires a min radius of ~8
-    dst_norm = np.empty_like(distance_map, dtype=np.float32)
-    dst_norm = cv2.normalize(distance_map, dst_norm, 0, 1, cv2.NORM_MINMAX)
-    dst_norm = 1 - dst_norm
-
-    showInMovedWindow('Weighted Mask', dst_norm, 50 + shape[0] * 2, 25)
-    return dst_norm
-
-
-def create_mock_mask_with_polygon(width, height, polygon_points):
-    """
-    Create a white mask of given dimensions and draw a black polygon on it.
-
-    Args:
-    - width (int): The width of the mask.
-    - height (int): The height of the mask.
-    - polygon_points (list of tuples): List of (x, y) tuples representing the vertices of the polygon.
-
-    Returns:
-    - mask (numpy.ndarray): The mask with the black polygon drawn on it.
-    """
-    mask = np.ones((height, width), dtype=np.uint8)
-    polygon_points = np.array(polygon_points, dtype=np.int32)
-    cv2.fillPoly(mask, [polygon_points], (0, 0, 0))
-    return mask
-
-
-def create_mock_mask(shape):
-    # Define dimensions of the mask
-    height, width = shape[:2]  #500, 500
-
-    # Define points of the 5-sided polygon (pentagon)
-    polygon_points = [
-        (1 / 2, 1 / 5),  # Top
-        (4 / 5, 2 / 5),  # Bottom-right
-        (35 / 50, 35 / 50),  # Bottom
-        (15 / 50, 35 / 50),  # Bottom-left
-        (1 / 5, 2 / 5)  # Top-left
-    ]
-    polygon_points = [(x * width, y * height) for (x, y) in polygon_points]
-
-    # Create the mask
-    mask = create_mock_mask_with_polygon(width, height, polygon_points)
-    return mask
-
-
-def get_bounding_box(mask):
-    """
-    Get the bounding box of the black shape in the mask.
-
-    Args:
-    - mask (numpy.ndarray): The mask with the black shape.
-
-    Returns:
-    - bounding_box (tuple): The bounding box of the black shape in the format (x, y, w, h).
-    """
-    mask = 1 - mask
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        largest_contour = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(largest_contour)
-        return (x, y, w, h)
-    else:
-        return (0, 0, 0, 0)  # edge case: no contours
-
-
-kernelx3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-kernelx5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-kernelx15 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-
-
-def blur_annulus_mask(mask, inner_radius):
-    """
-    UNUSED, likely not needed...
-    """
-    height, width = mask.shape
-
-    border_size = round((width - inner_radius) / 2)
-    extended_mask = cv2.copyMakeBorder(mask, border_size, border_size, border_size, border_size, cv2.BORDER_CONSTANT)
-
-    blur_kernel_size_h = (border_size // 2, border_size // 2)
-    blur_kernel_size = (border_size, border_size)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, blur_kernel_size_h)
-    extended_mask = cv2.morphologyEx(extended_mask, cv2.MORPH_ERODE, kernel)
-    blurred_extended_mask = cv2.GaussianBlur(extended_mask, blur_kernel_size, sigmaX=0, sigmaY=0)
-
-    blurred_mask = blurred_extended_mask[border_size:border_size + height, border_size:border_size + width]
-
-    blurred_mask = cv2.normalize(blurred_mask.astype(np.float32), None, 0, 1, cv2.NORM_MINMAX)
-    return blurred_mask
-
-
-def reverse_blured_circle_mask(mask, overlap_radius):
-    """
-    Args:
-        mask: circle mask as uint8 w/ values from [0 to 255]
-    """
-    _, width = mask.shape[:2]
-    ksize = width // 2 + 1
-    ksize = (ksize, ksize)
-    border_size = round(width / 2)
-    blured_mask = cv2.copyMakeBorder(mask, border_size, border_size, border_size, border_size, cv2.BORDER_CONSTANT)
-    blured_mask[border_size:-border_size, border_size:-border_size] = mask
-    np.subtract(255, blured_mask, out=blured_mask)
-    blured_mask = cv2.morphologyEx(blured_mask, cv2.MORPH_DILATE, kernelx3, iterations=overlap_radius // 2)
-    blured_mask = cv2.GaussianBlur(blured_mask, ksize, sigmaX=0, sigmaY=0)
-    blured_mask = blured_mask[border_size:-border_size, border_size:-border_size]
-    blured_mask = blured_mask.astype(np.float32) / 255
-    return blured_mask
-
-
-# Helper function: Signature updated to accept only config
-def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
-                               lookup: np.ndarray,  # TODO replace with list | SharedTextList
-                               x: int, y: int,
-                               config: CircularPatchingConfig, debug_img):
-    """
-    Finds and applies a single circular patch at location (x, y).
-
-    Updates image block and the blending mask.
-    """
-    # --- Fetch Config Parameters ---
-    radius = config.radius
-    f_radius = float(radius)
-    non_overlap_radius = config.non_overlap_radius
-    tolerance = config.tolerance
-
-    # 1. Calculate the bounding box for the current circular patch
-    y1, y2, x1, x2 = y - radius, y + radius, x - radius, x + radius
-
-    # 2. Extract the current image block and the region of interest (ROI)
-    block = image[y1:y2, x1:x2]
-    roi = filled_mask[y1:y2, x1:x2]
-
-    # Create the circular and annular masks used for this patch
-    circ_roi = np.zeros((radius * 2, radius * 2), dtype=np.uint8)
-    cv2.circle(circ_roi, (radius, radius), radius, (1,), -1)
-
-    annulus_roi_block = np.zeros((radius * 2, radius * 2), dtype=np.uint8)
-    cv2.circle(annulus_roi_block, (radius, radius), radius, (1,), -1)
-    cv2.circle(annulus_roi_block, (radius, radius), round(non_overlap_radius), (0,), -1)
-
-    roi = annulus_roi_block * roi  # confines the ROI to the annulus (overlap) region
-    tmpl_mask = roi                # mask used w/ template matching
-
-    # 3. Weighted Template Matching Setup
-    # The 'outer_corners_weighted_template_matching' flag can be used here later
-    if config.outer_corners_weighted_template_matching:
-        corners = find_annulus_outer_corners(roi, non_overlap_radius, radius)
-        if len(corners) > 0:
-            tmpl_mask = distance_to_points(roi.shape[:2], corners)
-            tmpl_mask *= roi
-        del corners
-
-
-    # 4. Find the best matching patch from the lookup texture
-    # Now using the config's tolerance
-    patch: np.ndarray = find_circular_patch(lookup, block, tmpl_mask, tolerance, radius * 2)
-
-    # 5. Compute Errors prior to warping
-    errors = avg_squared_diff(block, patch)
-    adjust_errors_func_inplace(errors)
-
-    # 6. Find Seam using Polar Coordinates
-    center = [d / 2 - .5 for d in circ_roi.shape]
-    warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
-
-    # Warp current block, new patch, and overlap ROI to polar coordinates
-    polar_errors, polar_roi = (
-        cv2.warpPolar(i, (radius, round(radius * 2 * np.pi)), center, f_radius, warp_flags)
-        for i in [errors, roi])
-
-    # Find the "optimal" seam
-    mask = min_cut_circ(polar_errors, polar_roi, non_overlap_radius)
-
-    # Warp the seam mask back to Cartesian coordinates
-    mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius,
-                         cv2.WARP_INVERSE_MAP | warp_flags)
-
-    showInMovedWindow("mask", mask * 255, 50 + radius * 2 * 4, 25)
-
-    # 7. Apply Blending
-    image[y1:y2, x1:x2] = apply_mask(image[y1:y2, x1:x2], (1 - mask)) + apply_mask(patch, mask)
-    showInMovedWindow("patched single", image, 1920 - image.shape[1], 25)
-    cv2.waitKey(0)
-
-    # 8. Update the filled mask state
-    np.maximum(mask, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
-    cv2.imshow("filled state", filled_mask * 255)
-    cv2.waitKey(0)
-
-    return image[y1:y2, x1:x2], mask
-
-
-def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
-                 lookup: np.ndarray,  # TODO change to list / SharedTextList
-                 config: CircularPatchingConfig,
-                 debug_img: np.ndarray = None) -> np.ndarray:
-    """
-    Applies texture synthesis to the ROI by tiling circular patches on a hexagonal lattice
-    and blending them using min-cut in polar coordinates, driven by a configuration object.
-    """
-
-    # --- 0. Fetch Config Parameters ---
-    radius = config.radius
-    spacing_factor = config.spacing_factor
-
-    # --- 1. Initial Setup and Padding ---
-
-    # Pad the image and mask
-    image = cv2.copyMakeBorder(image, radius, radius, radius, radius, borderType=cv2.BORDER_REFLECT_101)
-    roi_mask = cv2.copyMakeBorder(roi_mask, radius, radius, radius, radius, borderType=cv2.BORDER_REFLECT_101)
-    roi_mask_i = roi_mask.astype(np.uint8)
-    roi_mask = roi_mask.astype(np.float32)
-    roi_mask /= np.max(roi_mask)
-
-    # Get the bounding box of the ROI (in the padded image coordinates)
-    min_x, min_y, w, h = get_bounding_box(roi_mask_i)
-    max_x, max_y = min_x + w, min_y + h
-    del roi_mask_i
-
-    # filled_mask tracks which areas have already been patched (used for overlap region)
-    filled_mask = roi_mask.copy()
-
-    # Erode the ROI mask to prevent against cases where there is little nearby texture to grab for template matching
-    kernel_size = 2 * radius//3 + 1
-    circular_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
-    cv2.morphologyEx(roi_mask, cv2.MORPH_ERODE, kernel=circular_kernel, dst=roi_mask)
-    del kernel_size, circular_kernel
-    cv2.imshow("eroded roi_mask", roi_mask * 255)
-
-    # Debug visualization for the bounding box
-    if debug_img is not None:           # TODO remove debug
-        cv2.rectangle(debug_img, (int(min_x - radius), int(min_y - radius)), (int(max_x - radius), int(max_y - radius)),
-                      (1.0, 0.0, 0.0), 2)
-
-    # --- 2. Hexagonal Lattice Iteration ---
-    # Calculates the spacing for the patch centers based on config.spacing_factor
-    x_spacing = int(radius * 2 / 1.5 * math.cos(math.pi / 6) * spacing_factor)
-    y_spacing = int(radius * spacing_factor)
-
-    for y in range(int(min_y), int(max_y + y_spacing), y_spacing):
-        for x in range(int(min_x), int(max_x + x_spacing), x_spacing):
-
-            if (y // y_spacing) % 2 != 0:  # offset every odd row to create a hexagonal pattern
-                x += x_spacing // 2
-
-            if roi_mask[y, x] > 0:         # skip if the patch center is outside the eroded ROI
-                continue
-
-            if debug_img is not None:      # debug lattice, TODO remove later
-                color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-                cv2.circle(debug_img, (int(x - radius), int(y - radius)), radius, color, -1)
-                cv2.circle(debug_img, (int(x - radius), int(y - radius)), 5, (0, 0, 0), -1)
-
-            _process_patch_at_location(image, filled_mask, lookup, x, y, config, debug_img)
-
-    # --- 3. Final Cleanup ---
-
-    # Remove the padding from the final image before returning
-    return image[radius:-radius, radius:-radius]
-
-
-def find_first_2adjacent_all_zero_rows(mask):
-    """return the index of the second all zero row"""
-    prev = False
-    for i, row in enumerate(mask):
-        current = all(pixel == 0 for pixel in row)
-        if prev and current:
-            return i
-        prev = current
-    return None
-
-
-def min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: num_pixels) -> np.ndarray:
-    """
-    @param errors: warped matrix with the pre-computed errors
-    @param roi: warped binary mask of the region of interest
-    """
-    import pyastar2d
-
-    # devnote:
-    #  narrow cuts, that barely have any width, can still allow for narrow paths;
-    #   such cases can leave unfilled "cuts" in the texture when patching.
-    #  To avoid the aforementioned problem, the size or spacing of the patches can be changed.
-    #  I've attempted to solve the problem using morphological operations;
-    #   however, this approach comes with some new problems.
-    #  I've thus decided to keep the solution simple.
-
-    adjust_errors_for_pystar2d_inplace(errors, errors.shape[0])
-
-    offset_row = find_first_2adjacent_all_zero_rows(roi[:, non_overlap_radius:])
-    if offset_row is not None:
-        errors = np.roll(errors, -offset_row, axis=0)
-        roi = np.roll(roi, -offset_row, axis=0)
-
-    showInMovedWindow("rolled polar roi", roi * 255, 100, 200)
-
-    errors[roi == 0] = 0  # TODO only for DEBUG purposes, can be removed later
-    showInMovedWindow("errors", errors / np.max(errors), 100 + (8 + roi.shape[1]) * 2, 200)
-
-    start_x = end_x = errors.shape[1] - 1
-    if offset_row is None:
-        # when no empty row is found, search for the cut endpoints at the top & bottom so that the path is not broken
-        start_x, end_x = find_min_cut_circ_endpoints(errors, roi)
-
-    errors[:, -1] = roi[:, -1] * errors[:, -1] + (1 - roi[:, -1])  # bottom holes escape path
-    errors[:, :-1][roi[:, :-1] == 0] = np.inf  # don't travel outside the mask, unless via the escape path
-
-    start = (0, start_x)
-    end = (errors.shape[0] - 1, end_x)
-    #cv2.waitKey(0)
-
-    path = pyastar2d.astar_path(errors, start, end, allow_diagonal=True)
-    mask = np.zeros_like(roi)
-
-    print(f"mask.shape={mask.shape}")
-    for i, j in path:  # draw path
-        mask[i, j] = 1
-
-    showInMovedWindow("cut path", mask * 255, 100 + (8 + roi.shape[1]) * 3, 200)
-
-    print(f"seed point={(mask.shape[0] - 1, mask.shape[1] - 1)}")
-    cv2.floodFill(mask, None, (0, 0), (1,))
-    if offset_row is not None:
-        mask = np.roll(mask, offset_row, axis=0)
-    showInMovedWindow("cut mask", mask * 255, 100 + (8 + roi.shape[1]) * 4, 200)
-    #cv2.waitKey(0)
-
-    return mask
-
-
-def _x_squared_distance_1D(A_1D: np.ndarray, B_1D: np.ndarray):
-    """
-    Computes the squared distance matrix based on 1D arrays of X-coordinates.
-    """
-    # Reshape for broadcasting: (N, 1) and (1, M)
-    a_coords = A_1D.reshape(-1, 1)
-    b_coords = B_1D.reshape(1, -1)
-    squared_dist_matrix = (a_coords - b_coords) ** 2
-    return squared_dist_matrix
-
-
-def find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[int, int]:
-    """
-    Consider the roi as the following sections: | A | B | C | D |
-    This functions rolls & crops it to get the section: | D | A |
-    Then finds the best path to go from the start of D to the end of A.
-    The points in the middle of the path, where D and A meet, are the points of interest.
-
-    There may be multiple points at this boarder, since A* can noodle around.
-    The coordinates of the pair of points nearest each other at y_center and y_center -1 is returned.
-    If multiple pairs have the same minimum distance, only one is returned.
-
-    Args:
-        errors: polar unwrapped errors
-        roi: polar unwrapped overlap roi
-    Returns: a tuple containing the top and bottom row endpoints (column idx) for the min cut
-    """
-    import pyastar2d
-
-    err_len_div4 = errors.shape[0] // 4
-    errors = np.roll(errors, -err_len_div4, axis=0)[err_len_div4 * 2:, :]
-    roi = np.roll(roi, -err_len_div4, axis=0)[err_len_div4*2:, :]
-    showInMovedWindow("rolled roi section", roi * 255, 100 + (8 + roi.shape[1]) * 5, 200)
-
-    maze = np.ones((errors.shape[0] + 2, errors.shape[1]), dtype=np.float32)
-    maze_area = maze[1:-1, :]
-    maze_area[:, :] = errors
-
-    maze[0, :] = 1
-    maze[-1, :] = 1
-    maze[1:-1, -1] = roi[:, -1] * maze[1:-1, -1] + (1 - roi[:, -1])  # bottom holes escape path
-    maze[1:-1, :-1][roi[:, :-1] == 0] = np.inf  # don't travel outside the mask, unless via the escape path
-
-    start = (0, maze.shape[1] - 1)
-    end = (maze.shape[0] - 1, maze.shape[1] - 1)
-
-    path = pyastar2d.astar_path(maze, start, end, allow_diagonal=True)
-
-    # Compute the distance matrix between points (y is ignored since it is fixed)
-    err_len_div4_minus1 = err_len_div4 - 1
-    points_of_interest_top = [x for (y, x) in path if y - 1 == err_len_div4]
-    points_of_interest_bottom = [x for (y, x) in path if y - 1 == err_len_div4_minus1]
-    dist_matrix = _x_squared_distance_1D(np.array(points_of_interest_top), np.array(points_of_interest_bottom))
-
-    # Find the indices of the minimum distance
-    min_index = np.unravel_index(np.argmin(dist_matrix), dist_matrix.shape)
-    top_point = points_of_interest_top[min_index[0]]
-    bottom_point = points_of_interest_bottom[min_index[1]]
-    print(f"points of interest = {(top_point, bottom_point)}")
-
-    # TODO debug code, not actually needed, remove later
-    mask = np.zeros_like(maze)
-    for i, j in path:
-        mask[i, j] = 1
-        if i - 1 == err_len_div4:
-            mask[i, :max(0, j-4):4] = 1
-
-    showInMovedWindow("aux_cut", mask, 100 + (8 + roi.shape[1]) * 6, 200)
-
-    return top_point, bottom_point
-
-
-def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  # TODO rng
-    # texture is for output
-    # image is for patch search
-    showInMovedWindow("roi used in match template", mask, 50 + block_size * 3, 25)
-
-    # according to documentation only TM_SQDIFF and TM_CCORR_NORMED accept a mask
-    # also, if given as a float it can be weighted... may come in handy later
-    err_mat = cv2.matchTemplate(image=lookup, templ=block, mask=mask, method=cv2.TM_SQDIFF)
-
-    #err_mat = 1 - ncs  # for TM_CCOEFF_NORMED
-    if tolerance > 0:
-        # attempt to ignore zeroes in order to apply tolerance, but mind edge case (e.g., blank image)
-        min_val = np.min(pos_vals) if (pos_vals := err_mat[err_mat > 0]).size > 0 else 0
-    else:
-        min_val = np.min(err_mat)
-    print(f"{min_val = }    err_threshhold = {(1.0 + tolerance) * min_val}      {np.any(min_val <= (1.0 + tolerance) * min_val)}")
-    y, x = np.nonzero(err_mat <= (1.0 + tolerance) * min_val)
-    c = np.random.randint(len(y))  # rng.integers(len(y)) # TODO replace w/ generator
-    y, x = y[c], x[c]
-    return lookup[y:y + block_size, x:x + block_size]
-
-
-if __name__ == "__main__":
-    text_idx = "16"
-    src = cv2.imread(f"test_data/results/t{text_idx}.png", cv2.IMREAD_COLOR)
-    src2 = cv2.imread(f"test_data/textures/t{text_idx}.png", cv2.IMREAD_COLOR)
-    src = np.float32(src) / 255
-    src2 = np.float32(src2) / 255
-
-    img = cv2.resize(src, [d * 2 for d in src.shape[:2][::-1]])
-    lookup = cv2.resize(src2, [d * 2 for d in src2.shape[:2][::-1]])
-
-    mask = create_mock_mask(img.shape)
-    print(f"shapes {(img.shape, mask.shape)}")
-    img[mask == 0] = (0, 0, 0)
-
-    config = CircularPatchingConfig(
-        radius=80,
-        overlap_r=40,
-        spacing_factor=0.9,
-        tolerance=0.0,
-        outer_corners_weighted_template_matching=True
+def auto_blend_config_2(sobel_kernel_size: num_pixels, overlap: num_pixels,
+                        blend_scale: float = DEFAULT_BLEND_SCALE, use_vignette: bool = False) -> BlendConfig:
+    return BlendConfig(
+        blend_scale=blend_scale,
+        use_vignette=use_vignette,
+        sobel_kernel_size=sobel_kernel_size,
+        min_blur_diameter=auto_min_blend_size(sobel_kernel_size),
+        max_blur_diameter=auto_max_blend_diameter(overlap, sobel_kernel_size)
     )
 
-    debug_img = np.stack((mask.copy(),) * 3, axis=-1)
-    img = circle_quilt(image=img, roi_mask=mask, lookup=lookup, debug_img=debug_img, config=config)
-    cv2.imshow("Result", img)
-    cv2.imshow("Patches Visualizer", debug_img)
-    cv2.waitKey(0)
 
-    cv2.destroyAllWindows()
+def auto_blend_config_1(block_size: num_pixels, overlap: num_pixels,
+                        blend_scale: float = DEFAULT_BLEND_SCALE, use_vignette: bool = False) -> BlendConfig:
+    return auto_blend_config_2(
+        blend_scale=blend_scale,
+        use_vignette=use_vignette,
+        sobel_kernel_size=min(ceil(overlap / 2.0), ceil(block_size // 5 / 2.0)),
+        overlap=overlap
+    )
+
+
+@lru_cache(maxsize=1)
+def get_max_possible_gradient_diff(dtype_str, sobel_ksize) -> float:
+    """
+    Calculate maximum possible gradient difference using actual OpenCV kernel.
+    Cached to avoid recomputing for the same dtype and kernel size.
+
+    Parameters:
+    -----------
+    dtype_str : str
+        String representation of numpy dtype (e.g., 'uint8', 'float32')
+        We use string instead of dtype object because dtype objects aren't hashable
+    sobel_ksize : int
+        Sobel kernel size
+
+    Returns:
+    --------
+    float : Maximum possible value gradient difference
+    """
+    # Convert string back to dtype
+    dtype = np.dtype(dtype_str)
+
+    if dtype == np.uint8:
+        max_pixel_value = 255.0
+    elif dtype in [np.float32, np.float64]:
+        max_pixel_value = 1.0
+    else:
+        max_pixel_value = float(np.iinfo(dtype).max) if np.issubdtype(dtype, np.integer) else 1.0
+
+    # Get actual OpenCV kernel to determine scale
+    if USE_SCHAAR_WHEN_KSIZE_EQUALS_3 and sobel_ksize == 3:
+        sobel_ksize = cv2.FILTER_SCHARR
+    kx, ky = cv2.getDerivKernels(1, 0, ksize=sobel_ksize, normalize=False)
+    kernel_2d = np.outer(kx, ky)
+
+    # Maximum response is sum of absolute values
+    sobel_scale = np.sum(np.abs(kernel_2d)) / 2
+
+    # Maximum gradient in one direction
+    K = sobel_scale * max_pixel_value
+
+    # Maximum gradient vector magnitude: sqrt(gx² + gy²)
+    max_gradient_magnitude = np.sqrt(2) * K
+
+    # Maximum difference when gradients point in opposite directions
+    max_diff = 2 * max_gradient_magnitude
+
+    return max_diff
+
+
+@lru_cache(maxsize=None)
+def circular_kernel(radius: int) -> np.ndarray:
+    """Cached circular structuring element."""
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*radius + 1, 2*radius + 1))
+
+
+def adaptive_maximum_filter(
+    radius_map: np.ndarray,
+    n_levels: int = 6,
+    gamma: float = 1.0,
+    overreach: int = 0,
+    min_radius: float | None = None,
+    max_radius: float | None = None,
+) -> np.ndarray:
+    """
+    Perform spatially adaptive morphological dilation
+    (a variable-radius maximum filter).
+
+    Each pixel expands according to its local radius value,
+    producing a smooth, radius-guided maximum field.
+
+    Parameters
+    ----------
+    radius_map : np.ndarray
+        2D map of per-pixel radii.
+    n_levels : int
+        Number of quantization levels.
+    gamma : float
+        Nonlinear exponent shaping the spacing of quantized radii.
+    overreach : int
+        Optional additive dilation to slightly extend each radius band.
+    min_radius, max_radius : float, optional
+        Bounds for quantization. Inferred from data if None.
+
+    Returns
+    -------
+    np.ndarray
+        Smoothed / dilated radius map.
+    """
+    radius_map = np.asarray(radius_map, np.float32)
+    if min_radius is None:
+        min_radius = float(radius_map.min())
+    if max_radius is None:
+        max_radius = float(radius_map.max())
+
+    # Nonlinear quantization of radius levels
+    steps = np.linspace(0, 1, n_levels + 1)[1:]
+    radii = min_radius + (max_radius - min_radius) * (steps ** gamma)
+    radii = np.unique(np.ceil(radii).astype(int))
+
+    # Preallocate
+    h, w = radius_map.shape
+    result = np.full((h, w), min_radius, np.float32)
+    processed_mask = np.zeros((h, w), np.bool_)  # tracks done pixels
+    temp_mask = np.zeros_like(processed_mask)
+
+    for r in radii:
+        # Determine current active pixels: not processed yet & <= current radius
+        np.less_equal(radius_map, float(r), out=temp_mask)
+        active_mask = np.logical_and(temp_mask, ~processed_mask)
+
+        # Build masked layer (float for dilation)
+        layer = np.where(active_mask, radius_map, 0).astype(np.float32)
+
+        # Perform dilation (local maximum) with circular kernel
+        kernel = circular_kernel(r + overreach)
+        cv2.dilate(layer, kernel, dst=layer)
+
+        # Merge results
+        np.maximum(result, layer, out=result)
+
+        # Mark these pixels as processed
+        processed_mask |= temp_mask
+
+    return result
+
+
+def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarray,
+                               blend_config: BlendConfig,
+                               radii_limiter_mask: np.ndarray | None = None,
+                               dtype=np.uint8):
+    """
+    Create adaptive blend mask with transition width based on gradient differences.
+
+    Parameters:
+    -----------
+    tdiff_map : np.ndarray (H, W)
+        Seam gradient difference map (higher values = more difficult transition)
+    mc_mask_overlap : np.ndarray (H, W)
+        Min-cut mask (0 = source side, 1 = patch side)
+    blend_config: BlendConfig
+        Blending params set for the generation, such as the minimum blur diameter.
+    dtype : numpy dtype
+        Data type of source images (for calculating theoretical max)
+
+    Returns:
+    --------
+    np.ndarray (H, W): Blend mask (0 = source, 1 = patch)
+    """
+    min_blur_diameter, max_blur_diameter = blend_config.min_blur_diameter, blend_config.max_blur_diameter
+
+    # Calculate theoretical maximum (cached)
+    # Convert dtype to string for hashable cache key
+    dtype_str = np.dtype(dtype).name
+    max_gradient_diff = get_max_possible_gradient_diff(dtype_str, blend_config.sobel_kernel_size)
+
+    # --- 2. Normalize & map to func ---
+    tdiff_norm = tdiff_map / max_gradient_diff  # normalize
+
+    # adjusts values instead of using a linear relationship
+    # the function in blend_config SHOULD clip the final values in the [0, 1] range
+    blend_config.blur_size_func.inplace_func(tdiff_norm)
+
+    # -- DEBUG --
+    #cv2.imshow("_tdiff", debug_resize(tdiff_norm / max(1e-8, np.max(tdiff_norm))))
+
+    # Map tdiff values to blend widths
+    blend_diameters = min_blur_diameter + (max_blur_diameter - min_blur_diameter) * (tdiff_norm ** blend_config.blend_scale)
+    max_blur_diameter_found = round(np.max(blend_diameters))
+    blend_radii = np.divide(blend_diameters, 2, out=blend_diameters)
+
+    # Limit radii with respect to the mask boundaries, to avoid having near or out bounds blur
+    if radii_limiter_mask is not None:       # TODO
+        radii_limiter = radii_limiter_mask.astype(np.uint8, copy=True)
+        radii_limiter = cv2.distanceTransform(radii_limiter.astype(np.uint8), cv2.DIST_L2, 3).astype(np.float32)
+        #sigma = (min_blur_diameter + 1)/6
+        #cv2.GaussianBlur(radii_limiter, (0, 0), sigmaX=sigma, sigmaY=sigma, dst=radii_limiter)
+        cv2.imshow("radii limiter", radii_limiter/np.max(radii_limiter))
+
+        cv2.imshow("BR", blend_radii/np.max(blend_radii))
+        print(f"{ np.max(blend_radii) = }")
+
+        np.minimum(radii_limiter, blend_radii, out=blend_radii)#, where=blend_radii > 0)
+        blend_radii[blend_radii<=0] = .001  # can't use zero here due to division later
+        cv2.imshow("clipped BR", blend_radii/np.max(blend_radii))
+
+    print(f"min diam, max diam, overlap, max diam found = {
+    min_blur_diameter, max_blur_diameter, mc_mask_overlap.shape[1], max_blur_diameter_found}")
+
+    if max_blur_diameter_found > min_blur_diameter:  # if they are equal then there is nothing to dilate
+        sigma = (min_blur_diameter + 1)/6
+        blend_radii = adaptive_maximum_filter(
+            radius_map=blend_radii,
+            n_levels=blend_config.adaptive_maximum_filter_number_of_levels,
+            max_radius=round(max_blur_diameter_found/2),
+            overreach=min_blur_diameter//2  # ksize 10
+        )
+        cv2.GaussianBlur(blend_radii, (0, 0), sigmaX=sigma, sigmaY=sigma, dst=blend_radii)
+
+    #cv2.imshow("norm radii layered max-filt.",
+    #           debug_resize(blend_radii / (max_blur_diameter / 2))
+    #           )
+
+    # Calculate signed distance from transition line
+    # dev note: compared 3 vs cv2.DIST_MASK_PRECISE
+    #   both performed well in terms of speed and precision so far
+    #   doesn't seem like something that needs to be further tested
+    #   as any minor details will be blured out.
+    #   I will choose simples-fastest for now
+    dist_from_source = cv2.distanceTransform((mc_mask_overlap > 0).astype(np.uint8), cv2.DIST_L2, 3)
+    dist_from_patch = cv2.distanceTransform((mc_mask_overlap <= 0).astype(np.uint8), cv2.DIST_L2, 3)
+    dist_from_patch -= dist_from_source  # compute in place
+    signed_distance = dist_from_patch.astype(np.float32)
+    cv2.GaussianBlur(signed_distance, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=signed_distance)
+
+    # Create smooth transition using sigmoid function
+    t = signed_distance / blend_radii  # min should be min_diameter, never zero
+    cv2.GaussianBlur(t, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=t)
+
+    cv2.imshow("t", debug_resize(np.abs(t) / max(np.max(np.abs(t)), 1e-8)))
+    cv2.waitKey()
+
+    # compute blend_mask in place
+    # input and output clipping should be handled by the function
+    blend_config.blur_shape_func.inplace_func(t)
+    blend_mask = t
+
+    cv2.imshow("blend_mask", debug_resize(blend_mask))
+    #cv2.waitKey()
+
+    return blend_mask
+
+
+def _auto_max_blur_diameter(max_blend_ratio, overlap_size, sobel_ksize):
+    # Start with 1.75x the kernel size (rounded)
+    max_blend_width = round(sobel_ksize * 1.75)
+
+    print(f"HEY > {max_blend_width}")
+
+    # Cap it based on patch size if provided
+    if overlap_size is not None:
+        max_allowed = int(overlap_size * max_blend_ratio)
+        max_blend_width = min(max_blend_width, max_allowed)
+        print(f"HEY 2 > {max_allowed, max_blend_width}")
+    return max_blend_width
+
+
+def auto_max_blend_diameter(overlap_size, sobel_ksize):
+    return _auto_max_blur_diameter(DEFAULT_MAX_BLEND_RATIO, overlap_size, sobel_ksize)
+
+
+def auto_min_blend_size(sobel_ksize):
+    return round(np.sqrt(sobel_ksize) + 1)
+    #return sobel_ksize // 3 * 2 + 1
+
+
+def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask: np.ndarray,
+                                gen_args: GenParams,
+                                debug: bool = False) -> None:
+    """
+    Compute adaptive blend mask based on gradient differences.
+    The output is copied to cut_mask to avoid additional allocations.
+
+    @param source: existing texture, to the LEFT of the patch. (rotate/flip the block for other orientations)
+        The source should not have been rolled to match the overlap section on the final patched block.
+    @param patch:  the patch extending the block to the RIGHT. (rotate/flip the block for other orientations)
+    @param cut_mask: the mask used to produce the final patched block.
+    """
+    assert source.shape[0] == source.shape[1], "Source must be square"
+    block_size = gen_args.block_size  # = source.shape[0]
+    overlap = gen_args.overlap
+    sobel_ksize = gen_args.blend_config.sobel_kernel_size
+    if USE_SCHAAR_WHEN_KSIZE_EQUALS_3:
+        sobel_ksize = cv2.FILTER_SCHARR
+
+    # Setup output dimensions
+    dims = np.copy(source.shape)
+    dims[0] = block_size
+    dims[1] = block_size * 2 - overlap
+
+    new_img = np.zeros(dims, dtype=source.dtype)
+    new_img[0:block_size, 0:block_size] = source
+
+    # Extract overlap regions (views, not copies)
+    cut_mask_overlap = cut_mask[:block_size, :overlap]
+    source_overlap = source[:block_size, -overlap:]
+    patch_overlap = patch[:block_size, :overlap]
+
+    # Get patched overlap region
+    patched_overlap = apply_mask(source_overlap, 1.0 - cut_mask_overlap) + apply_mask(patch_overlap, cut_mask_overlap)
+
+    # Gradients Diffs Map
+    tdiff_map = gradients_differences_at_the_seam(sobel_ksize, cut_mask_overlap,
+                                                  source_overlap, patch_overlap, patched_overlap)
+
+    if debug:
+        print(f"tdiff shape: {tdiff_map.shape}, max: {np.max(tdiff_map):.2f}, min: {np.min(tdiff_map):.2f}")
+        print(f"tdiff mean: {np.mean(tdiff_map):.2f}, std: {np.std(tdiff_map):.2f}")
+
+    # endregion Compute "Transition Difference Map" END
+
+    # Create adaptive blend mask
+    blended = create_adaptive_blend_mask(
+        tdiff_map=tdiff_map,
+        mc_mask_overlap=cut_mask_overlap,
+        blend_config=gen_args.blend_config,
+        dtype=source.dtype
+    )
+
+    if debug:
+        min_blend = sobel_ksize
+        max_proposed = int(round(sobel_ksize * 2.5))
+        max_allowed = int(block_size * 0.15)
+        max_actual = min(max_proposed, max_allowed)
+        print(f"Blend widths: min={min_blend}px, max={max_actual}px")
+
+    # Update min-cut mask with adaptive blend  -> (1 - blended)
+    blended *= -1
+    blended += 1
+    cut_mask[:block_size, :overlap] = blended
+
+    if debug:
+        #print(f"Final patch shape: {final_patch.shape}, dtype: {final_patch.dtype}")
+
+        def scale(img, factor=6):
+            return cv2.resize(img, (img.shape[1] * factor, img.shape[0] * factor))
+
+        tdiff_map = scale(tdiff_map)
+        # base_mask = cv2.resize(base_mask, (base_mask.shape[1]*4, base_mask.shape[0]*4))
+        blended = scale(blended)
+        #min_cut_patch = scale(min_cut_patch)
+        source = scale(source)
+        #source = cv2.cvtColor(np.uint8(source * 255), cv2.COLOR_LAB2BGR)
+        #patch_overlap = cv2.cvtColor(np.uint8(patched_overlap * 255), cv2.COLOR_LAB2BGR)
+        #final_patch = cv2.cvtColor(np.uint8(final_patch * 255), cv2.COLOR_LAB2BGR)
+        # cv2.imshow("Source", source)
+        # cv2.imshow("Patch", patch)
+        cv2.imshow("Raw Patched", patched_overlap)
+        #cv2.imshow("Blend Patched", ??)
+        cv2.imshow("Source", source)
+        cv2.imshow("tdiff_map (discontinuity)", tdiff_map / tdiff_map.max())
+        cv2.imshow("Blend Mask (final)", blended)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+
+
+def gradients_differences_at_the_seam(
+        sobel_ksize: int, cut_mask_overlap: np.ndarray,
+        source_overlap: np.ndarray, patch_overlap: np.ndarray, patched_overlap: np.ndarray) -> np.ndarray:
+    """
+    This function does the following, albeit minimizing mem. allocations (thus being harder to read)
+    # 1. Get the gradients for all provided textures (source, patch, and patched) @newline
+    # 2. Compute the difference between source & patched, and patch & patched gradients \n
+    # 3. Get the highest difference from both and mask them to only get values near the cut.
+
+    @param _dtype: dtype used for the computations and final output, should match the input arrays
+    @param ddepth: cv type code (e.g. cv2.CV_32F)
+    @param grad_shape: the shape of the gradients tensor (should be the same as the sources)
+    @param sobel_ksize: ksize argument when using cv2.Sobel function
+    @param cut_mask_overlap: cut mask view of the area where source and patch overlap
+    @param source_overlap: source view of the area which overlaps with the patch
+    @param patch_overlap: patch view of the area which overlaps with the source
+    @param patched_overlap: patched view of the area where source and patch overlap
+    @return:
+    """
+    assert (source_overlap.dtype == np.float32)
+
+    # Setup types and shape
+    grad_shape = patched_overlap.shape
+    _dtype, ddepth = np.float32, cv2.CV_32F
+
+    # Allocate gradient arrays once (reuse for different images)
+    gx = np.empty(grad_shape, dtype=_dtype)
+    gy = np.empty(grad_shape, dtype=_dtype)
+
+    # Compute gradients for patched_overlap
+    cv2.Sobel(patched_overlap, ddepth, 1, 0, dst=gx, ksize=sobel_ksize)
+    cv2.Sobel(patched_overlap, ddepth, 0, 1, dst=gy, ksize=sobel_ksize)
+
+    # Pre-allocate diff array (will reuse)
+    diff_source = np.empty(grad_shape, dtype=_dtype)
+
+    # Compute diff_source in-place
+    # diff_source = sqrt((gx_patched - gx_source)² + (gy_patched - gy_source)²)
+    cv2.Sobel(source_overlap, ddepth, 1, 0, dst=diff_source, ksize=sobel_ksize)
+    diff_source -= gx  # diff_source now has (gx_patched - gx_source)
+    diff_source *= diff_source  # Square in-place
+
+    # Temporary for gy difference
+    temp_gy = np.empty(grad_shape, dtype=_dtype)
+    cv2.Sobel(source_overlap, ddepth, 0, 1, dst=temp_gy, ksize=sobel_ksize)
+    temp_gy -= gy  # (gy_patched - gy_source)
+    temp_gy *= temp_gy  # Square in-place
+    diff_source += temp_gy  # Add squared differences
+    np.sqrt(diff_source, out=diff_source)  # In-place sqrt
+
+    # Compute diff_patch (reuse temp_gy)
+    diff_patch = temp_gy  # Reuse the allocation
+    cv2.Sobel(patch_overlap, ddepth, 1, 0, dst=diff_patch, ksize=sobel_ksize)
+    diff_patch -= gx  # (gx_patched - gx_patch)
+    diff_patch *= diff_patch  # Square
+
+    # Reuse gx for temporary gy computation
+    cv2.Sobel(patch_overlap, ddepth, 0, 1, dst=gx, ksize=sobel_ksize)
+    gx -= gy  # (gy_patched - gy_patch)
+    gx *= gx  # Square
+    diff_patch += gx  # Add squared differences
+    np.sqrt(diff_patch, out=diff_patch)  # In-place sqrt
+
+    # TODO consider adding different methods here, such as the average
+    # Take maximum across channels
+    if len(diff_source.shape) == 3:
+        max_diffs_source = np.max(diff_source, axis=2)
+        max_diffs_patch = np.max(diff_patch, axis=2)
+    else:
+        # suppose shape == 2
+        max_diffs_source = diff_source
+        max_diffs_patch = diff_patch
+
+    # Compute "transition diff. map" in-place using max_diffs_source as output buffer
+    tdiff_map = max_diffs_source  # Reuse allocation
+    np.multiply(max_diffs_source, 1 - cut_mask_overlap, out=tdiff_map)
+
+    # Use max_diffs_patch as temporary
+    np.multiply(max_diffs_patch, cut_mask_overlap, out=max_diffs_patch)
+    np.maximum(tdiff_map, max_diffs_patch, out=tdiff_map)
+    return tdiff_map
