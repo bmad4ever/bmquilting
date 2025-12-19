@@ -399,7 +399,7 @@ def gradients_differences_at_the_seam(
     @param patch_overlap: patch view of the area which overlaps with the source
     @param patched_overlap: patched view of the area where source and patch overlap
 
-    @return:
+    @return: a 2D array with shape equal to grad_shape[:2] that contains the gradients differences around the seam
     """
     assert (source_overlap.dtype == np.float32)
 
