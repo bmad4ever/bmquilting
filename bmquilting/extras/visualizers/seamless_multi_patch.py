@@ -4,7 +4,8 @@ from PIL import Image, ImageTk
 import bmquilting.make_seamless as ms_mp
 from bmquilting.types import GenParams
 from bmquilting.seam_smartblur import auto_blend_config_2
-from bmquilting.types import BlendConfig
+from bmquilting.types import BlendConfig, SquarePatchingBlendConfig
+from dataclasses import asdict
 import numpy as np
 import cv2
 import threading
@@ -444,6 +445,7 @@ class SeamlessTextureApp:
                         min_blur_diameter=min_blur,
                         max_blur_diameter=max_blur
                     )
+                blend_config = SquarePatchingBlendConfig(**asdict(blend_config))  # TODO add missing args
 
             # Generate texture variants based on selection
             lookup_textures = []

@@ -144,6 +144,26 @@ class BlendConfig:
 
 
 @dataclass
+class SquarePatchingBlendConfig(BlendConfig):
+    use_blur_radii_limiter: bool = True
+    """
+    Attempts to mitigate seam blurring artifacts AFTER seam computation.
+    This is done by limiting the seam blur radius with respect to its proximity to the overlapping area edges.
+    This helps prevent seam artifacts near the edges that could visually give away the generation grid layout.
+    """
+
+    use_blur_radii_guess_pathfind_limiter: bool = True
+    """
+    Attempts to mitigate seam blurring artifacts BEFORE seam computation.
+    Prior to computing the seam, make an educated guess of the potential max blur radius.
+    When computing the seam the overlapping area is further constrained with respect to this guess to avoid having 
+    the seam go near the edges of the overlapping area.
+
+    Only applicable when using pyastar2d to compute the seam.
+    """
+
+
+@dataclass
 class GenParams:
     """
     Data used across multiple quilting subroutines.
@@ -152,8 +172,9 @@ class GenParams:
     block_size: num_pixels
     overlap: num_pixels
     tolerance: percentage
-    blend_config: BlendConfig | None
-    vignette_on_match_template: bool  # whether to use the blending vignette as a mask when searching for a matching patch
+    blend_config: SquarePatchingBlendConfig | None
+    vignette_on_match_template: bool
+    """whether to use the blending vignette as a mask when searching for a matching patch"""
     version: int
 
     def __post_init__(self):

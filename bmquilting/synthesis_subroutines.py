@@ -7,7 +7,7 @@ import cv2 as cv
 
 from .jena2020.generate import (inf, findPatchHorizontal, findPatchVertical, findPatchBoth,
                                 getMinCutPatchHorizontal, getMinCutPatchVertical, getMinCutPatchBoth)
-from .types import GenParams, BlendConfig, num_pixels
+from .types import GenParams, num_pixels, SquarePatchingBlendConfig
 from .seam_smartblur import compute_adaptive_blend_mask
 from .misc.dry import apply_mask
 
@@ -472,7 +472,7 @@ if importlib.util.find_spec("pyastar2d") is not None:
     def get_min_cut_patch_mask_horizontal_astar(
             block1, block2,
             block_size: num_pixels, overlap: num_pixels,
-            blend_config: BlendConfig = None
+            blend_config: SquarePatchingBlendConfig = None
     ):
         """
         @param block1: block to the left, with the overlap on its right edge (should be normalized!)
@@ -481,7 +481,7 @@ if importlib.util.find_spec("pyastar2d") is not None:
         @return: ONLY the mask (not the patched overlap section)
         """
         # get min and max safety radii
-        if blend_config is not None:
+        if blend_config is not None and blend_config.use_blur_radii_guess_pathfind_limiter:
             min_safe_rad = blend_config.min_blur_diameter//2
             max_safe_rad = blend_config.max_blur_diameter//2
         else:

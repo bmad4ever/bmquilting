@@ -4,7 +4,8 @@ from PIL import Image, ImageTk
 from bmquilting.generate import GenParams, generate_texture_parallel, generate_texture, generate_texture_diagonal
 from bmquilting.guess_block_size import guess_nice_block_size
 from bmquilting.seam_smartblur import auto_blend_config_2
-from bmquilting.types import BlendConfig
+from bmquilting.types import SquarePatchingBlendConfig, BlendConfig
+from dataclasses import asdict
 import numpy as np
 import cv2
 import threading
@@ -412,6 +413,7 @@ class TextureGeneratorApp:
                         min_blur_diameter=self.min_blur_var.get(),
                         max_blur_diameter=self.max_blur_var.get()
                     )
+                blend_config = SquarePatchingBlendConfig(**asdict(blend_config))  # TODO add missing args
 
             lookup_textures = []
             for variant, enabled in self.variant_vars.items():
