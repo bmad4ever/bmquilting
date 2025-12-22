@@ -33,7 +33,9 @@ import numpy as np
 #   Additionally, each section's rows can also be "generated in parallel".
 #
 #   The operations are as follows:
-#   1.  Create a patched region of dims equal to block size + 2 (block size - overlap)
+#   1.  At the center, create a patched region of dims equal to block_size + 2 (block_size - overlap).
+#       This slightly larger than a block section is created so that the stripes can be generated without
+#       sharing a common center tile whose corners would be shared by multiple stripes.
 #       ( A block size + 2 overlaps sized region would suffice, but would mess up block alignment in this solution )
 #
 #   2.
