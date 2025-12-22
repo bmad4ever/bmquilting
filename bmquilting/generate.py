@@ -30,7 +30,7 @@ import numpy as np
 #
 #   Conceptually, parallelization is done by creating a horizontal and vertical stripes in the shape of a cross
 #   dividing the image into 4 sections that can be generated independently.
-#   Additionally, each section's rows can also be "generated in parallel" ( clarifications below in 2.2 ).
+#   Additionally, each section's rows can also be "generated in parallel".
 #
 #   The operations are as follows:
 #   1.  Create a patched region of dims equal to block size + 2 (block size - overlap)
