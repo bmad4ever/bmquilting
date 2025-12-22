@@ -7,6 +7,7 @@ inf = float('inf')
 
 def findPatchHorizontal(refBlock, texture, blocksize, overlap, tolerance, rng: np.random.Generator):
 	'''
+	@deprecated
 	Find best horizontal match from the texture
 	'''
 	H, W = texture.shape[:2]
@@ -22,8 +23,10 @@ def findPatchHorizontal(refBlock, texture, blocksize, overlap, tolerance, rng: n
 	y, x = y[c], x[c]
 	return texture[y:y+blocksize, x:x+blocksize]
 
+
 def findPatchBoth(refBlockLeft, refBlockTop, texture, blocksize, overlap, tolerance, rng: np.random.Generator):
 	'''
+	@deprecated
 	Find best horizontal and vertical match from the texture
 	'''
 	H, W = texture.shape[:2]
@@ -43,6 +46,7 @@ def findPatchBoth(refBlockLeft, refBlockTop, texture, blocksize, overlap, tolera
 
 def findPatchVertical(refBlock, texture, blocksize, overlap, tolerance, rng: np.random.Generator):
 	'''
+	@deprecated
 	Find best vertical match from the texture
 	'''
 	H, W = texture.shape[:2]
@@ -98,15 +102,15 @@ def getMinCutPatchHorizontal(block1, block2, blocksize, overlap):
 	resBlock[:, :overlap] = block1[:, -overlap:]
 	resBlock = resBlock*mask + block2*(1-mask)
 	# resBlock = block1*mask + block2*(1-mask)
-	return resBlock
+	return resBlock, mask[:, :, 0].astype(np.float32)
 
 
 def getMinCutPatchVertical(block1, block2, blocksize, overlap):
 	'''
 	Get the min cut patch done vertically
 	'''
-	resBlock = getMinCutPatchHorizontal(np.rot90(block1), np.rot90(block2), blocksize, overlap)
-	return np.rot90(resBlock, 3)
+	resBlock, mask = getMinCutPatchHorizontal(np.rot90(block1), np.rot90(block2), blocksize, overlap)
+	return np.rot90(resBlock, 3), mask
 
 
 def getMinCutPatchBoth(refBlockLeft, refBlockTop, patchBlock, blocksize, overlap):
@@ -186,7 +190,4 @@ def getMinCutPatchBoth(refBlockLeft, refBlockTop, patchBlock, blocksize, overlap
 	resBlock[:, :overlap] = mask1[:, :overlap]*refBlockLeft[:, -overlap:]
 	resBlock[:overlap, :] = resBlock[:overlap, :] + mask2[:overlap, :]*refBlockTop[-overlap:, :]
 	resBlock = resBlock + (1-np.maximum(mask1, mask2))*patchBlock
-	return resBlock
-
-
-# generateTextureMap -> was moved to quilting.py; renamed to generate_texture; added data/behavior for comfyui node
+	return resBlock, np.maximum(mask1[:, :, 0], mask2[:, :, 0]).astype(np.float32)

@@ -33,16 +33,19 @@ import numpy as np
 #   Additionally, each section's rows can also be "generated in parallel" ( clarifications below in 2.2 ).
 #
 #   The operations are as follows:
-#   1.
+#   1.  Create a patched region of dims equal to block size + 2 (block size - overlap)
+#       ( A block size + 2 overlaps sized region would suffice, but would mess up block alignment in this solution )
+#
+#   2.
 #       2 stripes for each direction are generated, all in parallel (if enough cores available).
 #       1 vertical and 1 horizontal stripes are created with inverted images, in order to re-use the original
 #       implementation methods without any additional modifications.
 #
-#   2.1
+#   3
 #       The 4 separate sections are generated at the same time, using the required inversions,
 #       and then flipped at the end so that all can be stitched together
 #
-#   2.2
+#   4.
 #   An OPTIONAL parallelization step is implemented, but improvement is not significant.
 #   ( also, can be worse in small generations, with a low number of patches or small source image )
 #   While generating each section, instead of generating each row sequentially, multiple rows "can run in parallel" in
@@ -52,7 +55,7 @@ import numpy as np
 #   The algorithm is still sequential in nature, this is not some "modern" variant of the algorithm,
 #   but it does not require a row to be completely filled in order to compute some of the next row's patches.
 #
-#   3.
+#   5.
 #   Stitching is straightforward, and only needs to take into account the removal
 #   of the shared components belonging to the initially generated stripes.
 #
@@ -87,7 +90,7 @@ def fill_column(lookup_textures: list[np.ndarray] | SharedTextureList,
 def fill_column_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
                         lookup_textures: list[np.ndarray] | SharedTextureList,
                         gen_args: GenParams, rng: np.random.Generator):
-    find_patch_below = get_find_patch_below_method(gen_args.version)
+    find_patch_below = get_find_patch_below_method()
     get_min_cut_patch = get_min_cut_patch_vertical_method(gen_args.version)
     b, o = gen_args.block_size, gen_args.overlap
     bmo = b - o
@@ -130,7 +133,7 @@ def fill_row(lookup_textures: list[np.ndarray] | SharedTextureList,
 def fill_row_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
                      lookup_textures: list[np.ndarray] | SharedTextureList,
                      gen_args: GenParams, rng: np.random.Generator):
-    find_patch_to_the_right = get_find_patch_to_the_right_method(gen_args.version)
+    find_patch_to_the_right = get_find_patch_to_the_right_method()
     get_min_cut_patch = get_min_cut_patch_horizontal_method(gen_args.version)
     b, o = gen_args.block_size, gen_args.overlap
     bmo = b - o
@@ -149,7 +152,7 @@ def fill_quad(rows: int, columns: int, gen_args: GenParams, texture_map, seams_m
               lookup_textures: list[np.ndarray] | SharedTextureList,
               rng: np.random.Generator, uicd: UiCoordData | None):
     """Requires the 1st row and column of blocks to be already filled"""
-    find_patch_both = get_find_patch_both_method(gen_args.version)
+    find_patch_both = get_find_patch_both_method()
     get_min_cut_patch = get_min_cut_patch_both_method(gen_args.version)
     block_size, overlap = gen_args.bo
 
@@ -184,9 +187,9 @@ def fill_quad_2(rows: int, columns: int, gen_args: GenParams, texture_map, seams
         Only requires the first Row already filled.
         A "purist" solution, where there is no apriori column generation.
     """
-    find_patch_below = get_find_patch_below_method(gen_args.version)
+    find_patch_below = get_find_patch_below_method()
     get_min_cut_v = get_min_cut_patch_vertical_method(gen_args.version)
-    find_patch_both = get_find_patch_both_method(gen_args.version)
+    find_patch_both = get_find_patch_both_method()
     get_min_cut_b = get_min_cut_patch_both_method(gen_args.version)
     block_size, overlap = gen_args.bo
 
@@ -235,7 +238,7 @@ def fill_quad_2(rows: int, columns: int, gen_args: GenParams, texture_map, seams
 @clear_cache_post_exec()
 def generate_texture_parallel(src_textures: list[np.ndarray],
                               gen_args: GenParams, out_h: num_pixels, out_w: num_pixels, nps: int,
-                              rng: np.random.Generator, uicd: UiCoordData | None):
+                              rng: np.random.Generator, uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray]:
     """
     @param out_h: output's height in pixels
     @param out_w: output's width in pixels
@@ -652,7 +655,7 @@ class ParaRowsJobInfo:
 
 def fill_rows_ps(pid: int, job: ParaRowsJobInfo, jobs_events: list, uicd: UiCoordData | None):
     gen_args = job.gen_args
-    find_patch_both = get_find_patch_both_method(gen_args.version)
+    find_patch_both = get_find_patch_both_method()
     get_min_cut_patch = get_min_cut_patch_both_method(gen_args.version)
 
     # unwrap data
@@ -726,7 +729,7 @@ def generate_texture(src_textures: list[np.ndarray],
                      gen_args: GenParams,
                      out_h: num_pixels, out_w: num_pixels,
                      rng: np.random.Generator,
-                     uicd: UiCoordData | None):
+                     uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray]:
     """
     @param out_h: output's height in pixels
     @param out_w: output's width in pixels
@@ -775,8 +778,7 @@ def generate_texture(src_textures: list[np.ndarray],
 def generate_texture_diagonal(src_textures: list[np.ndarray],
                               gen_args: GenParams,
                               out_h: num_pixels, out_w: num_pixels,
-                              rng: np.random.Generator,
-                              uicd: UiCoordData | None):
+                              rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     """
         I've wondered if going diagonally with an overlap sized offset while covering the corners shared by 4 patches
          could improve the generation quality, and perhaps help avoid "loose" seams.
@@ -821,7 +823,7 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
     fill_column_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_textures, gen_args, rng)
 
     # fill the rest iterating diagonally
-    find_patch = get_find_patch_both_method(gen_args.version)
+    find_patch = get_find_patch_both_method()
     find_cut = get_min_cut_patch_both_method(gen_args.version)
     for d in range(1, n_d):
         d_ixd += bm2o

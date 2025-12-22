@@ -1,75 +1,44 @@
 from functools import lru_cache
 import importlib.util
-
-import cv2
 import numpy as np
 import cv2 as cv
 
-from .jena2020.generate import (inf, findPatchHorizontal, findPatchVertical, findPatchBoth,
-                                getMinCutPatchHorizontal, getMinCutPatchVertical, getMinCutPatchBoth)
 from .types import GenParams, num_pixels, SquarePatchingBlendConfig
 from .seam_smartblur import compute_adaptive_blend_mask
+from .misc.shmem_utils import SharedTextureList
 from .misc.dry import apply_mask
 
-from .misc.shmem_utils import SharedTextureList
+from .jena2020.generate import inf, getMinCutPatchHorizontal, getMinCutPatchVertical, getMinCutPatchBoth
 
 epsilon = np.finfo(float).eps
 
 
-#   DevNote:
-#  could be relevant to allow the use of optional filters in case the texture is noisy
-#  however this would also need to be applied when searching for the patch
-#  and the result would have to be stored to avoid re-computing.
-#  Seems a bit overkill for now, but could be something to consider in the future for completion sake.
-
-
 def debug_resize(arr, factor=8):
-    return cv2.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
+    return cv.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
 
 
 # region   get methods by version
 
 
-def get_find_patch_to_the_right_method(version: int):
-    match version:
-        case 0:
-            def jena_right(left, source, gen_args: GenParams, rng):
-                return findPatchHorizontal(left, source, gen_args.block_size, gen_args.overlap, gen_args.tolerance, rng)
+def get_find_patch_to_the_right_method():
+    def vx_right(left_block, image, gen_args, rng):
+        return find_patch_vx(left_block, None, None, None, image, gen_args, rng)
 
-            return jena_right
-        case _:
-            def vx_right(left_block, image, gen_args, rng):
-                return find_patch_vx(left_block, None, None, None, image, gen_args, rng)
-
-            return vx_right
+    return vx_right
 
 
-def get_find_patch_below_method(version: int):
-    match version:
-        case 0:
-            def jena_below(top, source, gen_args: GenParams, rng):
-                return findPatchVertical(top, source, gen_args.block_size, gen_args.overlap, gen_args.tolerance, rng)
+def get_find_patch_below_method():
+    def vx_below(top_block, image, gen_args, rng):
+        return find_patch_vx(None, None, top_block, None, image, gen_args, rng)
 
-            return jena_below
-        case _:
-            def vx_below(top_block, image, gen_args, rng):
-                return find_patch_vx(None, None, top_block, None, image, gen_args, rng)
-
-            return vx_below
+    return vx_below
 
 
-def get_find_patch_both_method(version: int):
-    match version:
-        case 0:
-            def jena_both(left, top, source, gen_args: GenParams, rng):
-                return findPatchBoth(left, top, source, gen_args.block_size, gen_args.overlap, gen_args.tolerance, rng)
+def get_find_patch_both_method():
+    def vx_both(left_block, top_block, image, gen_args, rng):
+        return find_patch_vx(left_block, None, top_block, None, image, gen_args, rng)
 
-            return jena_both
-        case _:
-            def vx_both(left_block, top_block, image, gen_args, rng):
-                return find_patch_vx(left_block, None, top_block, None, image, gen_args, rng)
-
-            return vx_both
+    return vx_both
 
 
 def get_min_cut_patch_horizontal_method(version: int):
@@ -101,6 +70,9 @@ def get_min_cut_patch_both_method(version: int):
 
 def compute_errors(diffs: list[np.ndarray], version: int) -> np.ndarray:
     match version:
+        case 0:
+            # kept similar to
+            return np.add.reduce(diffs)
         case 1:
             return np.add.reduce(diffs)
         case 2:
@@ -113,6 +85,9 @@ def compute_errors(diffs: list[np.ndarray], version: int) -> np.ndarray:
 
 def get_match_template_method(version: int) -> int:
     match version:
+        case 0:
+            # kept similar to jena2020 used in prior v0
+            return cv.TM_SQDIFF
         case 1:
             return cv.TM_SQDIFF
         case 2:
@@ -128,7 +103,6 @@ def get_match_template_method(version: int) -> int:
 
 # region  custom implementation of: patch search & min cut + auxiliary methods
 
-
 def find_patch_vx(ref_block_left: np.ndarray | None,
                   ref_block_right: np.ndarray | None,
                   ref_block_top: np.ndarray | None,
@@ -141,6 +115,32 @@ def find_patch_vx(ref_block_left: np.ndarray | None,
     Finds the best-matching block across all textures in lookup_textures
     that satisfies the boundary constraints, applying tolerance to the
     absolute global minimum error.
+
+    @return: the patch
+    """
+    best_texture_idx, best_y, best_x = find_patch_vx_idx(
+        ref_block_left, ref_block_right, ref_block_top, ref_block_bottom, lookup_textures, gen_args, rng)
+
+    # Extract the patch from the winning texture (This triggers a single read from the memmap)
+    winning_texture = lookup_textures[best_texture_idx]
+    block_size = gen_args.block_size
+    return winning_texture[best_y:best_y + block_size, best_x:best_x + block_size]
+
+
+def find_patch_vx_idx(ref_block_left: np.ndarray | None,
+                      ref_block_right: np.ndarray | None,
+                      ref_block_top: np.ndarray | None,
+                      ref_block_bottom: np.ndarray | None,
+                      lookup_textures: list[np.ndarray] | SharedTextureList,
+                      gen_args: GenParams,
+                      rng: np.random.Generator
+                      ) -> tuple[int, int, int]:
+    """
+    Finds the best-matching block across all textures in lookup_textures
+    that satisfies the boundary constraints, applying tolerance to the
+    absolute global minimum error.
+
+    @return: best_texture_idx, best_y, best_x
     """
     block_size, overlap, tolerance = gen_args.bot
     template_method = get_match_template_method(gen_args.version)
@@ -243,10 +243,7 @@ def find_patch_vx(ref_block_left: np.ndarray | None,
     c = rng.integers(len(final_candidates))
     best_texture_idx, best_y, best_x = final_candidates[c]
 
-    # Extract the patch from the winning texture (This triggers a single read from the memmap)
-    winning_texture = lookup_textures[best_texture_idx]
-
-    return winning_texture[best_y:best_y + block_size, best_x:best_x + block_size]
+    return best_texture_idx, best_y, best_x
 
 
 def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_block_bottom,
@@ -288,7 +285,8 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
         np.add(apply_mask(rolled_block, mask, True), res_block, out=res_block)
 
     if has_left:
-        mask = get_min_cut_patch_mask_horizontal(ref_block_left, patch_block, block_size, overlap, gen_args.blend_config)
+        mask = get_min_cut_patch_mask_horizontal(ref_block_left, patch_block, block_size, overlap,
+                                                 gen_args.blend_config)
 
         if gen_args.blend_into_patch:
             compute_adaptive_blend_mask(
@@ -482,8 +480,8 @@ if importlib.util.find_spec("pyastar2d") is not None:
         """
         # get min and max safety radii
         if blend_config is not None and blend_config.use_blur_radii_guess_pathfind_limiter:
-            min_safe_rad = blend_config.min_blur_diameter//2
-            max_safe_rad = blend_config.max_blur_diameter//2
+            min_safe_rad = blend_config.min_blur_diameter // 2
+            max_safe_rad = blend_config.max_blur_diameter // 2
         else:
             min_safe_rad = 0
             max_safe_rad = 0
@@ -504,11 +502,11 @@ if importlib.util.find_spec("pyastar2d") is not None:
             # mind that this guess is heuristic, err here does not translate directly to the seam diff map
             # meaning that: without opting for the max blur radius
             #   there is always the risk of getting a blur near the edges
-            (round(min_safe_rad + (max_safe_rad-min_safe_rad) * np.max(err))+max_safe_rad)//2,
+            (round(min_safe_rad + (max_safe_rad - min_safe_rad) * np.max(err)) + max_safe_rad) // 2,
             # safeguard against big save_radius values
             round(overlap / 3)
         )
-        print((max_safe_rad-min_safe_rad) * np.max(err))
+        print((max_safe_rad - min_safe_rad) * np.max(err))
         print(min_safe_rad)
         print(max_safe_rad)
         print(safety_radius)
@@ -547,7 +545,8 @@ if importlib.util.find_spec("pyastar2d") is not None:
 
     get_min_cut_patch_mask_horizontal = get_min_cut_patch_mask_horizontal_astar
 else:
-    get_min_cut_patch_mask_horizontal = get_min_cut_patch_mask_horizontal_jena2020
+    get_min_cut_patch_mask_horizontal = lambda b1, b2, bs, os, bc: (  # ignore blend config (last arg)
+        get_min_cut_patch_mask_horizontal_jena2020(b1, b2, bs, os))
 
 
 def avg_squared_diff(block1: np.ndarray, block2: np.ndarray) -> np.ndarray:
@@ -576,6 +575,7 @@ def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: num_pixels
 
     # make the lowest value big enough for 1 to be negligible (paths created w/ 1s become "free-corridors")
     errors *= block_len ** 2
+
 
 # endregion
 
