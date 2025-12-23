@@ -1,13 +1,14 @@
-from ..seam_smartblur import get_max_possible_gradient_diff, circular_kernel, radii_limiter
-from ..synthesis_subroutines import patch_blending_vignette
+from ..seam_smartblur import get_max_possible_gradient_diff, circular_kernel, get_radii_limiter
+from ..synthesis_subroutines import patch_blending_vignette, get_slice_metadata_for_find_patch
 from functools import wraps
 
 
 DEFAULT_CACHED_FUNCTIONS = [
-    get_max_possible_gradient_diff,
-    patch_blending_vignette,
     circular_kernel,
-    radii_limiter
+    get_max_possible_gradient_diff,
+    get_radii_limiter,
+    get_slice_metadata_for_find_patch,
+    patch_blending_vignette,
 ]
 
 

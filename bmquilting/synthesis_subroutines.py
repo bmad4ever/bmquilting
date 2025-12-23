@@ -126,6 +126,21 @@ def find_patch_vx(overlaps_left: bool,
     return winning_texture[best_y:best_y + block_size, best_x:best_x + block_size]
 
 
+@lru_cache(maxsize=2)
+def get_slice_metadata_for_find_patch(block_size, overlap):
+    """
+    Auxiliary function for the template matching used in the find_patch_vx_idx function.
+    Computes and caches the slice objects for the texture and for the template & mask.
+    """
+    bmo = block_size - overlap
+    return (
+        (np.s_[:, :-bmo], np.s_[:, :overlap] ),  # Left
+        (np.s_[:, bmo: ], np.s_[:, -overlap:]),  # Right
+        (np.s_[:-bmo, :], np.s_[:overlap, : ]),  # Top
+        (np.s_[bmo:, : ], np.s_[-overlap:, :])   # Bottom
+    )
+
+
 def find_patch_vx_idx(overlaps_left: bool,
                       overlaps_right: bool,
                       overlaps_top: bool,
@@ -159,6 +174,7 @@ def find_patch_vx_idx(overlaps_left: bool,
     err_mats: list[np.ndarray | None] = []
     global_min_error = np.inf
 
+    # Get Vignette Mask depending on Generation Params
     mask = None
     if gen_args.vignette_on_match_template:
         mask = patch_blending_vignette(
@@ -170,6 +186,11 @@ def find_patch_vx_idx(overlaps_left: bool,
         )
         mask = 1 - mask  # invert mask, mind that vignette is cached (original shouldn't be edited)
 
+    # Define Conditions list and 'Bookmarks' (static metadata, very cheap)
+    #  done to avoid repeating if conditions for each overlapping area, making the code slightly more compact
+    conditions = [overlaps_left, overlaps_right, overlaps_top, overlaps_bottom]
+    slice_definitions = get_slice_metadata_for_find_patch(block_size, overlap)  # (texture, template & mask)
+
     # --- PASS 1: Find the absolute global minimum error ---
     for texture in lookup_textures:
 
@@ -180,35 +201,15 @@ def find_patch_vx_idx(overlaps_left: bool,
 
         blks_diffs: list[np.ndarray] = []
 
-        # Template Matching
-        if overlaps_left:
-            blks_diffs.append(cv.matchTemplate(
-                image=texture[:, :-block_size + overlap],
-                templ=ref_block[:, :overlap],
-                method=template_method,
-                mask=mask[:, :overlap] if mask is not None else None
-            ))
-        if overlaps_right:
-            blks_diffs.append(cv.matchTemplate(
-                image=texture[:, block_size - overlap:],
-                templ=ref_block[:, -overlap:],
-                method=template_method,
-                mask=mask[:, -overlap:] if mask is not None else None
-            ))
-        if overlaps_top:
-            blks_diffs.append(cv.matchTemplate(
-                image=texture[:-block_size + overlap, :],
-                templ=ref_block[:overlap, :],
-                method=template_method,
-                mask=mask[:overlap, :] if mask is not None else None
-            ))
-        if overlaps_bottom:
-            blks_diffs.append(cv.matchTemplate(
-                image=texture[block_size - overlap:, :],
-                templ=ref_block[-overlap:, :],
-                method=template_method,
-                mask=mask[-overlap:, :] if mask is not None else None
-            ))
+        # Iterate Lazily
+        for has_overlap, (tex_s, tmpl_s) in zip(conditions, slice_definitions):
+            if has_overlap:
+                blks_diffs.append(cv.matchTemplate(
+                    image=texture[tex_s],
+                    templ=ref_block[tmpl_s],
+                    method=template_method,
+                    mask=mask[tmpl_s] if mask is not None else None
+                ))
 
         # Compute combined error matrix for this texture
         err_mat = compute_errors(blks_diffs, gen_args.version)
