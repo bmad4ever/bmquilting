@@ -190,7 +190,7 @@ def find_patch_vx_idx(overlaps_left: bool,
             ))
         if overlaps_right:
             blks_diffs.append(cv.matchTemplate(
-                image=np.roll(texture, -block_size + overlap, axis=1)[:, :-block_size + overlap],
+                image=texture[:, block_size - overlap:],
                 templ=ref_block[:, -overlap:],
                 method=template_method,
                 mask=mask[:, -overlap:] if mask is not None else None
@@ -204,7 +204,7 @@ def find_patch_vx_idx(overlaps_left: bool,
             ))
         if overlaps_bottom:
             blks_diffs.append(cv.matchTemplate(
-                image=np.roll(texture, -block_size + overlap, axis=0)[:-block_size + overlap, :],
+                image=texture[block_size - overlap:, :],
                 templ=ref_block[-overlap:, :],
                 method=template_method,
                 mask=mask[-overlap:, :] if mask is not None else None
