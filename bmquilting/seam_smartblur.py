@@ -4,9 +4,8 @@ from functools import lru_cache
 from math import ceil
 
 from .misc.dry import apply_mask
-from .types import UiCoordData, GenParams, BlendConfig, num_pixels
+from .types import GenParams, BlendConfig, num_pixels
 
-import traceback  # for debug purposes
 
 DEFAULT_MAX_BLEND_RATIO = 0.95  # percentage of the overlap size that can be used for blending purposes
 DEFAULT_BLEND_SCALE = 1.0
@@ -198,9 +197,6 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     # the function in blend_config SHOULD clip the final values in the [0, 1] range
     blend_config.blur_size_func.inplace_func(tdiff_norm)
 
-    # -- DEBUG --
-    #cv2.imshow("_tdiff", debug_resize(tdiff_norm / max(1e-8, np.max(tdiff_norm))))
-
     # Map tdiff values to blend widths
     blend_diameters = min_blur_diameter + (max_blur_diameter - min_blur_diameter) * (tdiff_norm ** blend_config.blend_scale)
     max_blur_diameter_found = round(np.max(blend_diameters))
@@ -213,14 +209,8 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
         radii_limiter = cv2.distanceTransform(radii_limiter.astype(np.uint8), cv2.DIST_L2, 3).astype(np.float32)
 
     if radii_limiter is not None:
-        cv2.imshow("radii limiter", radii_limiter/np.max(radii_limiter))
-
-        cv2.imshow("BR", blend_radii/np.max(blend_radii))
-        print(f"{ np.max(blend_radii) = }")
-
         np.minimum(radii_limiter, blend_radii, out=blend_radii)
         blend_radii[blend_radii <= 0] = .001  # can't use zero here due to division later
-        cv2.imshow("clipped BR", blend_radii/np.max(blend_radii))
 
     print(f"min diam, max diam, overlap, max diam found = {
         min_blur_diameter, max_blur_diameter, mc_mask_overlap.shape[1], max_blur_diameter_found}")
@@ -234,10 +224,6 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
             overreach=min_blur_diameter//2  # ksize 10
         )
         cv2.GaussianBlur(blend_radii, (0, 0), sigmaX=sigma, sigmaY=sigma, dst=blend_radii)
-
-    #cv2.imshow("norm radii layered max-filt.",
-    #           debug_resize(blend_radii / (max_blur_diameter / 2))
-    #           )
 
     # Calculate signed distance from transition line
     # dev note: compared 3 vs cv2.DIST_MASK_PRECISE
@@ -255,16 +241,10 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     t = signed_distance / blend_radii  # min should be min_diameter, never zero
     cv2.GaussianBlur(t, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=t)
 
-    #cv2.imshow("t", debug_resize(np.abs(t) / max(np.max(np.abs(t)), 1e-8)))
-    #cv2.waitKey()
-
     # compute blend_mask in place
     # input and output clipping should be handled by the function
     blend_config.blur_shape_func.inplace_func(t)
     blend_mask = t
-
-    #cv2.imshow("blend_mask", debug_resize(blend_mask))
-    #cv2.waitKey()
 
     return blend_mask
 
@@ -299,13 +279,12 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     Compute adaptive blend mask based on gradient differences.
     The output is copied to cut_mask to avoid additional allocations.
 
-    @param source: existing texture, to the LEFT of the patch. (rotate/flip the block for other orientations)
-        The source should not have been rolled to match the overlap section on the final patched block.
-    @param patch:  the patch extending the block to the RIGHT. (rotate/flip the block for other orientations)
+    @param source: existing texture block where the patch will be placed, where the overlap area is [:, :overlap].
+                    (rotate/flip the block in order to process other orientations)
+    @param patch:  the patch to be placed over the source, where the overlap area is [:, :overlap].
+                    (rotate/flip the block in order to process other orientations)
     @param cut_mask: the mask used to produce the final patched block.
     """
-    assert source.shape[0] == source.shape[1], "Source must be square"
-
     block_size = gen_args.block_size  # = source.shape[0]
     overlap = gen_args.overlap
     sobel_ksize = gen_args.blend_config.sobel_kernel_size
@@ -322,7 +301,7 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
 
     # Extract overlap regions (views, not copies)
     cut_mask_overlap = cut_mask[:block_size, :overlap]
-    source_overlap = source[:block_size, -overlap:]
+    source_overlap = source[:block_size, :overlap]
     patch_overlap = patch[:block_size, :overlap]
 
     # Get patched overlap region
@@ -343,7 +322,7 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
         tdiff_map=tdiff_map,
         mc_mask_overlap=cut_mask_overlap,
         blend_config=gen_args.blend_config,
-        radii_limiter=radii_limiter(block_size, overlap) if gen_args.blend_config.use_blur_radii_limiter else None,
+        radii_limiter=get_radii_limiter(block_size, overlap) if gen_args.blend_config.use_blur_radii_limiter else None,
         dtype=source.dtype
     )
 
@@ -461,7 +440,7 @@ def gradients_differences_at_the_seam(
 
 
 @lru_cache(maxsize=1)
-def radii_limiter(block_size: num_pixels, overlap: num_pixels) -> np.ndarray:
+def get_radii_limiter(block_size: num_pixels, overlap: num_pixels) -> np.ndarray:
     """Blur radii limiter for standard square patches -> [[1, 2, ..., 2, 1], ...]"""
     x = np.linspace(1, overlap, overlap).reshape((1, overlap))
     x[:, -(overlap // 2):] -= overlap + 1

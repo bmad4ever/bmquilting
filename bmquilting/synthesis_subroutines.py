@@ -21,30 +21,30 @@ def debug_resize(arr, factor=8):
 
 
 def get_find_patch_to_the_right_method():
-    def vx_right(left_block, image, gen_args, rng):
-        return find_patch_vx(left_block, None, None, None, image, gen_args, rng)
+    def vx_right(ref_block, image, gen_args, rng):
+        return find_patch_vx(True, False, False, False, ref_block, image, gen_args, rng)
 
     return vx_right
 
 
 def get_find_patch_below_method():
-    def vx_below(top_block, image, gen_args, rng):
-        return find_patch_vx(None, None, top_block, None, image, gen_args, rng)
+    def vx_below(ref_block, image, gen_args, rng):
+        return find_patch_vx(False, False, True, False, ref_block, image, gen_args, rng)
 
     return vx_below
 
 
 def get_find_patch_both_method():
-    def vx_both(left_block, top_block, image, gen_args, rng):
-        return find_patch_vx(left_block, None, top_block, None, image, gen_args, rng)
+    def vx_both(ref_block, image, gen_args, rng):
+        return find_patch_vx(True, False, True, False, ref_block, image, gen_args, rng)
 
     return vx_both
 
 
 def get_min_cut_patch_horizontal_method(version: int):
     if version == 0:
-        def jena_cut_h(left, patch, gen_args: GenParams):
-            return getMinCutPatchHorizontal(left, patch, gen_args.block_size, gen_args.overlap)
+        def jena_cut_h(ref_block, patch, gen_args: GenParams):
+            return getMinCutPatchHorizontal(ref_block, patch, gen_args.block_size, gen_args.overlap)
 
         return jena_cut_h
     return get_min_cut_patch_horizontal
@@ -52,8 +52,8 @@ def get_min_cut_patch_horizontal_method(version: int):
 
 def get_min_cut_patch_vertical_method(version: int):
     if version == 0:
-        def jena_cut_v(top, patch, gen_args: GenParams):
-            return getMinCutPatchVertical(top, patch, gen_args.block_size, gen_args.overlap)
+        def jena_cut_v(ref_block, patch, gen_args: GenParams):
+            return getMinCutPatchVertical(ref_block, patch, gen_args.block_size, gen_args.overlap)
 
         return jena_cut_v
     return get_min_cut_patch_vertical
@@ -61,8 +61,8 @@ def get_min_cut_patch_vertical_method(version: int):
 
 def get_min_cut_patch_both_method(version: int):
     if version == 0:
-        def jena_cut_both(left, top, patch, gen_args: GenParams):
-            return getMinCutPatchBoth(left, top, patch, gen_args.block_size, gen_args.overlap)
+        def jena_cut_both(ref_block, patch, gen_args: GenParams):
+            return getMinCutPatchBoth(ref_block, patch, gen_args.block_size, gen_args.overlap)
 
         return jena_cut_both
     return get_min_cut_patch_both
@@ -103,10 +103,11 @@ def get_match_template_method(version: int) -> int:
 
 # region  custom implementation of: patch search & min cut + auxiliary methods
 
-def find_patch_vx(ref_block_left: np.ndarray | None,
-                  ref_block_right: np.ndarray | None,
-                  ref_block_top: np.ndarray | None,
-                  ref_block_bottom: np.ndarray | None,
+def find_patch_vx(overlaps_left: bool,
+                  overlaps_right: bool,
+                  overlaps_top: bool,
+                  overlaps_bottom: bool,
+                  ref_block: np.ndarray,  # gen. texture view at the patch to generate location
                   lookup_textures: list[np.ndarray] | SharedTextureList,
                   gen_args: GenParams,
                   rng: np.random.Generator
@@ -119,7 +120,7 @@ def find_patch_vx(ref_block_left: np.ndarray | None,
     @return: the patch
     """
     best_texture_idx, best_y, best_x = find_patch_vx_idx(
-        ref_block_left, ref_block_right, ref_block_top, ref_block_bottom, lookup_textures, gen_args, rng)
+        overlaps_left, overlaps_right, overlaps_top, overlaps_bottom, ref_block, lookup_textures, gen_args, rng)
 
     # Extract the patch from the winning texture (This triggers a single read from the memmap)
     winning_texture = lookup_textures[best_texture_idx]
@@ -127,10 +128,11 @@ def find_patch_vx(ref_block_left: np.ndarray | None,
     return winning_texture[best_y:best_y + block_size, best_x:best_x + block_size]
 
 
-def find_patch_vx_idx(ref_block_left: np.ndarray | None,
-                      ref_block_right: np.ndarray | None,
-                      ref_block_top: np.ndarray | None,
-                      ref_block_bottom: np.ndarray | None,
+def find_patch_vx_idx(overlaps_left: bool,
+                      overlaps_right: bool,
+                      overlaps_top: bool,
+                      overlaps_bottom: bool,
+                      ref_block: np.ndarray,  # gen. texture view at the patch to generate location
                       lookup_textures: list[np.ndarray] | SharedTextureList,
                       gen_args: GenParams,
                       rng: np.random.Generator
@@ -153,14 +155,12 @@ def find_patch_vx_idx(ref_block_left: np.ndarray | None,
     if gen_args.vignette_on_match_template:
         mask = patch_blending_vignette(
             gen_args.block_size, gen_args.overlap,
-            ref_block_left is not None,
-            ref_block_right is not None,
-            ref_block_top is not None,
-            ref_block_bottom is not None
-        ).copy()  # mind that the vignette is cached
-        # invert mask inplace
-        mask *= -1
-        mask += 1
+            overlaps_left,
+            overlaps_right,
+            overlaps_top,
+            overlaps_bottom
+        )
+        mask = 1 - mask  # invert mask, mind that vignette is cached (original shouldn't be edited)
 
     # --- PASS 1: Find the absolute global minimum error ---
     for texture in lookup_textures:
@@ -173,31 +173,31 @@ def find_patch_vx_idx(ref_block_left: np.ndarray | None,
         blks_diffs: list[np.ndarray] = []
 
         # Template Matching
-        if ref_block_left is not None:
+        if overlaps_left:
             blks_diffs.append(cv.matchTemplate(
                 image=texture[:, :-block_size + overlap],
-                templ=ref_block_left[:, -overlap:],
+                templ=ref_block[:, :overlap],
                 method=template_method,
                 mask=mask[:, :overlap] if mask is not None else None
             ))
-        if ref_block_right is not None:
+        if overlaps_right:
             blks_diffs.append(cv.matchTemplate(
                 image=np.roll(texture, -block_size + overlap, axis=1)[:, :-block_size + overlap],
-                templ=ref_block_right[:, :overlap],
+                templ=ref_block[:, -overlap:],
                 method=template_method,
                 mask=mask[:, -overlap:] if mask is not None else None
             ))
-        if ref_block_top is not None:
+        if overlaps_top:
             blks_diffs.append(cv.matchTemplate(
                 image=texture[:-block_size + overlap, :],
-                templ=ref_block_top[-overlap:, :],
+                templ=ref_block[:overlap, :],
                 method=template_method,
                 mask=mask[:overlap, :] if mask is not None else None
             ))
-        if ref_block_bottom is not None:
+        if overlaps_bottom:
             blks_diffs.append(cv.matchTemplate(
                 image=np.roll(texture, -block_size + overlap, axis=0)[:-block_size + overlap, :],
-                templ=ref_block_bottom[:overlap, :],
+                templ=ref_block[-overlap:, :],
                 method=template_method,
                 mask=mask[-overlap:, :] if mask is not None else None
             ))
@@ -246,26 +246,21 @@ def find_patch_vx_idx(ref_block_left: np.ndarray | None,
     return best_texture_idx, best_y, best_x
 
 
-def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_block_bottom,
-                           patch_block, gen_args: GenParams):
-    # note -> if blurred, masks weights are scaled with respect the max mask value.
-    # example: mask1: 0.2 mask2:0.5 -> max = .5 ; sum = .7 -> (.2*lb + .5*tb) * (max/sum) + patch * (1 - max)
-    # likely "heavier" to compute, but does not require handling each corner individually
+def get_4way_min_cut_patch(
+        overlaps_left: bool,
+        overlaps_right: bool,
+        overlaps_top: bool,
+        overlaps_bottom: bool,
+        ref_block: np.ndarray,  # gen. texture view at the patch to generate location
+        patch_block, gen_args: GenParams):
 
     block_size, overlap = gen_args.bo
+    masks_max = np.zeros(patch_block.shape[:2], dtype=np.float32)
 
-    masks_list = []
-
-    has_left = ref_block_left is not None
-    has_right = ref_block_right is not None
-    has_top = ref_block_top is not None
-    has_bottom = ref_block_bottom is not None
-
-    res_block = np.zeros_like(patch_block)
-
-    def process_block(rolled_block, mask):
+    def process_block(mask):
         if gen_args.blend_into_patch and gen_args.blend_config.use_vignette:
-            vignette = patch_blending_vignette(block_size, overlap, has_left, has_right, has_top, has_bottom)
+            vignette = patch_blending_vignette(
+                block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
             mask *= vignette
             # dev note:
             #   Might seem strange to multiply these instead of choosing the maximum here;
@@ -281,24 +276,23 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
             #       I've also noticed that using two vignettes,
             #   one more steep for the maximum and the other for seam alignment, seems to create
             #   more visual artifacts than it solves.
-        masks_list.append(mask)
-        np.add(apply_mask(rolled_block, mask, True), res_block, out=res_block)
+        np.maximum(mask, masks_max, out=masks_max)
 
-    if has_left:
-        mask = get_min_cut_patch_mask_horizontal(ref_block_left, patch_block, block_size, overlap,
+    if overlaps_left:
+        mask = get_min_cut_patch_mask_horizontal(ref_block, patch_block, block_size, overlap,
                                                  gen_args.blend_config)
 
         if gen_args.blend_into_patch:
             compute_adaptive_blend_mask(
-                ref_block_left,
+                ref_block,
                 patch_block,
                 mask,
                 gen_args
             )
-        process_block(np.roll(ref_block_left, overlap, 1), mask)
+        process_block(mask)
 
-    if has_right:
-        adj_src = np.fliplr(ref_block_right)
+    if overlaps_right:
+        adj_src = np.fliplr(ref_block)
         adj_ptc = np.fliplr(patch_block)
         mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, gen_args.blend_config)
         if gen_args.blend_into_patch:
@@ -309,11 +303,11 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
                 gen_args
             )
         mask = np.fliplr(mask)
-        process_block(np.roll(ref_block_right, -overlap, 1), mask)
+        process_block(mask)
 
-    if has_top:
+    if overlaps_top:
         # V , >  counterclockwise rotation
-        adj_src = np.rot90(ref_block_top)
+        adj_src = np.rot90(ref_block)
         adj_ptc = np.rot90(patch_block)
         mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, gen_args.blend_config)
         if gen_args.blend_into_patch:
@@ -324,10 +318,10 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
                 gen_args
             )
         mask = np.rot90(mask, 3)
-        process_block(np.roll(ref_block_top, overlap, 0), mask)
+        process_block(mask)
 
-    if has_bottom:
-        adj_src = np.fliplr(np.rot90(ref_block_bottom))
+    if overlaps_bottom:
+        adj_src = np.fliplr(np.rot90(ref_block))
         adj_ptc = np.fliplr(np.rot90(patch_block))
         mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, gen_args.blend_config)
         if gen_args.blend_into_patch:
@@ -338,16 +332,12 @@ def get_4way_min_cut_patch(ref_block_left, ref_block_right, ref_block_top, ref_b
                 gen_args
             )
         mask = np.rot90(np.fliplr(mask), 3)
-        process_block(np.roll(ref_block_bottom, -overlap, 0), mask)
+        process_block(mask)
 
-    # compute auxiliary data to weight original/patch & fix sum at the corners
-    mask_s = sum(masks_list)
-    masks_max = np.maximum.reduce(masks_list)
-    mask_mos = np.divide(masks_max, mask_s, out=np.zeros_like(mask_s), where=mask_s != 0)
-
-    apply_mask(res_block, mask_mos, True)  # weight res_block (also fixes sum at corners)
-    patch_weight = np.subtract(1, masks_max, out=masks_max)  # note that masks_max is no longer needed
-    return np.add(res_block, apply_mask(patch_block, patch_weight), out=res_block), patch_weight
+    # compute:   mask * patch + (1-mask) * ref_block
+    res = apply_mask(ref_block, masks_max)
+    res += apply_mask(patch_block, np.subtract(1, masks_max, out=masks_max))
+    return res, masks_max
 
 
 @lru_cache(maxsize=4)
@@ -468,13 +458,13 @@ if importlib.util.find_spec("pyastar2d") is not None:
 
 
     def get_min_cut_patch_mask_horizontal_astar(
-            block1, block2,
+            ref_block, patch_block,
             block_size: num_pixels, overlap: num_pixels,
             blend_config: SquarePatchingBlendConfig = None
     ):
         """
-        @param block1: block to the left, with the overlap on its right edge (should be normalized!)
-        @param block2: block to the right, with the overlap on its left edge
+        @param ref_block: block in the source texture being generated (should be normalized)
+        @param patch_block: patch that will be pasted over the ref_block
 
         @return: ONLY the mask (not the patched overlap section)
         """
@@ -487,8 +477,8 @@ if importlib.util.find_spec("pyastar2d") is not None:
             max_safe_rad = 0
 
         # compute error matrix
-        block1_safe_overlap_view = block1[:, -overlap:]
-        block2_safe_overlap_view = block2[:, :overlap]
+        block1_safe_overlap_view = ref_block[:, :overlap]
+        block2_safe_overlap_view = patch_block[:, :overlap]
         if min_safe_rad > 0:
             # trim to avoid unneeded computations
             block1_safe_overlap_view = block1_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
@@ -525,7 +515,7 @@ if importlib.util.find_spec("pyastar2d") is not None:
         end = (err.shape[0] - 1, err.shape[1] // 2)
 
         path = pyastar2d.astar_path(err, start, end, allow_diagonal=True)
-        mask = np.ones((block_size, block_size), dtype=block1.dtype)
+        mask = np.ones((block_size, block_size), dtype=ref_block.dtype)
         shape_m2 = err.shape[0] - 2
 
         start_index = 0  # find start index to avoid checking 0 < i every iteration
@@ -582,24 +572,24 @@ def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: num_pixels
 
 # region min cut patch aliases
 
-def get_min_cut_patch_horizontal(left_block, patch_block, gen_args: GenParams):
+def get_min_cut_patch_horizontal(ref_block, patch_block, gen_args: GenParams):
     return get_4way_min_cut_patch(
-        left_block, None, None, None,
-        patch_block, gen_args
+        True, False, False, False,
+        ref_block, patch_block, gen_args
     )
 
 
-def get_min_cut_patch_vertical(top_block, patch_block, gen_args: GenParams):
+def get_min_cut_patch_vertical(ref_block, patch_block, gen_args: GenParams):
     return get_4way_min_cut_patch(
-        None, None, top_block, None,
-        patch_block, gen_args
+        False, False, True, False,
+        ref_block, patch_block, gen_args
     )
 
 
-def get_min_cut_patch_both(left_block, top_block, patch_block, gen_args: GenParams):
+def get_min_cut_patch_both(ref_block, patch_block, gen_args: GenParams):
     return get_4way_min_cut_patch(
-        left_block, None, top_block, None,
-        patch_block, gen_args
+        True, False, True, False,
+        ref_block, patch_block, gen_args
     )
 
 
@@ -609,10 +599,7 @@ def get_min_cut_patch_both(left_block, top_block, patch_block, gen_args: GenPara
 def get_seam_mask_from_patch_weights(patch_weights: np.ndarray, gen_args: GenParams) -> np.ndarray:
     if gen_args.blend_into_patch:
         # Has blending, compute distance to 0.5
-        #cv.imshow("patch_weights", debug_resize(patch_weights))
         seam_mask = 1 - np.abs(.5 - patch_weights) * 2
-        #cv.imshow("seam mask", debug_resize(seam_mask))
-        #cv.waitKey()
         np.clip(seam_mask, 0, 1, out=seam_mask)  # just in case
         return seam_mask
     else:

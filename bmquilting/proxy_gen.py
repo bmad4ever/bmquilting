@@ -33,7 +33,7 @@ def generate_texture_by_proxy(proxy_textures: list[np.ndarray],
     rand_tex_idx = rng.integers(len(proxy_textures))
     image = proxy_textures[rand_tex_idx]
 
-    texture_map = np.empty(
+    texture_map = np.zeros(
         ((b + n_h * (b - o)),
          (b + n_w * (b - o)),
          image.shape[2]), dtype=image.dtype)
@@ -70,13 +70,16 @@ def generate_texture_by_proxy(proxy_textures: list[np.ndarray],
     def fill_row_inplace_proxy(texture_map_view: np.ndarray, seams_map_view: np.ndarray):
         get_min_cut_patch = get_min_cut_patch_horizontal_method(gen_args.version)
         for blk_idx in range(bmo, texture_map_view.shape[1] - b + 1, bmo):
-            ref_block = texture_map_view[:b, (blk_idx - bmo):(blk_idx + o)]
-            tex_idx, y, x = find_patch_vx_idx(ref_block, None, None, None, proxy_textures, gen_args, rng)
+            #ref_block = texture_map_view[:b, (blk_idx - bmo):(blk_idx + o)]
+            ref_block = texture_map_view[:b, blk_idx:(blk_idx + b)]
+            tex_idx, y, x = find_patch_vx_idx(
+                True, False, False, False,
+                ref_block, proxy_textures, gen_args, rng)
             patch_indices.append((tex_idx, y, x))
             patch_block = get_block(tex_idx, y, x)
             min_cut_patch, patch_weights = get_min_cut_patch(ref_block, patch_block, gen_args)
             store_patch_mask(patch_weights)
-            texture_map_view[:b, blk_idx:(blk_idx + b)] = min_cut_patch
+            ref_block[:] = min_cut_patch
             seams_map_sub_view = seams_map_view[:b, blk_idx:(blk_idx + b)]
             update_seams_map_view(seams_map_sub_view, gen_args, patch_weights)
 
@@ -91,40 +94,34 @@ def generate_texture_by_proxy(proxy_textures: list[np.ndarray],
         for i in range(1, rows + 1):
             blk_index_i = i * (b - o)
 
-            ref_block_top = texture_map[
-                            (blk_index_i - b + o):(blk_index_i + o), :b]
+            ref_block = texture_map[blk_index_i:(blk_index_i + b), :b]
 
-            # patch_block = find_patch_below(ref_block_top, proxy_textures, gen_args, rng)
-            tex_idx, y, x = find_patch_vx_idx(None, None, ref_block_top, None, proxy_textures, gen_args, rng)
+            tex_idx, y, x = find_patch_vx_idx(
+                False, False, True, False,
+                ref_block, proxy_textures, gen_args, rng)
             patch_indices.append((tex_idx, y, x))
             patch_block = get_block(tex_idx, y, x)
-            min_cut_patch, patch_weights = get_min_cut_v(ref_block_top, patch_block, gen_args)
+            min_cut_patch, patch_weights = get_min_cut_v(ref_block, patch_block, gen_args)
             store_patch_mask(patch_weights)
 
-            texture_map[blk_index_i:(blk_index_i + b), :b] = min_cut_patch
+            ref_block[:] = min_cut_patch
 
             seams_map_view = seams_map[blk_index_i:(blk_index_i + b), :b]
             update_seams_map_view(seams_map_view, gen_args, patch_weights)
 
             for j in range(1, columns + 1):
                 blk_index_j = j * (b - o)
-                ref_block_left = texture_map[
-                                 blk_index_i:(blk_index_i + b),
-                                 (blk_index_j - b + o):(blk_index_j + o)]
-                ref_block_top = texture_map[
-                                (blk_index_i - b + o):(blk_index_i + o),
-                                blk_index_j:(blk_index_j + b)]
+                ref_block = texture_map[blk_index_i:(blk_index_i + b), blk_index_j:(blk_index_j + b)]
 
-                # patch_block = find_patch_both(ref_block_left, ref_block_top, proxy_textures, gen_args, rng)
-                tex_idx, y, x = find_patch_vx_idx(ref_block_left, None, ref_block_top, None, proxy_textures, gen_args,
-                                                  rng)
+                tex_idx, y, x = find_patch_vx_idx(
+                    True, False, True, False,
+                    ref_block, proxy_textures, gen_args, rng)
                 patch_indices.append((tex_idx, y, x))
                 patch_block = get_block(tex_idx, y, x)
-                min_cut_patch, patch_weights = get_min_cut_b(ref_block_left, ref_block_top, patch_block, gen_args)
+                min_cut_patch, patch_weights = get_min_cut_b(ref_block, patch_block, gen_args)
                 store_patch_mask(patch_weights)
 
-                texture_map[blk_index_i:(blk_index_i + b),
-                blk_index_j:(blk_index_j + b)] = min_cut_patch
+                ref_block[:] = min_cut_patch
 
                 seams_map_view = seams_map[blk_index_i:(blk_index_i + b),
                                  blk_index_j:(blk_index_j + b)]
@@ -177,6 +174,7 @@ def build_texture(textures: list[np.ndarray], patches_indices: list[patch_idxs],
             patch_block = get_block_at_idx(block_idx)
             patch_weights = fetch_masks_at_idx(block_idx)
 
+            np.subtract(1, patch_weights, out=patch_weights)
             text_view = texture_map_view[:b, blk_idx:(blk_idx + b)]
             apply_mask(text_view, patch_weights, True)
             np.subtract(1, patch_weights, out=patch_weights)

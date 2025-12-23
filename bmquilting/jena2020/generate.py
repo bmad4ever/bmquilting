@@ -1,73 +1,14 @@
 import numpy as np
-from itertools import product
 
 
 inf = float('inf')
 
 
-def findPatchHorizontal(refBlock, texture, blocksize, overlap, tolerance, rng: np.random.Generator):
-	'''
-	@deprecated
-	Find best horizontal match from the texture
-	'''
-	H, W = texture.shape[:2]
-	errMat = np.zeros((H-blocksize, W-blocksize)) + inf
-	for i, j in product(range(H-blocksize), range(W-blocksize)):
-		rmsVal = ((texture[i:i+blocksize, j:j+overlap] - refBlock[:, -overlap:])**2).mean()
-		if rmsVal > 0:
-			errMat[i, j] = rmsVal
-
-	minVal = np.min(errMat)
-	y, x = np.nonzero(errMat < (1.0 + tolerance)*(minVal))
-	c = rng.integers(len(y))
-	y, x = y[c], x[c]
-	return texture[y:y+blocksize, x:x+blocksize]
-
-
-def findPatchBoth(refBlockLeft, refBlockTop, texture, blocksize, overlap, tolerance, rng: np.random.Generator):
-	'''
-	@deprecated
-	Find best horizontal and vertical match from the texture
-	'''
-	H, W = texture.shape[:2]
-	errMat = np.zeros((H-blocksize, W-blocksize)) + inf
-	for i, j in product(range(H-blocksize), range(W-blocksize)):
-		rmsVal = ((texture[i:i+overlap, j:j+blocksize] - refBlockTop[-overlap:, :])**2).mean()
-		rmsVal = rmsVal + ((texture[i:i+blocksize, j:j+overlap] - refBlockLeft[:, -overlap:])**2).mean()
-		if rmsVal > 0:
-			errMat[i, j] = rmsVal
-
-	minVal = np.min(errMat)
-	y, x = np.nonzero(errMat < (1.0 + tolerance)*(minVal))
-	c = rng.integers(len(y))
-	y, x = y[c], x[c]
-	return texture[y:y+blocksize, x:x+blocksize]
-
-
-def findPatchVertical(refBlock, texture, blocksize, overlap, tolerance, rng: np.random.Generator):
-	'''
-	@deprecated
-	Find best vertical match from the texture
-	'''
-	H, W = texture.shape[:2]
-	errMat = np.zeros((H-blocksize, W-blocksize)) + inf
-	for i, j in product(range(H-blocksize), range(W-blocksize)):
-		rmsVal = ((texture[i:i+overlap, j:j+blocksize] - refBlock[-overlap:, :])**2).mean()
-		if rmsVal > 0:
-			errMat[i, j] = rmsVal
-
-	minVal = np.min(errMat)
-	y, x = np.nonzero(errMat < (1.0 + tolerance)*(minVal))
-	c = rng.integers(len(y))
-	y, x = y[c], x[c]
-	return texture[y:y+blocksize, x:x+blocksize]
-
-
-def getMinCutPatchHorizontal(block1, block2, blocksize, overlap):
+def getMinCutPatchHorizontal(ref_block, patch_block, blocksize, overlap):
 	'''
 	Get the min cut patch done horizontally
 	'''
-	err = ((block1[:, -overlap:] - block2[:, :overlap])**2).mean(2)
+	err = ((ref_block[:, :overlap] - patch_block[:, :overlap]) ** 2).mean(2)
 	# maintain minIndex for 2nd row onwards and
 	minIndex = []
 	E = [list(err[0])]
@@ -94,30 +35,29 @@ def getMinCutPatchHorizontal(block1, block2, blocksize, overlap):
 		path.append(minArg)
 	# Reverse to find full path
 	path = path[::-1]
-	mask = np.zeros((blocksize, blocksize, block1.shape[2]))
+	mask = np.zeros((blocksize, blocksize, ref_block.shape[2]), dtype=np.float32)
 	for i in range(len(path)):
 		mask[i, :path[i]+1] = 1
 
-	resBlock = np.zeros(block1.shape)
-	resBlock[:, :overlap] = block1[:, -overlap:]
-	resBlock = resBlock*mask + block2*(1-mask)
-	# resBlock = block1*mask + block2*(1-mask)
-	return resBlock, mask[:, :, 0].astype(np.float32)
+	res_block = np.zeros(ref_block.shape)
+	res_block[:, :overlap] = ref_block[:, :overlap]
+	res_block = res_block * mask + patch_block * (1 - mask)
+	return res_block, mask[:, :, 0]
 
 
-def getMinCutPatchVertical(block1, block2, blocksize, overlap):
+def getMinCutPatchVertical(ref_block, patch_block, blocksize, overlap):
 	'''
 	Get the min cut patch done vertically
 	'''
-	resBlock, mask = getMinCutPatchHorizontal(np.rot90(block1), np.rot90(block2), blocksize, overlap)
-	return np.rot90(resBlock, 3), mask
+	res_block, mask = getMinCutPatchHorizontal(np.rot90(ref_block), np.rot90(patch_block), blocksize, overlap)
+	return np.rot90(res_block, 3), mask
 
 
-def getMinCutPatchBoth(refBlockLeft, refBlockTop, patchBlock, blocksize, overlap):
+def getMinCutPatchBoth(ref_block, patch_block, blocksize, overlap):
 	'''
 	Find minCut for both and calculate
 	'''
-	err = ((refBlockLeft[:, -overlap:] - patchBlock[:, :overlap])**2).mean(2)
+	err = ((ref_block[:, :overlap] - patch_block[:, :overlap]) ** 2).mean(2)
 	# maintain minIndex for 2nd row onwards and
 	minIndex = []
 	E = [list(err[0])]
@@ -144,13 +84,13 @@ def getMinCutPatchBoth(refBlockLeft, refBlockTop, patchBlock, blocksize, overlap
 		path.append(minArg)
 	# Reverse to find full path
 	path = path[::-1]
-	mask1 = np.zeros((blocksize, blocksize, patchBlock.shape[2]))
+	mask1 = np.zeros((blocksize, blocksize, patch_block.shape[2]), dtype=np.float32)
 	for i in range(len(path)):
 		mask1[i, :path[i]+1] = 1
 
 	###################################################################
 	## Now for vertical one
-	err = ((np.rot90(refBlockTop)[:, -overlap:] - np.rot90(patchBlock)[:, :overlap])**2).mean(2)
+	err = ((np.rot90(ref_block)[:, :overlap] - np.rot90(patch_block)[:, :overlap]) ** 2).mean(2)
 	# maintain minIndex for 2nd row onwards and
 	minIndex = []
 	E = [list(err[0])]
@@ -177,17 +117,16 @@ def getMinCutPatchBoth(refBlockLeft, refBlockTop, patchBlock, blocksize, overlap
 		path.append(minArg)
 	# Reverse to find full path
 	path = path[::-1]
-	mask2 = np.zeros((blocksize, blocksize, patchBlock.shape[2]))
+	mask2 = np.zeros((blocksize, blocksize, patch_block.shape[2]), dtype=np.float32)
 	for i in range(len(path)):
 		mask2[i, :path[i]+1] = 1
 	mask2 = np.rot90(mask2, 3)
 
-
 	mask2[:overlap, :overlap] = np.maximum(mask2[:overlap, :overlap] - mask1[:overlap, :overlap], 0)
 
 	# Put first mask
-	resBlock = np.zeros(patchBlock.shape)
-	resBlock[:, :overlap] = mask1[:, :overlap]*refBlockLeft[:, -overlap:]
-	resBlock[:overlap, :] = resBlock[:overlap, :] + mask2[:overlap, :]*refBlockTop[-overlap:, :]
-	resBlock = resBlock + (1-np.maximum(mask1, mask2))*patchBlock
-	return resBlock, np.maximum(mask1[:, :, 0], mask2[:, :, 0]).astype(np.float32)
+	res_block = np.zeros(patch_block.shape)
+	res_block[:, :overlap] = mask1[:, :overlap]*ref_block[:, :overlap]
+	res_block[:overlap, :] = res_block[:overlap, :] + mask2[:overlap, :]*ref_block[:overlap, :]
+	res_block = res_block + (1-np.maximum(mask1, mask2)) * patch_block
+	return res_block, mask2[:, :, 0]

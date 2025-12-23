@@ -30,67 +30,49 @@ def _make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.
     n_h = get_numb_of_blocks_to_fill_stripe(block_size, overlap, src_h)
 
     texture_map = np.zeros((src_h, src_w, image.shape[-1])).astype(image.dtype)
-    texture_map[:src_h, :src_w] = image
-
-    # roll texture map to allow overlapping between left and right blocks.
-    # this allows for big block sizes, and, consequently, for faster generations
-    left_blocks = np.roll(texture_map, block_size // 2 - overlap + block_size, axis=1)[:, :block_size]
-    right_blocks = np.roll(texture_map, -round(block_size / 2) + overlap, axis=1)[:, :block_size]
+    texture_map[:] = image
 
     # center v seam at half block distance of the left corner
     texture_map = np.roll(texture_map, block_size // 2, axis=1)
+    ref_block = texture_map[:block_size, :block_size]
 
     # get 1st patch
-    ref_block_left = left_blocks[:block_size, :block_size]
-    ref_block_right = right_blocks[:block_size, :block_size]
-
     patch_block = find_patch_vx(
-        ref_block_left, ref_block_right, None, None, lookup_textures, gen_args, rng)
+        True, True, False, False, ref_block, lookup_textures, gen_args, rng)
     min_cut_patch, patch_weights = get_4way_min_cut_patch(
-        ref_block_left, ref_block_right, None, None, patch_block, gen_args)
+        True, True, False, False, ref_block, patch_block, gen_args)
 
-    texture_map[:block_size, :block_size] = min_cut_patch
+    ref_block[:] = min_cut_patch
 
     update_seams_map_view(seams_map[:block_size, :block_size], gen_args, patch_weights)
 
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
         return RETURN_VALUE_WHEN_INTERRUPTED
 
-    def fix_corners():
-        ref_block_left[:overlap, -overlap:] = ref_block_top[-overlap:, :overlap]
-        ref_block_right[:overlap, :overlap] = ref_block_top[-overlap:, -overlap:]
-
     for y in range(1, n_h):
         blk_1y = y * bmo  # block top corner y
         blk_2y = blk_1y + block_size  # block bottom corner y
 
-        # get adjacent blocks
-        ref_block_left = left_blocks[blk_1y:blk_2y, :block_size]
-        ref_block_right = right_blocks[blk_1y:blk_2y, :block_size]
-        ref_block_top = texture_map[(blk_1y - bmo):(blk_1y + overlap), :block_size]
-        fix_corners()
+        ref_block = texture_map[blk_1y:blk_2y, :block_size]
 
-        patch_block = find_patch_vx(ref_block_left, ref_block_right, ref_block_top, None,
+        patch_block = find_patch_vx(True, True, True, False, ref_block,
                                     lookup_textures, gen_args, rng)
         min_cut_patch, patch_weights = get_4way_min_cut_patch(
-            ref_block_left, ref_block_right, ref_block_top, None, patch_block, gen_args)
+            True, True, True, False, ref_block, patch_block, gen_args)
 
-        texture_map[blk_1y:blk_2y, :block_size] = min_cut_patch
+        ref_block[:] = min_cut_patch
         update_seams_map_view(seams_map[blk_1y:blk_2y, :block_size], gen_args, patch_weights)
         if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
             return RETURN_VALUE_WHEN_INTERRUPTED
 
     # fill last block
-    ref_block_left = left_blocks[-block_size:, :block_size]
-    ref_block_right = right_blocks[-block_size:, :block_size]
-    ref_block_top = np.empty_like(ref_block_left)  # only copy overlap
-    ref_block_top[-overlap:, :] = texture_map[-block_size:-block_size + overlap, :block_size]
-    fix_corners()
-    patch_block = find_patch_vx(ref_block_left, ref_block_right, ref_block_top, None,
+    ref_block = texture_map[-block_size:, :block_size]
+
+    patch_block = find_patch_vx(True, True, True, False, ref_block,
                                 lookup_textures, gen_args, rng)
     min_cut_patch, patch_weights = get_4way_min_cut_patch(
-        ref_block_left, ref_block_right, ref_block_top, None, patch_block, gen_args)
-    texture_map[-block_size:, :block_size] = min_cut_patch
+        True, True, True, True, ref_block, patch_block, gen_args)
+    ref_block[:] = min_cut_patch
     update_seams_map_view(seams_map[-block_size:, :block_size], gen_args, patch_weights)
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
         return RETURN_VALUE_WHEN_INTERRUPTED
@@ -168,24 +150,21 @@ def patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, l
     xe = xs + block_size
 
     # PATCH H SEAM -> LEFT PATCH
-    adj_top_blk = np.roll(texture_to_patch, -ys - overlap, axis=0)[-block_size:, xs - overlap:xe - overlap]
-    adj_btm_blk = np.roll(texture_to_patch, -ye + overlap, axis=0)[:block_size, xs - overlap:xe - overlap]
-    adj_lft_blk = np.roll(texture_to_patch, -xs, axis=1)[ys:ye, -block_size:]
-    patch = find_patch_vx(adj_lft_blk, None, adj_top_blk, adj_btm_blk, lookup_textures, gen_args, rng)
-    patch, patch_weights = get_4way_min_cut_patch(adj_lft_blk, None, adj_top_blk, adj_btm_blk, patch, gen_args)
-    texture_to_patch[ys:ye, xs - overlap:xe - overlap] = patch
+    ref_block = texture_to_patch[ys:ye, xs - overlap:xe - overlap]
+    patch = find_patch_vx(True, False, True, True, ref_block, lookup_textures, gen_args, rng)
+    patch, patch_weights = get_4way_min_cut_patch(True, False, True, True, ref_block, patch, gen_args)
+    ref_block[:] = patch
     update_seams_map_view(seams_map[ys:ye, xs - overlap:xe - overlap], gen_args, patch_weights)
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
         return RETURN_VALUE_WHEN_INTERRUPTED
 
     # PATCH H SEAM -> RIGHT PATCH
-    adj_top_blk = np.roll(texture_to_patch, -ys - overlap, axis=0)[-block_size:, xs + overlap:xe + overlap]
-    adj_btm_blk = np.roll(texture_to_patch, -ye + overlap, axis=0)[:block_size, xs + overlap:xe + overlap]
-    adj_lft_blk = np.roll(texture_to_patch, -xs - overlap * 2, axis=1)[ys:ye, -block_size:]
-    adj_rgt_blk = np.roll(texture_to_patch, -xs - block_size, axis=1)[ys:ye, :block_size]
-    patch = find_patch_vx(adj_lft_blk, adj_rgt_blk, adj_top_blk, adj_btm_blk, lookup_textures, gen_args, rng)
-    patch, patch_weights = get_4way_min_cut_patch(adj_lft_blk, adj_rgt_blk, adj_top_blk, adj_btm_blk, patch, gen_args)
-    texture_to_patch[ys:ye, xs + overlap:xe + overlap] = patch
+    ref_block = texture_to_patch[ys:ye, xs + overlap:xe + overlap]
+    patch = find_patch_vx(True, True, True, True,
+                          ref_block, lookup_textures, gen_args, rng)
+    patch, patch_weights = get_4way_min_cut_patch(True, True, True, True,
+                                                  ref_block, patch, gen_args)
+    ref_block[:] = patch
     update_seams_map_view(seams_map[ys:ye, xs + overlap:xe + overlap], gen_args, patch_weights)
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
         return RETURN_VALUE_WHEN_INTERRUPTED

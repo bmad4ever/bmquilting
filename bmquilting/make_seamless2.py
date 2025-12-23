@@ -40,11 +40,11 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
     y, x = y[c], x[c]
 
     # "fake" block will only contain the overlap, in order to re-use existing function.
-    fake_left_block = np.empty((image.shape[0], image.shape[0], image.shape[2]), dtype=image.dtype)
-    fake_right_block = np.empty((image.shape[0], image.shape[0], image.shape[2]), dtype=image.dtype)
-    fake_left_block[:, -overlap:] = image[:, :overlap]
-    fake_right_block[:, :overlap] = image[:, block_size - overlap:block_size]
-    fake_block_sized_patch = np.empty((image.shape[0], image.shape[0], image.shape[2]), dtype=image.dtype)
+    fake_left_block = np.zeros((image.shape[0], image.shape[0], image.shape[2]), dtype=image.dtype)
+    fake_right_block = np.zeros((image.shape[0], image.shape[0], image.shape[2]), dtype=image.dtype)
+    fake_left_block[:, :overlap] = image[:, :overlap]
+    fake_right_block[:, -overlap:] = image[:, block_size - overlap:block_size]
+    fake_block_sized_patch = np.zeros((image.shape[0], image.shape[0], image.shape[2]), dtype=image.dtype)
     fake_block_sized_patch[:, :overlap] = lookup_texture[y:y + image.shape[0], x:x + overlap]
     fake_block_sized_patch[:, -overlap:] = lookup_texture[y:y + image.shape[0], x + block_size - overlap:x + block_size]
     fake_gen_args = dataclasses.replace(gen_args)
