@@ -71,7 +71,7 @@ def get_min_cut_patch_both_method(version: int):
 def compute_errors(diffs: list[np.ndarray], version: int) -> np.ndarray:
     match version:
         case 0:
-            # kept similar to
+            # kept somewhat similar to jena2020 (mean is just the sum scaled down by the number of channels)
             return np.add.reduce(diffs)
         case 1:
             return np.add.reduce(diffs)
@@ -86,7 +86,7 @@ def compute_errors(diffs: list[np.ndarray], version: int) -> np.ndarray:
 def get_match_template_method(version: int) -> int:
     match version:
         case 0:
-            # kept similar to jena2020 used in prior v0
+            # kept somewhat similar to jena2020 used in prior v0
             return cv.TM_SQDIFF
         case 1:
             return cv.TM_SQDIFF
@@ -113,16 +113,14 @@ def find_patch_vx(overlaps_left: bool,
                   rng: np.random.Generator
                   ) -> np.ndarray:
     """
-    Finds the best-matching block across all textures in lookup_textures
-    that satisfies the boundary constraints, applying tolerance to the
-    absolute global minimum error.
+    @see: find_patch_vx_idx
 
-    @return: the patch
+    Calls find_patch_vx_idx and returns the patch instead of its indices.
     """
     best_texture_idx, best_y, best_x = find_patch_vx_idx(
         overlaps_left, overlaps_right, overlaps_top, overlaps_bottom, ref_block, lookup_textures, gen_args, rng)
 
-    # Extract the patch from the winning texture (This triggers a single read from the memmap)
+    # Extract the patch from the winning texture
     winning_texture = lookup_textures[best_texture_idx]
     block_size = gen_args.block_size
     return winning_texture[best_y:best_y + block_size, best_x:best_x + block_size]
@@ -141,6 +139,16 @@ def find_patch_vx_idx(overlaps_left: bool,
     Finds the best-matching block across all textures in lookup_textures
     that satisfies the boundary constraints, applying tolerance to the
     absolute global minimum error.
+
+    @note: From the returned tuple, the corresponding patch can be obtained in the following way:
+        lookup_textures[best_texture_idx][best_y:best_y+block_size, best_x:best_x+block_size]
+
+    @param ref_block: roi on the texture where the patch will be placed over.
+        overlapping regions should have been already filled prior to calling this method.
+
+    @param gen_args: besides the block and overlap size, gen_args provides the tolerance (percentage) which will
+        define what is the acceptable range for the patch selection with respect to the best possible patch errors.
+        The higher the tolerance, the more leeway the function has to select a "worse" patch.
 
     @return: best_texture_idx, best_y, best_x
     """
@@ -252,7 +260,13 @@ def get_4way_min_cut_patch(
         overlaps_top: bool,
         overlaps_bottom: bool,
         ref_block: np.ndarray,  # gen. texture view at the patch to generate location
-        patch_block, gen_args: GenParams):
+        patch_block, gen_args: GenParams) -> tuple[np.ndarray, np.ndarray]:
+    """
+    @param ref_block: roi on the texture where the patch will be placed over.
+        overlapping regions should have been already filled prior to calling this method.
+    @param patch_block: new block to be placed over the ref_block roi.
+    @return: patch, mask
+    """
 
     block_size, overlap = gen_args.bo
     masks_max = np.zeros(patch_block.shape[:2], dtype=np.float32)
