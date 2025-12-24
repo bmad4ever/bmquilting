@@ -11,7 +11,7 @@ def get_numb_of_blocks_to_fill_stripe(block_size, overlap, dim_length):
     return int(ceil((dim_length - block_size) / (block_size - overlap)))
 
 
-def _make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.random.Generator,
+def _make_seamless_horizontally(image: np.ndarray, gen_params: GenParams, rng: np.random.Generator,
                                lookup_textures: list[np.ndarray] = None, seams_map: np.ndarray | None = None,
                                uicd: UiCoordData | None = None):
     """
@@ -23,7 +23,7 @@ def _make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.
     if seams_map is None:
         seams_map = np.zeros(image.shape[:2], dtype=np.float32)
 
-    block_size, overlap = gen_args.block_size, gen_args.overlap
+    block_size, overlap = gen_params.block_size, gen_params.overlap
     bmo = block_size - overlap
 
     src_h, src_w = image.shape[:2]
@@ -38,13 +38,13 @@ def _make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.
 
     # get 1st patch
     patch_block = find_patch_vx(
-        True, True, False, False, ref_block, lookup_textures, gen_args, rng)
+        True, True, False, False, ref_block, lookup_textures, gen_params, rng)
     min_cut_patch, patch_weights = get_4way_min_cut_patch(
-        True, True, False, False, ref_block, patch_block, gen_args)
+        True, True, False, False, ref_block, patch_block, gen_params)
 
     ref_block[:] = min_cut_patch
 
-    update_seams_map_view(seams_map[:block_size, :block_size], gen_args, patch_weights)
+    update_seams_map_view(seams_map[:block_size, :block_size], gen_params, patch_weights)
 
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
         return RETURN_VALUE_WHEN_INTERRUPTED
@@ -56,12 +56,12 @@ def _make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.
         ref_block = texture_map[blk_1y:blk_2y, :block_size]
 
         patch_block = find_patch_vx(True, True, True, False, ref_block,
-                                    lookup_textures, gen_args, rng)
+                                    lookup_textures, gen_params, rng)
         min_cut_patch, patch_weights = get_4way_min_cut_patch(
-            True, True, True, False, ref_block, patch_block, gen_args)
+            True, True, True, False, ref_block, patch_block, gen_params)
 
         ref_block[:] = min_cut_patch
-        update_seams_map_view(seams_map[blk_1y:blk_2y, :block_size], gen_args, patch_weights)
+        update_seams_map_view(seams_map[blk_1y:blk_2y, :block_size], gen_params, patch_weights)
         if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
             return RETURN_VALUE_WHEN_INTERRUPTED
 
@@ -69,11 +69,11 @@ def _make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.
     ref_block = texture_map[-block_size:, :block_size]
 
     patch_block = find_patch_vx(True, True, True, False, ref_block,
-                                lookup_textures, gen_args, rng)
+                                lookup_textures, gen_params, rng)
     min_cut_patch, patch_weights = get_4way_min_cut_patch(
-        True, True, True, True, ref_block, patch_block, gen_args)
+        True, True, True, True, ref_block, patch_block, gen_params)
     ref_block[:] = min_cut_patch
-    update_seams_map_view(seams_map[-block_size:, :block_size], gen_args, patch_weights)
+    update_seams_map_view(seams_map[-block_size:, :block_size], gen_params, patch_weights)
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
         return RETURN_VALUE_WHEN_INTERRUPTED
 
@@ -84,16 +84,16 @@ def _make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.
 
 
 @clear_cache_post_exec()
-def make_seamless_horizontally(image: np.ndarray, gen_args: GenParams, rng: np.random.Generator,
+def make_seamless_horizontally(image: np.ndarray, gen_params: GenParams, rng: np.random.Generator,
                                lookup_textures: list[np.ndarray] = None, seams_map: np.ndarray | None = None,
                                uicd: UiCoordData | None = None):
-    return _make_seamless_horizontally(image, gen_args, rng, lookup_textures, seams_map, uicd)
+    return _make_seamless_horizontally(image, gen_params, rng, lookup_textures, seams_map, uicd)
 
 
-def _make_seamless_vertically(image: np.ndarray, gen_args: GenParams, rng: np.random.Generator,
+def _make_seamless_vertically(image: np.ndarray, gen_params: GenParams, rng: np.random.Generator,
                              lookup_textures: list[np.ndarray] = None, uicd: UiCoordData | None = None):
     texture, seams = _make_seamless_horizontally(
-        np.rot90(image, 1), gen_args, rng=rng, uicd=uicd,
+        np.rot90(image, 1), gen_params, rng=rng, uicd=uicd,
         lookup_textures=None if lookup_textures is None else [np.rot90(txt) for txt in lookup_textures])
 
     if texture is None:
@@ -104,24 +104,24 @@ def _make_seamless_vertically(image: np.ndarray, gen_args: GenParams, rng: np.ra
 
 
 @clear_cache_post_exec()
-def make_seamless_vertically(image: np.ndarray, gen_args: GenParams, rng: np.random.Generator,
+def make_seamless_vertically(image: np.ndarray, gen_params: GenParams, rng: np.random.Generator,
                              lookup_textures: list[np.ndarray] = None, uicd: UiCoordData | None = None):
-    return _make_seamless_vertically(image, gen_args, rng, lookup_textures, uicd)
+    return _make_seamless_vertically(image, gen_params, rng, lookup_textures, uicd)
 
 
 @clear_cache_post_exec()
-def make_seamless_both(image, gen_args: GenParams, rng: np.random.Generator,
+def make_seamless_both(image, gen_params: GenParams, rng: np.random.Generator,
                        lookup_textures: list[np.ndarray] = None, uicd: UiCoordData | None = None):
     lookup_textures = [image] if lookup_textures is None else lookup_textures
-    block_size = gen_args.block_size
+    block_size = gen_params.block_size
 
     # patch the texture in both directions. the last stripe's endpoints won't loop yet.
-    texture, seams = _make_seamless_vertically(image, gen_args, rng, lookup_textures=lookup_textures, uicd=uicd)
+    texture, seams = _make_seamless_vertically(image, gen_params, rng, lookup_textures=lookup_textures, uicd=uicd)
     if texture is not None:
         for m in [texture, seams]:
             m[:] = np.roll(m, -block_size // 2, axis=0)  # center future seam at stripes interception
         texture, seams = _make_seamless_horizontally(
-            texture, gen_args, rng,
+            texture, gen_params, rng,
             lookup_textures=lookup_textures,
             seams_map=seams,
             uicd=uicd)
@@ -134,15 +134,15 @@ def make_seamless_both(image, gen_args: GenParams, rng: np.random.Generator,
         m[:] = np.roll(m, texture.shape[0] // 2, axis=0)
         m[:] = np.roll(m, (texture.shape[1] - block_size) // 2, axis=1)
 
-    return patch_horizontal_seam(texture, seams, lookup_textures, gen_args, rng, uicd=uicd)
+    return patch_horizontal_seam(texture, seams, lookup_textures, gen_params, rng, uicd=uicd)
 
 
 def patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, lookup_textures: list[np.ndarray],
-                          gen_args: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
+                          gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
     """
     Patches the center of the texture
     """
-    block_size, overlap = gen_args.bo
+    block_size, overlap = gen_params.bo
 
     ys = (texture_to_patch.shape[0] - block_size) // 2
     ye = ys + block_size
@@ -151,21 +151,21 @@ def patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, l
 
     # PATCH H SEAM -> LEFT PATCH
     ref_block = texture_to_patch[ys:ye, xs - overlap:xe - overlap]
-    patch = find_patch_vx(True, False, True, True, ref_block, lookup_textures, gen_args, rng)
-    patch, patch_weights = get_4way_min_cut_patch(True, False, True, True, ref_block, patch, gen_args)
+    patch = find_patch_vx(True, False, True, True, ref_block, lookup_textures, gen_params, rng)
+    patch, patch_weights = get_4way_min_cut_patch(True, False, True, True, ref_block, patch, gen_params)
     ref_block[:] = patch
-    update_seams_map_view(seams_map[ys:ye, xs - overlap:xe - overlap], gen_args, patch_weights)
+    update_seams_map_view(seams_map[ys:ye, xs - overlap:xe - overlap], gen_params, patch_weights)
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
         return RETURN_VALUE_WHEN_INTERRUPTED
 
     # PATCH H SEAM -> RIGHT PATCH
     ref_block = texture_to_patch[ys:ye, xs + overlap:xe + overlap]
     patch = find_patch_vx(True, True, True, True,
-                          ref_block, lookup_textures, gen_args, rng)
+                          ref_block, lookup_textures, gen_params, rng)
     patch, patch_weights = get_4way_min_cut_patch(True, True, True, True,
-                                                  ref_block, patch, gen_args)
+                                                  ref_block, patch, gen_params)
     ref_block[:] = patch
-    update_seams_map_view(seams_map[ys:ye, xs + overlap:xe + overlap], gen_args, patch_weights)
+    update_seams_map_view(seams_map[ys:ye, xs + overlap:xe + overlap], gen_params, patch_weights)
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
         return RETURN_VALUE_WHEN_INTERRUPTED
 

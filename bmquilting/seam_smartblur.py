@@ -273,7 +273,7 @@ def auto_min_blend_size(sobel_ksize):
 
 
 def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask: np.ndarray,
-                                gen_args: GenParams,
+                                gen_params: GenParams,
                                 debug: bool = False) -> None:
     """
     Compute adaptive blend mask based on gradient differences.
@@ -285,9 +285,9 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
                     (rotate/flip the block in order to process other orientations)
     @param cut_mask: the mask used to produce the final patched block.
     """
-    block_size = gen_args.block_size  # = source.shape[0]
-    overlap = gen_args.overlap
-    sobel_ksize = gen_args.blend_config.sobel_kernel_size
+    block_size = gen_params.block_size  # = source.shape[0]
+    overlap = gen_params.overlap
+    sobel_ksize = gen_params.blend_config.sobel_kernel_size
     if USE_SCHAAR_WHEN_KSIZE_EQUALS_3:
         sobel_ksize = cv2.FILTER_SCHARR
 
@@ -321,8 +321,8 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     blended = create_adaptive_blend_mask(
         tdiff_map=tdiff_map,
         mc_mask_overlap=cut_mask_overlap,
-        blend_config=gen_args.blend_config,
-        radii_limiter=get_radii_limiter(block_size, overlap) if gen_args.blend_config.use_blur_radii_limiter else None,
+        blend_config=gen_params.blend_config,
+        radii_limiter=get_radii_limiter(block_size, overlap) if gen_params.blend_config.use_blur_radii_limiter else None,
         dtype=source.dtype
     )
 

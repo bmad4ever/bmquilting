@@ -11,6 +11,9 @@ num_pixels: TypeAlias = int
 percentage: TypeAlias = float
 """a float value in the range [0,1]"""
 
+patch_idxs: TypeAlias = tuple[int, int, int]
+"""patches indexes (texture index, y coord, x coord)"""
+
 
 class Orientation(Enum):
     H = "H"
