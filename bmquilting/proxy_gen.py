@@ -8,11 +8,12 @@ import numpy as np
 
 
 @clear_cache_post_exec()
-def generate_texture_by_proxy(proxy_textures: list[np.ndarray],
-                              gen_args: GenParams,
-                              out_h: num_pixels, out_w: num_pixels,
-                              rng: np.random.Generator,
-                              uicd: UiCoordData | None) -> tuple[list[patch_idxs], np.ndarray, np.ndarray, np.ndarray]:
+def generate_texture_by_proxy(
+        proxy_textures: list[np.ndarray],
+        gen_params: GenParams,
+        out_h: num_pixels, out_w: num_pixels,
+        rng: np.random.Generator,
+        uicd: UiCoordData | None) -> tuple[list[patch_idxs], np.ndarray, np.ndarray, np.ndarray] | None:
     """
     @return: The data required to obtain the patches from the source textures and the individual patches' masks plus
     the generated proxy textured and its seams map.
@@ -23,7 +24,7 @@ def generate_texture_by_proxy(proxy_textures: list[np.ndarray],
         3rd item: generated proxy texture
         4th item: proxy texture's seams map
     """
-    b, o = gen_args.block_size, gen_args.overlap
+    b, o = gen_params.block_size, gen_params.overlap
     bmo = b - o
 
     n_h = int(ceil((out_h - b) / (b - o)))
@@ -38,7 +39,7 @@ def generate_texture_by_proxy(proxy_textures: list[np.ndarray],
          (b + n_w * (b - o)),
          image.shape[2]), dtype=image.dtype)
 
-    patch_indices: list[tuple[int, int, int]] = []  # text index, row, column
+    patch_indices: list[patch_idxs] = []  # text index, row, column
     total_blocks = (n_h + 1) * (n_w + 1)
     patch_masks = np.empty((total_blocks, b, b))
     num_masks_added: int = 0
@@ -67,84 +68,70 @@ def generate_texture_by_proxy(proxy_textures: list[np.ndarray],
         winning_texture = proxy_textures[text_idx]
         return winning_texture[y:y + b, x:x + b]
 
-    def fill_row_inplace_proxy(texture_map_view: np.ndarray, seams_map_view: np.ndarray):
-        get_min_cut_patch = get_min_cut_patch_horizontal_method(gen_args.version)
-        for blk_idx in range(bmo, texture_map_view.shape[1] - b + 1, bmo):
-            #ref_block = texture_map_view[:b, (blk_idx - bmo):(blk_idx + o)]
-            ref_block = texture_map_view[:b, blk_idx:(blk_idx + b)]
-            tex_idx, y, x = find_patch_vx_idx(
-                True, False, False, False,
-                ref_block, proxy_textures, gen_args, rng)
-            patch_indices.append((tex_idx, y, x))
-            patch_block = get_block(tex_idx, y, x)
-            min_cut_patch, patch_weights = get_min_cut_patch(ref_block, patch_block, gen_args)
-            store_patch_mask(patch_weights)
-            ref_block[:] = min_cut_patch
-            seams_map_sub_view = seams_map_view[:b, blk_idx:(blk_idx + b)]
-            update_seams_map_view(seams_map_sub_view, gen_args, patch_weights)
+    def process_block(blk_idx, get_min_cut_patch, ref_block, seams_map_view, patch_idx: patch_idxs):
+        patch_indices.append(patch_idx)
+        patch_block = get_block(*patch_idx)
+        min_cut_patch, patch_weights = get_min_cut_patch(ref_block, patch_block, gen_params)
+        store_patch_mask(patch_weights)
+        ref_block[:] = min_cut_patch
+        seams_map_sub_view = seams_map_view[blk_idx]
+        update_seams_map_view(seams_map_sub_view, gen_params, patch_weights)
 
-    def fill_quad_proxy(rows: int, columns: int):
+    def fill_row_inplace_proxy():
+        get_min_cut_patch = get_min_cut_patch_horizontal_method(gen_params.version)
+        for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
+            blk_idx = np.s_[:b, blk_x:(blk_x + b)]
+            ref_block = texture_map[blk_idx]
+            patch_idx = find_patch_vx_idx(
+                True, False, False, False,
+                ref_block, proxy_textures, gen_params, rng)
+            process_block(blk_idx, get_min_cut_patch, ref_block, seams_map, patch_idx)
+
+    def fill_quad_proxy():
         """
             Only requires the first Row already filled.
             A "purist" solution, where there is no apriori column generation.
         """
-        get_min_cut_v = get_min_cut_patch_vertical_method(gen_args.version)
-        get_min_cut_b = get_min_cut_patch_both_method(gen_args.version)
+        get_min_cut_v = get_min_cut_patch_vertical_method(gen_params.version)
+        get_min_cut_b = get_min_cut_patch_both_method(gen_params.version)
 
-        for i in range(1, rows + 1):
-            blk_index_i = i * (b - o)
-
-            ref_block = texture_map[blk_index_i:(blk_index_i + b), :b]
-
-            tex_idx, y, x = find_patch_vx_idx(
+        for blk_y in range(bmo, texture_map.shape[0] - b + 1 , bmo):
+            blk_idx = np.s_[blk_y:blk_y + b, :b]
+            ref_block = texture_map[blk_idx]
+            patch_idx = find_patch_vx_idx(
                 False, False, True, False,
-                ref_block, proxy_textures, gen_args, rng)
-            patch_indices.append((tex_idx, y, x))
-            patch_block = get_block(tex_idx, y, x)
-            min_cut_patch, patch_weights = get_min_cut_v(ref_block, patch_block, gen_args)
-            store_patch_mask(patch_weights)
+                ref_block, proxy_textures, gen_params, rng)
+            process_block(blk_idx, get_min_cut_v, ref_block, seams_map, patch_idx)
 
-            ref_block[:] = min_cut_patch
-
-            seams_map_view = seams_map[blk_index_i:(blk_index_i + b), :b]
-            update_seams_map_view(seams_map_view, gen_args, patch_weights)
-
-            for j in range(1, columns + 1):
-                blk_index_j = j * (b - o)
-                ref_block = texture_map[blk_index_i:(blk_index_i + b), blk_index_j:(blk_index_j + b)]
-
-                tex_idx, y, x = find_patch_vx_idx(
+            for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
+                blk_idx = np.s_[blk_y:blk_y + b, blk_x:blk_x + b]
+                ref_block = texture_map[blk_idx]
+                patch_idx = find_patch_vx_idx(
                     True, False, True, False,
-                    ref_block, proxy_textures, gen_args, rng)
-                patch_indices.append((tex_idx, y, x))
-                patch_block = get_block(tex_idx, y, x)
-                min_cut_patch, patch_weights = get_min_cut_b(ref_block, patch_block, gen_args)
-                store_patch_mask(patch_weights)
+                    ref_block, proxy_textures, gen_params, rng)
+                process_block(blk_idx, get_min_cut_b, ref_block, seams_map, patch_idx)
 
-                ref_block[:] = min_cut_patch
-
-                seams_map_view = seams_map[blk_index_i:(blk_index_i + b),
-                                 blk_index_j:(blk_index_j + b)]
-                update_seams_map_view(seams_map_view, gen_args, patch_weights)
-
-            if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(columns + 1):
+            if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w + 1):
                 break
         return texture_map, seams_map
 
     # --- Generate ---
-    fill_row_inplace_proxy(texture_map[:b, :], seams_map[:b, :])
+    fill_row_inplace_proxy()
     if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w):
         return None
 
-    fill_quad_proxy(n_h, n_w)
+    fill_quad_proxy()
 
     np.clip(seams_map, 0, 1, out=seams_map)
     return patch_indices, patch_masks, texture_map[:out_h, :out_w], seams_map[:out_h, :out_w]
 
 
-def build_texture(textures: list[np.ndarray], patches_indices: list[patch_idxs], patches_masks: np.ndarray,
-                  out_h: num_pixels, out_w: num_pixels, gen_args: GenParams):
-    b, o = gen_args.block_size, gen_args.overlap
+def build_texture(textures: list[np.ndarray],
+                  patches_indices: list[patch_idxs],
+                  patches_masks: np.ndarray,
+                  out_h: num_pixels, out_w: num_pixels,
+                  gen_params: GenParams) -> np.ndarray:
+    b, o = gen_params.block_size, gen_params.overlap
     bmo = b - o
 
     n_h = int(ceil((out_h - b) / (b - o)))
@@ -155,8 +142,9 @@ def build_texture(textures: list[np.ndarray], patches_indices: list[patch_idxs],
          (b + n_w * (b - o)),
          textures[0].shape[2]), dtype=textures[0].dtype)
 
-    block_idx = 0
+    patch_idx = 0
 
+    # --- Aux Functions ---
     def fetch_masks_at_idx(idx):
         return patches_masks[idx]
 
@@ -164,26 +152,31 @@ def build_texture(textures: list[np.ndarray], patches_indices: list[patch_idxs],
         tex_idx, y, x = patches_indices[idx]
         return textures[tex_idx][y:y+b, x:x+b]
 
-    # set 1st patch
-    texture_map[:b, :b] = get_block_at_idx(0)
+    def apply_patch(block_text_idx) -> None:
+        nonlocal patch_idx
+        patch_idx += 1
 
-    def fill_row_inplace(texture_map_view: np.ndarray):
-        nonlocal block_idx
-        for blk_idx in range(bmo, texture_map_view.shape[1] - b + 1, bmo):
-            block_idx += 1  # do not mistake for blk_idx, should rename IT!
-            patch_block = get_block_at_idx(block_idx)
-            patch_weights = fetch_masks_at_idx(block_idx)
+        patch_block = get_block_at_idx(patch_idx)
+        patch_weights = fetch_masks_at_idx(patch_idx)
 
-            np.subtract(1, patch_weights, out=patch_weights)
-            text_view = texture_map_view[:b, blk_idx:(blk_idx + b)]
-            apply_mask(text_view, patch_weights, True)
-            np.subtract(1, patch_weights, out=patch_weights)
-            text_view += apply_mask(patch_block, patch_weights, False)
+        np.subtract(1, patch_weights, out=patch_weights)
+        text_view = texture_map[block_text_idx]
+        apply_mask(text_view, patch_weights, True)
+        np.subtract(1, patch_weights, out=patch_weights)
+        text_view += apply_mask(patch_block, patch_weights, False)
+
+    def fill_row_inplace():
+        for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
+            apply_patch(np.s_[:b, blk_x:blk_x+b])
+
+    def fill_quad_inplace():
+        for blk_y in range(bmo, texture_map.shape[0] - b + 1, bmo):
+            apply_patch(np.s_[blk_y:blk_y + b, :b])
+            for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
+                apply_patch(np.s_[blk_y:blk_y + b, blk_x:blk_x + b])
 
     # --- Generate ---
-    fill_row_inplace(texture_map[:b, :])
-
-    # Seems to be working so far
-    # TODO finish implementation
-
+    texture_map[:b, :b] = get_block_at_idx(0)  # set 1st patch
+    fill_row_inplace()
+    fill_quad_inplace()
     return texture_map[:out_h, :out_w]
