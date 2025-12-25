@@ -8,7 +8,7 @@ import numpy as np
 
 
 @clear_cache_post_exec()
-def generate_texture_by_proxy(
+def _compute_synthesis_map(
         proxy_textures: list[np.ndarray],
         gen_params: GenParams,
         out_h: num_pixels, out_w: num_pixels,
@@ -111,7 +111,7 @@ def generate_texture_by_proxy(
                     ref_block, proxy_textures, gen_params, rng)
                 process_block(blk_idx, get_min_cut_b, ref_block, seams_map, patch_idx)
 
-            if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w + 1):
+            if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w):
                 break
         return texture_map, seams_map
 
@@ -126,11 +126,13 @@ def generate_texture_by_proxy(
     return patch_indices, patch_masks, texture_map[:out_h, :out_w], seams_map[:out_h, :out_w]
 
 
-def build_texture(textures: list[np.ndarray],
-                  patches_indices: list[patch_idxs],
-                  patches_masks: np.ndarray,
-                  out_h: num_pixels, out_w: num_pixels,
-                  gen_params: GenParams) -> np.ndarray:
+def _reconstruct_texture(textures: list[np.ndarray],
+                         patches_indices: list[patch_idxs],
+                         patches_masks: np.ndarray,
+                         out_h: num_pixels, out_w: num_pixels,
+                         gen_params: GenParams,
+                         uicd: UiCoordData | None
+                         ) -> np.ndarray:
     b, o = gen_params.block_size, gen_params.overlap
     bmo = b - o
 
@@ -168,15 +170,50 @@ def build_texture(textures: list[np.ndarray],
     def fill_row_inplace():
         for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
             apply_patch(np.s_[:b, blk_x:blk_x+b])
+        if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w):
+            return None
 
     def fill_quad_inplace():
         for blk_y in range(bmo, texture_map.shape[0] - b + 1, bmo):
             apply_patch(np.s_[blk_y:blk_y + b, :b])
             for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
                 apply_patch(np.s_[blk_y:blk_y + b, blk_x:blk_x + b])
+            if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w):
+                return None
 
     # --- Generate ---
     texture_map[:b, :b] = get_block_at_idx(0)  # set 1st patch
     fill_row_inplace()
     fill_quad_inplace()
     return texture_map[:out_h, :out_w]
+
+
+def generate_guided(
+        proxy_textures: list[np.ndarray],
+        source_textures: list[np.ndarray],
+        gen_params: GenParams,
+        out_h: num_pixels, out_w: num_pixels,
+        rng: np.random.Generator,
+        uicd: UiCoordData | None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Uses a variant of the source_textures to guide the texture synthesis algorithms and maps the result to the
+    source textures.
+    Can be used, for example, in noisy images, where a filter can be applied so that the
+    generation is not influenced by noise or some other visual artifacts or features.
+
+    @param proxy_textures: textures used to guide the generation;
+        the textures order SHOULD MATCH those in the source textures list.
+    @param source_textures: textures used to build the final result post guided synthesis.
+    @return:
+        item 1: reconstructed synthesis result using the source textures
+        item 2: seams map
+        item 3: synthesis result using the proxy textures
+    """
+    patches_idxs, masks, proxy_out_tex, out_cut = _compute_synthesis_map(
+        proxy_textures, gen_params, out_h, out_w, rng, uicd
+    )
+    out_tex = _reconstruct_texture(
+        source_textures, patches_idxs, masks, out_h, out_w, gen_params, uicd
+    )
+    return out_tex, out_cut, proxy_out_tex
