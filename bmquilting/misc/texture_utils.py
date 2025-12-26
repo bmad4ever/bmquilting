@@ -190,3 +190,31 @@ def quick_checksum(tensor: np.ndarray, check_ratio: float = 0.05) -> int:
     data_bytes = sample_slice.tobytes()
     hex_digest = hashlib.sha1(data_bytes).hexdigest()
     return int(hex_digest, 16)
+
+
+def add_salt_and_pepper(image: np.ndarray, amount: float = 0.05, salt_vs_pepper: float = 0.5, seed: int = 1):
+    """
+    Adds salt and pepper noise to an image.
+    :param image: Input image
+    :param amount: Total proportion of image pixels to replace with noise
+    :param salt_vs_pepper: Proportion of salt (white) vs pepper (black)
+    :param seed: Seed for the random generated noise
+    :return: Noisy image
+    """
+    out = np.copy(image)
+
+    rng = np.random.default_rng(seed=seed)
+
+    # Add Salt noise (white pixels)
+    num_salt = np.ceil(amount * image.size * salt_vs_pepper)
+    coords = [rng.integers(0, i - 1, int(num_salt))
+              for i in image.shape[:2]]
+    out[tuple(coords)] = 1.0
+
+    # Add Pepper noise (black pixels)
+    num_pepper = np.ceil(amount * image.size * (1.0 - salt_vs_pepper))
+    coords = [rng.integers(0, i - 1, int(num_pepper))
+              for i in image.shape[:2]]
+    out[tuple(coords)] = 0
+
+    return out
