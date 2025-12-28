@@ -6,6 +6,16 @@ from multiprocessing.shared_memory import SharedMemory
 import numpy as np
 import functools
 import threading
+import logging
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+
+DTYPE = np.dtype('uint32')
+"""dtype used for the shared memory array"""
+
+ON_THREAD_JOIN_TIMEOUT = 2.0
+"""timeout used when joining a registered thread on JobMemoryManager exit"""
 
 
 class UiCoordData:
@@ -33,7 +43,7 @@ class UiCoordData:
             # Create a view of the entire buffer for efficiency
             self._view = np.ndarray(
                 (2 + self.job_id,),
-                dtype='uint32',
+                dtype=DTYPE,
                 buffer=self._shm.buf
             )
 
@@ -84,7 +94,7 @@ class UiCoordData:
     @staticmethod
     def get_required_shm_size_and_number_of_jobs(parallelization_lvl: int, batch_size: int = 1) -> tuple[int, int]:
         n_jobs = UiCoordData.get_number_of_jobs_for(parallelization_lvl, batch_size)
-        return (1 + n_jobs) * np.dtype('uint32').itemsize, n_jobs
+        return (1 + n_jobs) * np.dtype(DTYPE).itemsize, n_jobs
 
 
 class JobMemoryManager:
@@ -99,12 +109,12 @@ class JobMemoryManager:
 
     def get_progress(self) -> int:
         """Reads current progress of all jobs from memory."""
-        view = np.ndarray((1 + self.num_jobs,), dtype='uint32', buffer=self._shm.buf)
+        view = np.ndarray((1 + self.num_jobs,), dtype=DTYPE, buffer=self._shm.buf)
         return np.sum(view[1:])
 
     def stop_all(self):
         """Sets the interrupt flag at index 0."""
-        view = np.ndarray((1,), dtype='uint32', buffer=self._shm.buf)
+        view = np.ndarray((1,), dtype=DTYPE, buffer=self._shm.buf)
         view[0] = 1
 
     def register_thread(self, thread: threading.Thread):
@@ -115,15 +125,15 @@ class JobMemoryManager:
         """Check the shared signal. Use this in the thread loop."""
         if self._shm is None:
             return True
-        view = np.ndarray((1,), dtype='uint32', buffer=self._shm.buf)
+        view = np.ndarray((1,), dtype=DTYPE, buffer=self._shm.buf)
         return view[0] > np.uint32(0)
 
     def create(self) -> str:
-        size = (1 + self.num_jobs) * 4
+        size = (1 + self.num_jobs) * DTYPE.itemsize
         self._shm = SharedMemory(create=True, size=size)
 
         # Initialize Memory: [Interrupt(0), Job1(0), Job2(0)...]
-        view = np.ndarray((1 + self.num_jobs,), dtype='uint32', buffer=self._shm.buf)
+        view = np.ndarray((1 + self.num_jobs,), dtype=DTYPE, buffer=self._shm.buf)
         view[:] = 0
 
         return self._shm.name
@@ -135,12 +145,16 @@ class JobMemoryManager:
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._shm:
             # Set the global kill-switch
-            view = np.ndarray((1,), dtype='uint32', buffer=self._shm.buf)
+            view = np.ndarray((1,), dtype=DTYPE, buffer=self._shm.buf)
             view[0] = 1
 
             # Ensure the UI thread sees the signal and stops
             if self._thread and self._thread.is_alive():
-                self._thread.join(timeout=1.0)
+                self._thread.join(timeout=ON_THREAD_JOIN_TIMEOUT)
+
+                if self._thread.is_alive():
+                    logger.warning("Monitoring thread failed to exit after timeout. "
+                                   "Potential resource leak!")
 
             # Close & Unlink shared memory
             self._shm.close()
