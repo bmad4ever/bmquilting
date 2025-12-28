@@ -1,17 +1,16 @@
-from .bse_type_aliases import num_pixels, size_weight_pairs
+from .bse_type_aliases import NumPixels, SizeWeightPairs
 from sklearn.metrics import silhouette_score
 from sklearn.metrics import pairwise_distances
 from sklearn.cluster import KMeans
 from collections import Counter
-from typing import TypeAlias
 import numpy as np
 import cv2
 
-area: TypeAlias = int
-label: TypeAlias = int
+type Area = int
+type Label = int
 
 
-def find_optimal_clusters(data: list, max_k: int = 6) -> tuple[list[label], list[...], int, float]:
+def find_optimal_clusters(data: list, max_k: int = 6) -> tuple[list[Label], list[...], int, float]:
     if len(np.unique(data)) == 1:  # edge case
         return [0] * len(data), [data[0]], 1, 0
 
@@ -38,10 +37,10 @@ def find_optimal_clusters(data: list, max_k: int = 6) -> tuple[list[label], list
     return best_labels, best_centers.reshape(-1), best_k, best_score
 
 
-def min_distance_same_label(positions: list[tuple[int, int]], labels: list[label]) -> \
-        tuple[dict[label, num_pixels], dict[label, area]]:
+def min_distance_same_label(positions: list[tuple[int, int]], labels: list[Label]) -> \
+        tuple[dict[Label, NumPixels], dict[Label, Area]]:
     """
-    @return: two dictionaries where the keys are the unique labels:
+    :return: two dictionaries where the keys are the unique labels:
         the 1st contains the minimum distances found for each label;
         the 2nd contains the area between the points from which the minimum distance was obtained.
     """
@@ -82,7 +81,7 @@ def inner_square_area(circle_diameter: float) -> float:
     return 2 * (circle_diameter / 2) ** 2
 
 
-def analyze_keypoint_scales(image: np.ndarray) -> size_weight_pairs:
+def analyze_keypoint_scales(image: np.ndarray) -> SizeWeightPairs:
     sift = cv2.SIFT_create()
     keypoints = sift.detect(image, None)
     if len(keypoints) == 0:  # edge case

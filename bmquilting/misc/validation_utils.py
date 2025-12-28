@@ -1,20 +1,18 @@
 import numpy as np
 import inspect
-from ..types import GenParams, num_pixels, Orientation
+from ..types import GenParams, NumPixels, Orientation
 
 
 def validate_array_shape(array: np.ndarray, min_height: int = None, min_width: int = None, help_msg: str = ""):
     """
     Validates that the given array has sufficient dimensions for the specified minimum height and width.
 
-    Parameters:
-        array (np.ndarray): The input array to validate.
-        min_height (int, optional): The minimum required size for the array's first dimension (height). Defaults to None.
-        min_width (int, optional): The minimum required size for the array's second dimension (width). Defaults to None.
-        help_msg (str, optional): Message appended to the raised exception. Defaults to empty string.
+    :param array: The input array to validate.
+    :param min_height: The minimum required size for the array's first dimension (height). Defaults to None.
+    :param min_width: The minimum required size for the array's second dimension (width). Defaults to None.
+    :param help_msg: Message appended to the raised exception. Defaults to empty string.
 
-    Raises:
-        ValueError: If the array's dimensions do not meet the required conditions.
+    :raise ValueError: If the array's dimensions do not meet the required conditions.
     """
     valid_height = min_height is None or array.shape[0] >= min_height
     valid_width = min_width is None or array.shape[1] >= min_width
@@ -41,18 +39,17 @@ def validate_array_shape(array: np.ndarray, min_height: int = None, min_width: i
 
 def validate_gen_args(source, gen_args: GenParams):
     """
-    Validates arguments for quilting generation.
+    Validates generation parameters for quilting generation.
 
-    Checks if source has width and height of at least block_size.
-    If not, raises ValueError with a helping message
+    :raise ValueError: If params can not be used with the provided source.
     """
     validate_array_shape(source, min_height=gen_args.block_size, min_width=gen_args.block_size,
                          help_msg="Change the block size.")
 
 
 def validate_seamless_args(orientation: Orientation, source: np.ndarray, lookup: np.ndarray,
-                           block_size: num_pixels, overlap: num_pixels):
-    if overlap * 2 > block_size:
+                           block_size: NumPixels, overlap: NumPixels):
+    if overlap * 2 >= block_size:
         raise ValueError(f"Overlap ({overlap}) needs to be 50% or less of the block size ({block_size}).")
 
     if orientation == Orientation.H_AND_V:

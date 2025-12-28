@@ -180,10 +180,7 @@ def _nts_no_deadzone_numpy(x: np.ndarray, k: float):
     In-place NTS without deadzone.
     Final values are clipped to [0,1].
 
-    Parameters
-    ----------
-    x : array
-        Input array (modified in-place). Expected domain ~[1,1].
+    :param x: Input array (modified in-place). Expected domain ~[1,1].
         The function will clip the input at the start to enforce domain bounds.
     """
     eps = 1e-12
@@ -217,10 +214,7 @@ def _nts_with_deadzone_numpy(x: np.ndarray, k: float, deadzone: float, beta: flo
     Soft deadzone version, in-place, ND.
     Final values are clipped to [0,1].
 
-    Parameters
-    ----------
-    x : array
-        Input array (modified in-place). Expected domain ~[1,1].
+    :param x : Input array (modified in-place). Expected domain ~[1,1].
         The function will clip the input at the start to enforce domain bounds.
     """
     eps = 1e-12
@@ -267,14 +261,10 @@ def _nts_with_deadzone_numpy(x: np.ndarray, k: float, deadzone: float, beta: flo
 def _power_curve_numpy(x: np.ndarray, p: float, top: float):
     """
     In-place clipped power curve:
+        - y = (x^p) / (top^p)
+        - final y is clipped to [0,1]
 
-        y = (x^p) / (top^p)
-        final y is clipped to [0,1]
-
-    Parameters
-    ----------
-    x : array
-        Input array (modified in-place). Expected domain ~[0,1].
+    :param x: Input array (modified in-place). Expected domain ~[0,1].
         The function will clip the input at the start to enforce domain bounds.
     """
     np.clip(x, 0.0, 1.0, out=x)  # clip input first (in case of numerical drift)
@@ -287,14 +277,10 @@ def _power_curve_numpy(x: np.ndarray, p: float, top: float):
 def _log1p_transform_numpy(x: np.ndarray, gain: float, top: float):
     """
     In-place logarithmic rescaling:
+        - y = log1p(gain * x) / log1p(gain * top)
+        - final y is clipped to [0,1]
 
-        y = log1p(gain * x) / log1p(gain * top)
-        final y is clipped to [0,1]
-
-    Parameters
-    ----------
-    x : array
-        Input array (modified in-place). Expected domain ~[0,1].
+    :param x: Input array (modified in-place). Expected domain ~[0,1].
         The function will clip the input at the start to enforce domain bounds.
     """
     np.clip(x, 0.0, 1.0, out=x)  # clip input first (in case of numerical drift)
@@ -334,21 +320,16 @@ class NormalizedTunableSigmoid(FuncWrapper):
     """
     Normalized Tunable Sigmoid (NTS) with optional soft deadzone, in-place on ND arrays.
 
-    Parameters
-    ----------
-    k : float
-        Controls the overall shape of the function.
+    :var k: Controls the overall shape of the function.
         Positive values make the graph 'N' shaped.
         Negative values make the graph 'S' shaped.
         Default value is -0.5.
 
-    deadzone : float
-        Defines the size of the dead-zone (where y is fixed) around x=0.5.
+    :var deadzone: Defines the size of the dead-zone (where y is fixed) around x=0.5.
         **IMPORTANT: setting deadzone to zero or a negative value selects a faster function variant.**
         Default value is 0.0, meaning that dead-zone is ignored.
 
-    beta: float
-        Controls how soft/hard does the function blend into the dead-zone.
+    :var beta: Controls how soft/hard does the function blend into the dead-zone.
         Only applicable for positive dead-zone values.
         Default value is 0.5.
 
@@ -432,33 +413,27 @@ class NormalizedTunableSigmoid(FuncWrapper):
         dz = self.deadzone
         if dz <= 0:
             return f"NTS (k={self.k})"
-        return f"NTS (Deadzone={dz:.2f}, k={self.k}, beta={self.beta})"
+        return f"NTS (deadzone={dz:.2f}, k={self.k}, beta={self.beta})"
 
 
 class PowerCurve(FuncWrapper):
     """
     Power-curve mapping in [0,1]:
+    - y = (x^p) / (top^p)
+    - y is clamped into [0,1].
 
-        y = (x^p) / (top^p)
-        y is clamped into [0,1].
+    :var p: Curvature exponent.
 
-    Parameters
-    ----------
-    p : float
-        Curvature exponent.
-        - p < 1  → convex soft fade-in
-        - p = 1  → identity
-        - p > 1  → concave, steeper near top
-
-    top : float
-        Input at which the output should reach 1 (before clipping).
-        Must satisfy 0 < top ≤ 1.
+    :var top: Input at which the output should reach 1 (before clipping).
+        Must be in the interval (0,1].
 
     Notes
     -----
     - Computation is performed fully in-place.
     - If Numba is available, a faster JIT version is used.
     - Input x values are clamped to [-1,1] before the transformation.
+    - p < 1  → convex soft fade-in
+    - p > 1  → concave, steeper near top
     """
 
     def __init__(self, p: float = 2.0, top: float = 1.0):
@@ -487,9 +462,12 @@ class PowerCurve(FuncWrapper):
 class LogScalingFunc(FuncWrapper):
     """
     Logarithmic Rescaling in [0, 1]:
+    - y = log1p(gain * x) / log1p(gain * top)
+    - final y is clipped to [0,1]
 
-        y = log1p(gain * x) / log1p(gain * top)
-        final y is clipped to [0,1]
+    :var gain: steepness of the curve.
+    :var top: Input at which the output should reach 1 (before clipping).
+        Must be in the interval (0,1].
 
     Notes
     -----
@@ -562,8 +540,9 @@ class FuncSum(FuncWrapper):   # could be more generic, but would be overkill rn
     each with independent input and output scaling/offset transforms.
 
     The computation is:
-    result = [ (f1(x * s1_in + o1_in) * s1_out + o1_out) ] +
-             [ (f2(x * s2_in + o2_in) * s2_out + o2_out) ]
+
+    [ (f1(x * s1_in + o1_in) * s1_out + o1_out) ]
+    \+ [ (f2(x * s2_in + o2_in) * s2_out + o2_out) ]
 
     It prioritizes using f2's in-place method to minimize memory allocation
     for the final sum operation.
@@ -595,9 +574,7 @@ class FuncSum(FuncWrapper):   # could be more generic, but would be overkill rn
         2. Calculate f2_y (in-place in x).
         3. Add the stored f1_y to x.
 
-        Args:
-            x: The input numpy array (np.ndarray). This array will be overwritten
-               with the final sum result.
+        :param x: The input numpy array (np.ndarray). This array will be overwritten with the final sum result.
         """
         p1 = self.func_params_1
         p2 = self.func_params_2

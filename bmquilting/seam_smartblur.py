@@ -4,7 +4,7 @@ from functools import lru_cache
 from math import ceil
 
 from .misc.dry import apply_mask
-from .types import GenParams, BlendConfig, num_pixels
+from .types import GenParams, BlendConfig, NumPixels
 
 
 DEFAULT_MAX_BLEND_RATIO = 0.95  # percentage of the overlap size that can be used for blending purposes
@@ -17,7 +17,7 @@ def debug_resize(arr, factor=2):
     return cv2.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
 
 
-def auto_blend_config_2(sobel_kernel_size: num_pixels, overlap: num_pixels,
+def auto_blend_config_2(sobel_kernel_size: NumPixels, overlap: NumPixels,
                         blend_scale: float = DEFAULT_BLEND_SCALE, use_vignette: bool = False) -> BlendConfig:
     return BlendConfig(
         blend_scale=blend_scale,
@@ -28,7 +28,7 @@ def auto_blend_config_2(sobel_kernel_size: num_pixels, overlap: num_pixels,
     )
 
 
-def auto_blend_config_1(block_size: num_pixels, overlap: num_pixels,
+def auto_blend_config_1(block_size: NumPixels, overlap: NumPixels,
                         blend_scale: float = DEFAULT_BLEND_SCALE, use_vignette: bool = False) -> BlendConfig:
     return auto_blend_config_2(
         blend_scale=blend_scale,
@@ -39,22 +39,15 @@ def auto_blend_config_1(block_size: num_pixels, overlap: num_pixels,
 
 
 @lru_cache(maxsize=1)
-def get_max_possible_gradient_diff(dtype_str, sobel_ksize) -> float:
+def get_max_possible_gradient_diff(dtype_str: str, sobel_ksize: int) -> float:
     """
     Calculate maximum possible gradient difference using actual OpenCV kernel.
     Cached to avoid recomputing for the same dtype and kernel size.
 
-    Parameters:
-    -----------
-    dtype_str : str
-        String representation of numpy dtype (e.g., 'uint8', 'float32')
-        We use string instead of dtype object because dtype objects aren't hashable
-    sobel_ksize : int
-        Sobel kernel size
-
-    Returns:
-    --------
-    float : Maximum possible value gradient difference
+    :param dtype_str: String representation of numpy dtype (e.g., 'uint8', 'float32').
+        String is used instead of dtype object because dtype objects aren't hashable.
+    :param sobel_ksize: Sobel kernel size
+    :return: Maximum possible value gradient difference
     """
     # Convert string back to dtype
     dtype = np.dtype(dtype_str)
@@ -108,23 +101,13 @@ def adaptive_maximum_filter(
     Each pixel expands according to its local radius value,
     producing a smooth, radius-guided maximum field.
 
-    Parameters
-    ----------
-    radius_map : np.ndarray
-        2D map of per-pixel radii.
-    n_levels : int
-        Number of quantization levels.
-    gamma : float
-        Nonlinear exponent shaping the spacing of quantized radii.
-    overreach : int
-        Optional additive dilation to slightly extend each radius band.
-    min_radius, max_radius : float, optional
-        Bounds for quantization. Inferred from data if None.
-
-    Returns
-    -------
-    np.ndarray
-        Smoothed / dilated radius map.
+    :param radius_map: 2D map of per-pixel radii.
+    :param n_levels: Number of quantization levels.
+    :param gamma: Nonlinear exponent shaping the spacing of quantized radii.
+    :param overreach: Optional additive dilation to slightly extend each radius band.
+    :param min_radius: Lower bound for quantization. Inferred from data if None.
+    :param max_radius: Upper bound for quantization. Inferred from data if None.
+    :return: Smoothed / dilated radius map.
     """
     radius_map = np.asarray(radius_map, np.float32)
     if min_radius is None:
@@ -172,16 +155,16 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     """
     Create adaptive blend mask with transition width based on gradient differences.
 
-    @param tdiff_map: Seam gradient difference map (higher values = more difficult transition) of shape (H, W).
-    @param mc_mask_overlap: Min-cut mask (0 = source side, 1 = patch side) of shape (H, W).
-    @param blend_config: Params set for the generation, such as the minimum blur diameter.
-    @param radii_limiter_mask: Binary mask of shape (H, W) used to compute radii_limiter.
+    :param tdiff_map: Seam gradient difference map (higher values = more difficult transition) of shape (H, W).
+    :param mc_mask_overlap: Min-cut mask (0 = source side, 1 = patch side) of shape (H, W).
+    :param blend_config: Params set for the generation, such as the minimum blur diameter.
+    :param radii_limiter_mask: Binary mask of shape (H, W) used to compute radii_limiter.
         Should match overlapping area in most use cases.
-    @param radii_limiter: (H, W) shaped numpy array that limits the maximum possible blur radius.
+    :param radii_limiter: (H, W) shaped numpy array that limits the maximum possible blur radius.
         Will be ignored if radii_limiter_mask is provided.
-    @param dtype : Data type of source images (for calculating theoretical max)
+    :param dtype: Data type of source images (for calculating theoretical max)
 
-    @return: np.ndarray (H, W): Blend mask (0 = source, 1 = patch)
+    :return: np.ndarray (H, W): Blend mask (0 = source, 1 = patch)
     """
     min_blur_diameter, max_blur_diameter = blend_config.min_blur_diameter, blend_config.max_blur_diameter
 
@@ -253,13 +236,10 @@ def _auto_max_blur_diameter(max_blend_ratio, overlap_size, sobel_ksize):
     # Start with 1.75x the kernel size (rounded)
     max_blend_width = round(sobel_ksize * 1.75)
 
-    print(f"HEY > {max_blend_width}")
-
     # Cap it based on patch size if provided
     if overlap_size is not None:
         max_allowed = int(overlap_size * max_blend_ratio)
         max_blend_width = min(max_blend_width, max_allowed)
-        print(f"HEY 2 > {max_allowed, max_blend_width}")
     return max_blend_width
 
 
@@ -273,17 +253,17 @@ def auto_min_blend_size(sobel_ksize):
 
 
 def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask: np.ndarray,
-                                gen_params: GenParams,
-                                debug: bool = False) -> None:
+                                gen_params: GenParams) -> None:
     """
     Compute adaptive blend mask based on gradient differences.
     The output is copied to cut_mask to avoid additional allocations.
 
-    @param source: existing texture block where the patch will be placed, where the overlap area is [:, :overlap].
+    :param source: existing texture block where the patch will be placed, where the overlap area is [:, :overlap].
                     (rotate/flip the block in order to process other orientations)
-    @param patch:  the patch to be placed over the source, where the overlap area is [:, :overlap].
+    :param patch:  the patch to be placed over the source, where the overlap area is [:, :overlap].
                     (rotate/flip the block in order to process other orientations)
-    @param cut_mask: the mask used to produce the final patched block.
+    :param cut_mask: the mask used to produce the final patched block.
+    :param gen_params: generation parameters, which should contain the blend_config.
     """
     block_size = gen_params.block_size  # = source.shape[0]
     overlap = gen_params.overlap
@@ -311,10 +291,6 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     tdiff_map = gradients_differences_at_the_seam(sobel_ksize, cut_mask_overlap,
                                                   source_overlap, patch_overlap, patched_overlap)
 
-    if debug:
-        print(f"tdiff shape: {tdiff_map.shape}, max: {np.max(tdiff_map):.2f}, min: {np.min(tdiff_map):.2f}")
-        print(f"tdiff mean: {np.mean(tdiff_map):.2f}, std: {np.std(tdiff_map):.2f}")
-
     # endregion Compute "Transition Difference Map" END
 
     # Create adaptive blend mask
@@ -326,59 +302,28 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
         dtype=source.dtype
     )
 
-    if debug:
-        min_blend = sobel_ksize
-        max_proposed = int(round(sobel_ksize * 2.5))
-        max_allowed = int(block_size * 0.15)
-        max_actual = min(max_proposed, max_allowed)
-        print(f"Blend widths: min={min_blend}px, max={max_actual}px")
-
     # Update min-cut mask with adaptive blend  -> (1 - blended)
     blended *= -1
     blended += 1
     cut_mask[:block_size, :overlap] = blended
-
-    if debug:
-        #print(f"Final patch shape: {final_patch.shape}, dtype: {final_patch.dtype}")
-
-        def scale(img, factor=6):
-            return cv2.resize(img, (img.shape[1] * factor, img.shape[0] * factor))
-
-        tdiff_map = scale(tdiff_map)
-        # base_mask = cv2.resize(base_mask, (base_mask.shape[1]*4, base_mask.shape[0]*4))
-        blended = scale(blended)
-        #min_cut_patch = scale(min_cut_patch)
-        source = scale(source)
-        #source = cv2.cvtColor(np.uint8(source * 255), cv2.COLOR_LAB2BGR)
-        #patch_overlap = cv2.cvtColor(np.uint8(patched_overlap * 255), cv2.COLOR_LAB2BGR)
-        #final_patch = cv2.cvtColor(np.uint8(final_patch * 255), cv2.COLOR_LAB2BGR)
-        # cv2.imshow("Source", source)
-        # cv2.imshow("Patch", patch)
-        cv2.imshow("Raw Patched", patched_overlap)
-        #cv2.imshow("Blend Patched", ??)
-        cv2.imshow("Source", source)
-        cv2.imshow("tdiff_map (discontinuity)", tdiff_map / tdiff_map.max())
-        cv2.imshow("Blend Mask (final)", blended)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
 
 
 def gradients_differences_at_the_seam(
         sobel_ksize: int, cut_mask_overlap: np.ndarray,
         source_overlap: np.ndarray, patch_overlap: np.ndarray, patched_overlap: np.ndarray) -> np.ndarray:
     """
-    This function does the following, albeit minimizing mem. allocations (thus being harder to read)
-    # 1. Get the gradients for all provided textures (source, patch, and patched)
-    # 2. Compute the difference between source & patched, and patch & patched gradients
-    # 3. Get the highest difference from both and mask them to only get values near the cut.
+    This function does the following, albeit minimizing mem. allocations (thus being harder to read).
+    1. Get the gradients for all provided textures (source, patch, and patched)
+    2. Compute the difference between source & patched, and patch & patched gradients
+    3. Get the highest difference from both and mask them to only get values near the cut.
 
-    @param sobel_ksize: ksize argument when using cv2.Sobel function
-    @param cut_mask_overlap: cut mask view of the area where source and patch overlap
-    @param source_overlap: source view of the area which overlaps with the patch
-    @param patch_overlap: patch view of the area which overlaps with the source
-    @param patched_overlap: patched view of the area where source and patch overlap
+    :param sobel_ksize: ksize argument when using cv2.Sobel function
+    :param cut_mask_overlap: cut mask view of the area where source and patch overlap
+    :param source_overlap: source view of the area which overlaps with the patch
+    :param patch_overlap: patch view of the area which overlaps with the source
+    :param patched_overlap: patched view of the area where source and patch overlap
 
-    @return: a 2D array with shape equal to grad_shape[:2] that contains the gradients differences around the seam
+    :return: a 2D array with shape equal to grad_shape[:2] that contains the gradients differences around the seam
     """
     assert (source_overlap.dtype == np.float32)
 
@@ -440,7 +385,7 @@ def gradients_differences_at_the_seam(
 
 
 @lru_cache(maxsize=1)
-def get_radii_limiter(block_size: num_pixels, overlap: num_pixels) -> np.ndarray:
+def get_radii_limiter(block_size: NumPixels, overlap: NumPixels) -> np.ndarray:
     """Blur radii limiter for standard square patches -> [[1, 2, ..., 2, 1], ...]"""
     x = np.linspace(1, overlap, overlap).reshape((1, overlap))
     x[:, -(overlap // 2):] -= overlap + 1

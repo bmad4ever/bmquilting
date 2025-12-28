@@ -1,4 +1,4 @@
-from .misc.bse_type_aliases import num_pixels, size_weight_pairs
+from .misc.bse_type_aliases import NumPixels, SizeWeightPairs
 from .misc.bse_desc_util import analyze_keypoint_scales
 from .misc.bse_ft_util import analyze_freq_spectrum
 from math import ceil
@@ -35,9 +35,9 @@ def find_sync_wavelens(pairs, lower, upper, n):
     return relevant
 
 
-def make_guess(pairs: size_weight_pairs, min_dim: num_pixels, max_block_size: num_pixels | None = None) -> num_pixels:
+def make_guess(pairs: SizeWeightPairs, min_dim: NumPixels, max_block_size: NumPixels | None = None) -> NumPixels:
     """
-    @param min_dim: shortest edge length in the source image/latent
+    :param min_dim: shortest edge length in the source image/latent
     """
     default_value = round(min_dim / 3)  # returned in edge cases
 
@@ -78,7 +78,7 @@ def make_guess(pairs: size_weight_pairs, min_dim: num_pixels, max_block_size: nu
     return max(rel)  # can afford to go for the max since it won't go over more than half of min_dim
 
 
-def filter_pairs_by_weight(pairs: size_weight_pairs, weight_percentage_threshold):
+def filter_pairs_by_weight(pairs: SizeWeightPairs, weight_percentage_threshold):
     total_weight = sum(weight for _, weight in pairs)
     threshold = total_weight * (weight_percentage_threshold / 100)
     filtered_pairs = [(divisor, weight) for divisor, weight in pairs if weight >= threshold]
@@ -86,14 +86,14 @@ def filter_pairs_by_weight(pairs: size_weight_pairs, weight_percentage_threshold
 
 
 def guess_nice_block_size(src: np.ndarray, freq_analysis_only: bool = False,
-                          max_block_size: num_pixels | None = None) -> num_pixels:
+                          max_block_size: NumPixels | None = None) -> NumPixels:
     """
-    @param src: numpy image with normalized float32 values
-    @param max_block_size: further restricts the upper bound for the guess.
+    :param src: numpy image with normalized float32 values
+    :param max_block_size: further restricts the upper bound for the guess.
                            the actually used upper bound might be lower than max_block_size.
     """
 
-    def normalize_weights(pairs: size_weight_pairs):
+    def normalize_weights(pairs: SizeWeightPairs):
         if not pairs:
             return []
         weights = [weight for index, weight in pairs]

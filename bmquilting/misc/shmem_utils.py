@@ -7,7 +7,19 @@ import time
 import gc
 
 
-# --- 1. DATACLASS FOR METADATA ---
+# --- 1. DATACLASSES FOR METADATA ---
+
+@dataclass(frozen=True, slots=True)
+class TextureInfo:
+    """
+    :var shape: the shape of the texture array.
+    :var offset: the byte offset of the texture in the temp file.
+    :var byte_size: the size of the texture array in bytes.
+    """
+    shape: tuple[int, int, int]  # must have the channels dimension
+    offset: int
+    byte_size: int
+
 
 @dataclass(frozen=True)
 class TextureMetadata:
@@ -15,14 +27,14 @@ class TextureMetadata:
     Stores the necessary information for a worker process to access
     the shared texture data stored on disk via memory mapping.
 
-    global_dtype: The shared NumPy dtype for all textures (e.g., 'uint8').
-    texture_infos: list of dicts, where each dict contains 'shape',
-                   and 'offset' (in bytes) for the raw data of an individual texture.
+    :var global_dtype: The shared NumPy dtype for all textures (e.g., 'uint8').
+    :var texture_infos: list of TextureInfo for each texture.
+     and 'offset' (in bytes) for the raw data of an individual texture.
     """
     filepath: str
     global_dtype: str
     global_number_of_channels: int
-    texture_infos: list[dict[str, object]]
+    texture_infos: list[TextureInfo]
     total_bytes: int
 
 
@@ -73,8 +85,8 @@ def get_individual_texture(metadata: TextureMetadata, index: int) -> np.ndarray:
     # 2. Get the global dtype and related information
     element_dtype = np.dtype(metadata.global_dtype)
 
-    start_byte = info['offset']
-    end_byte = start_byte + info['nbytes']
+    start_byte = info.offset
+    end_byte = start_byte + info.byte_size
 
     # Note: start_index and end_index are byte positions since base_map is uint8
     start_index = start_byte
@@ -84,7 +96,7 @@ def get_individual_texture(metadata: TextureMetadata, index: int) -> np.ndarray:
     raw_slice = base_map[start_index:end_index]
 
     # 4. Cast the raw bytes to the correct dtype and reshape (zero-copy view)
-    texture = raw_slice.view(dtype=element_dtype).reshape(tuple(info['shape']))
+    texture = raw_slice.view(dtype=element_dtype).reshape(tuple(info.shape))
 
     return texture
 
@@ -141,7 +153,7 @@ class SharedTextureList:
         temp_dir = tempfile.mkdtemp(prefix='texture_synth_')
         filename = os.path.join(temp_dir, f'shared_textures_{time.time_ns()}.dat')
 
-        texture_infos: list[dict[str, object]] = []
+        texture_infos: list[TextureInfo] = []
         current_offset_bytes = 0
         total_bytes_written = 0
 
@@ -156,11 +168,13 @@ class SharedTextureList:
 
                 f.write(texture_bytes)
 
-                texture_infos.append({
-                    'shape': list(texture.shape),
-                    'offset': current_offset_bytes,
-                    'nbytes': byte_size
-                })
+                texture_infos.append(
+                    TextureInfo(
+                        shape= texture.shape,
+                        offset= current_offset_bytes,
+                        byte_size = byte_size
+                    )
+                )
 
                 current_offset_bytes += byte_size
                 total_bytes_written += byte_size

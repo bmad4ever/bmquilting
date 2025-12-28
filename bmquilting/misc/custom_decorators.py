@@ -19,9 +19,7 @@ def clear_cache_post_exec(*functions_to_clear):
 
     If none is provided, DEFAULT_CACHED_FUNCTIONS list is used instead.
 
-    Args:
-        *functions_to_clear: A list of functions (with @lru_cache)
-                             whose caches should be cleared.
+    :param functions_to_clear: A list of functions (with @lru_cache) whose caches should be cleared.
     """
     if not functions_to_clear:
         # If the tuple is empty, use the standard default list

@@ -1,9 +1,10 @@
+from numpy.lib._index_tricks_impl import IndexExpression
 from functools import lru_cache
 import importlib.util
 import numpy as np
 import cv2 as cv
 
-from .types import GenParams, num_pixels, SquarePatchingBlendConfig, patch_idxs
+from .types import GenParams, NumPixels, SquarePatchingBlendConfig, PatchIdx
 from .seam_smartblur import compute_adaptive_blend_mask
 from .misc.shmem_utils import SharedTextureList
 from .misc.dry import apply_mask
@@ -11,6 +12,13 @@ from .misc.dry import apply_mask
 from .jena2020.generate import inf, getMinCutPatchHorizontal, getMinCutPatchVertical, getMinCutPatchBoth
 
 epsilon = np.finfo(float).eps
+
+type FindPatchSlices = tuple[
+    tuple[IndexExpression, IndexExpression],
+    tuple[IndexExpression, IndexExpression],
+    tuple[IndexExpression, IndexExpression],
+    tuple[IndexExpression, IndexExpression]
+]
 
 
 def debug_resize(arr, factor=8):
@@ -113,9 +121,10 @@ def find_patch_vx(overlaps_left: bool,
                   rng: np.random.Generator
                   ) -> np.ndarray:
     """
-    @see: find_patch_vx_idx
-
     Calls find_patch_vx_idx and returns the patch instead of its indices.
+    See find_patch_vx_idx documentation.
+
+    :return: a block sized texture patch.
     """
     best_texture_idx, best_y, best_x = find_patch_vx_idx(
         overlaps_left, overlaps_right, overlaps_top, overlaps_bottom, ref_block, lookup_textures, gen_params, rng)
@@ -130,7 +139,7 @@ def find_patch_vx(overlaps_left: bool,
 def get_slice_metadata_for_find_patch(block_size, overlap):
     """
     Auxiliary function for the template matching used in the find_patch_vx_idx function.
-    Computes and caches the slice objects for the texture and for the template & mask.
+    Computes and caches the slice objects for the texture and for the template & mask respectively.
     """
     bmo = block_size - overlap
     return (
@@ -149,23 +158,23 @@ def find_patch_vx_idx(overlaps_left: bool,
                       lookup_textures: list[np.ndarray] | SharedTextureList,
                       gen_params: GenParams,
                       rng: np.random.Generator
-                      ) -> patch_idxs:
+                      ) -> PatchIdx:
     """
     Finds the best-matching block across all textures in lookup_textures
     that satisfies the boundary constraints, applying tolerance to the
     absolute global minimum error.
 
-    @note: From the returned tuple, the corresponding patch can be obtained in the following way:
-        lookup_textures[best_texture_idx][best_y:best_y+block_size, best_x:best_x+block_size]
+    From the returned tuple, the corresponding patch can be obtained in the following way:
+    lookup_textures[best_texture_idx][best_y:best_y+block_size, best_x:best_x+block_size]
 
-    @param ref_block: roi on the texture where the patch will be placed over.
+    :param ref_block: roi on the texture where the patch will be placed over.
         overlapping regions should have been already filled prior to calling this method.
 
-    @param gen_params: besides the block and overlap size, gen_params provides the tolerance (percentage) which will
+    :param gen_params: besides the block and overlap size, gen_params provides the tolerance (percentage) which will
         define what is the acceptable range for the patch selection with respect to the best possible patch errors.
         The higher the tolerance, the more leeway the function has to select a "worse" patch.
 
-    @return: best_texture_idx, best_y, best_x
+    :return: best_texture_idx, best_y, best_x
     """
     block_size, overlap, tolerance = gen_params.bot
     template_method = get_match_template_method(gen_params.version)
@@ -263,10 +272,10 @@ def get_4way_min_cut_patch(
         ref_block: np.ndarray,  # gen. texture view at the patch to generate location
         patch_block, gen_params: GenParams) -> tuple[np.ndarray, np.ndarray]:
     """
-    @param ref_block: roi on the texture where the patch will be placed over.
+    :param ref_block: roi on the texture where the patch will be placed over.
         overlapping regions should have been already filled prior to calling this method.
-    @param patch_block: new block to be placed over the ref_block roi.
-    @return: patch, mask
+    :param patch_block: new block to be placed over the ref_block roi.
+    :return: patch, mask
     """
 
     block_size, overlap = gen_params.bo
@@ -356,7 +365,7 @@ def get_4way_min_cut_patch(
 
 
 @lru_cache(maxsize=4)
-def patch_blending_vignette(block_size: num_pixels, overlap: num_pixels,
+def patch_blending_vignette(block_size: NumPixels, overlap: NumPixels,
                             left: bool, right: bool, top: bool, bottom: bool) -> np.ndarray:
     margin = 1  # must be small !
     power = 4.5  # controls drop-off
@@ -422,11 +431,11 @@ def patch_blending_vignette(block_size: num_pixels, overlap: num_pixels,
     return mask
 
 
-def get_min_cut_patch_mask_horizontal_jena2020(block1, block2, block_size: num_pixels, overlap: num_pixels):
+def get_min_cut_patch_mask_horizontal_jena2020(block1, block2, block_size: NumPixels, overlap: NumPixels):
     """
-    @param block1: block to the left, with the overlap on its right edge
-    @param block2: block to the right, with the overlap on its left edge
-    @return: ONLY the mask (not the patched overlap section)
+    :param block1: block to the left, with the overlap on its right edge
+    :param block2: block to the right, with the overlap on its left edge
+    :return: ONLY the mask (not the patched overlap section)
     """
     err = ((block1[:, -overlap:] - block2[:, :overlap]) ** 2).mean(2)
     # maintain minIndex for 2nd row onwards and
@@ -474,14 +483,14 @@ if importlib.util.find_spec("pyastar2d") is not None:
 
     def get_min_cut_patch_mask_horizontal_astar(
             ref_block, patch_block,
-            block_size: num_pixels, overlap: num_pixels,
+            block_size: NumPixels, overlap: NumPixels,
             blend_config: SquarePatchingBlendConfig = None
     ):
         """
-        @param ref_block: block in the source texture being generated (should be normalized)
-        @param patch_block: patch that will be pasted over the ref_block
+        :param ref_block: block in the source texture being generated (should be normalized)
+        :param patch_block: patch that will be pasted over the ref_block
 
-        @return: ONLY the mask (not the patched overlap section)
+        :return: ONLY the mask (not the patched overlap section)
         """
         # get min and max safety radii
         if blend_config is not None and blend_config.use_blur_radii_guess_pathfind_limiter:
@@ -567,7 +576,7 @@ def adjust_errors_func_inplace(errors: np.ndarray) -> None:
     errors **= 2
 
 
-def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: num_pixels) -> None:
+def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: NumPixels) -> None:
     """Adjust the errors so that 1s can be used to create 'free-corridors'"""
 
     # scale to integer color range and offset by 1 (works for both RGB and LAB)

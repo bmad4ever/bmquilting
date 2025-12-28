@@ -151,17 +151,12 @@ def get_texture_rotated_variants(
     Generate N equally-spaced rotations (360° / N).
     Each rotated texture is tightly cropped to remove empty pixels.
 
-    Args:
-        img (np.ndarray):
-            Input texture (2D or 3D).
-        number_of_cardinals (int):
-            Number of equally spaced orientations.
-        interpolation:
-            OpenCV interpolation flag.
-            Examples: cv2.INTER_LINEAR (default), cv2.INTER_NEAREST, cv2.INTER_CUBIC, etc.
+    :param img: Input texture (2D or 3D).
+    :param number_of_cardinals: Number of equally spaced orientations.
+    :param interpolation: OpenCV interpolation flag.
+        Examples: cv2.INTER_LINEAR (default), cv2.INTER_NEAREST, cv2.INTER_CUBIC, etc.
 
-    Returns:
-        List[np.ndarray]: All rotated & cropped textures.
+    :return: List[np.ndarray]: All rotated & cropped textures.
     """
     if number_of_cardinals <= 0:
         raise ValueError("number_of_cardinals must be >= 1")

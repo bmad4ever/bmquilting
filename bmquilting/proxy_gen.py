@@ -1,8 +1,9 @@
 from .synthesis_subroutines import (
     get_min_cut_patch_horizontal_method, get_min_cut_patch_vertical_method, get_min_cut_patch_both_method,
     update_seams_map_view, find_patch_vx_idx, apply_mask)
-from .types import UiCoordData, GenParams, num_pixels, patch_idxs
+from .types import GenParams, NumPixels, PatchIdx
 from .misc.custom_decorators import clear_cache_post_exec
+from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui
 from math import ceil
 import numpy as np
 
@@ -11,11 +12,11 @@ import numpy as np
 def _compute_synthesis_map(
         proxy_textures: list[np.ndarray],
         gen_params: GenParams,
-        out_h: num_pixels, out_w: num_pixels,
+        out_h: NumPixels, out_w: NumPixels,
         rng: np.random.Generator,
-        uicd: UiCoordData | None) -> tuple[list[patch_idxs], np.ndarray, np.ndarray, np.ndarray] | None:
+        uicd: UiCoordData | None) -> tuple[list[PatchIdx], np.ndarray, np.ndarray, np.ndarray]:
     """
-    @return: The data required to obtain the patches from the source textures and the individual patches' masks plus
+    Returns the data required to obtain the patches from the source textures and the individual patches' masks plus
     the generated proxy textured and its seams map.
 
     This is returned in the following format:
@@ -39,7 +40,7 @@ def _compute_synthesis_map(
          (b + n_w * (b - o)),
          image.shape[2]), dtype=image.dtype)
 
-    patch_indices: list[patch_idxs] = []  # text index, row, column
+    patch_indices: list[PatchIdx] = []  # text index, row, column
     total_blocks = (n_h + 1) * (n_w + 1)
     patch_masks = np.empty((total_blocks, b, b))
     num_masks_added: int = 0
@@ -68,7 +69,7 @@ def _compute_synthesis_map(
         winning_texture = proxy_textures[text_idx]
         return winning_texture[y:y + b, x:x + b]
 
-    def process_block(blk_idx, get_min_cut_patch, ref_block, seams_map_view, patch_idx: patch_idxs):
+    def process_block(blk_idx, get_min_cut_patch, ref_block, seams_map_view, patch_idx: PatchIdx):
         patch_indices.append(patch_idx)
         patch_block = get_block(*patch_idx)
         min_cut_patch, patch_weights = get_min_cut_patch(ref_block, patch_block, gen_params)
@@ -76,6 +77,7 @@ def _compute_synthesis_map(
         ref_block[:] = min_cut_patch
         seams_map_sub_view = seams_map_view[blk_idx]
         update_seams_map_view(seams_map_sub_view, gen_params, patch_weights)
+        check_ui(uicd, 1)
 
     def fill_row_inplace_proxy():
         get_min_cut_patch = get_min_cut_patch_horizontal_method(gen_params.version)
@@ -111,15 +113,10 @@ def _compute_synthesis_map(
                     ref_block, proxy_textures, gen_params, rng)
                 process_block(blk_idx, get_min_cut_b, ref_block, seams_map, patch_idx)
 
-            if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w):
-                break
         return texture_map, seams_map
 
     # --- Generate ---
     fill_row_inplace_proxy()
-    if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w):
-        return None
-
     fill_quad_proxy()
 
     np.clip(seams_map, 0, 1, out=seams_map)
@@ -127,9 +124,9 @@ def _compute_synthesis_map(
 
 
 def _reconstruct_texture(textures: list[np.ndarray],
-                         patches_indices: list[patch_idxs],
+                         patches_indices: list[PatchIdx],
                          patches_masks: np.ndarray,
-                         out_h: num_pixels, out_w: num_pixels,
+                         out_h: NumPixels, out_w: NumPixels,
                          gen_params: GenParams,
                          uicd: UiCoordData | None
                          ) -> np.ndarray:
@@ -167,53 +164,54 @@ def _reconstruct_texture(textures: list[np.ndarray],
         np.subtract(1, patch_weights, out=patch_weights)
         text_view += apply_mask(patch_block, patch_weights, False)
 
+        check_ui(uicd, 1)
+
     def fill_row_inplace():
         for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
             apply_patch(np.s_[:b, blk_x:blk_x+b])
-        if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w):
-            return None
 
     def fill_quad_inplace():
         for blk_y in range(bmo, texture_map.shape[0] - b + 1, bmo):
             apply_patch(np.s_[blk_y:blk_y + b, :b])
             for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
                 apply_patch(np.s_[blk_y:blk_y + b, blk_x:blk_x + b])
-            if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(n_w):
-                return None
 
     # --- Generate ---
     texture_map[:b, :b] = get_block_at_idx(0)  # set 1st patch
+    check_ui(uicd, 1)
     fill_row_inplace()
     fill_quad_inplace()
+
     return texture_map[:out_h, :out_w]
 
 
+@handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def generate_guided(
         proxy_textures: list[np.ndarray],
         source_textures: list[np.ndarray],
         gen_params: GenParams,
-        out_h: num_pixels, out_w: num_pixels,
+        out_h: NumPixels, out_w: NumPixels,
         rng: np.random.Generator,
         uicd: UiCoordData | None
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
     Uses a variant of the source_textures to guide the texture synthesis algorithms and maps the result to the
     source textures.
     Can be used, for example, in noisy images, where a filter can be applied so that the
     generation is not influenced by noise or some other visual artifacts or features.
 
-    @param proxy_textures: textures used to guide the generation;
+    :param proxy_textures: textures used to guide the generation;
         the textures order SHOULD MATCH those in the source textures list.
-    @param source_textures: textures used to build the final result post guided synthesis.
-    @return:
-        item 1: reconstructed synthesis result using the source textures
-        item 2: seams map
-        item 3: synthesis result using the proxy textures
+    :param source_textures: textures used to build the final result post guided synthesis.
+    :return:
+        item 1: reconstructed synthesis result using the source textures;
+        item 2: seams map;
+        item 3: synthesis result using the proxy textures.
     """
+    # note: ui interrupt exceptions are not caught by _compute_synthesis_map or _reconstruct_texture.
+    #       the handle_ui_interrupts wrapper catches the exception here instead, since this is the public method.
     patches_idxs, masks, proxy_out_tex, out_cut = _compute_synthesis_map(
-        proxy_textures, gen_params, out_h, out_w, rng, uicd
-    )
+        proxy_textures, gen_params, out_h, out_w, rng, uicd)
     out_tex = _reconstruct_texture(
-        source_textures, patches_idxs, masks, out_h, out_w, gen_params, uicd
-    )
+        source_textures, patches_idxs, masks, out_h, out_w, gen_params, uicd)
     return out_tex, out_cut, proxy_out_tex

@@ -1,4 +1,4 @@
-from .bse_type_aliases import size_weight_pairs
+from .bse_type_aliases import SizeWeightPairs
 import numpy as np
 import cv2
 
@@ -11,7 +11,7 @@ def compute_fft(image):
     return magnitude_spectrum
 
 
-def compute_wavelens_of_interest(spectrum: np.ndarray, max_to_fetch: int = 16) -> size_weight_pairs:
+def compute_wavelens_of_interest(spectrum: np.ndarray, max_to_fetch: int = 16) -> SizeWeightPairs:
     h, w = spectrum.shape[:2]
     unique_wavelen = set()
     wavelen_magnitude_pairs = {}
@@ -50,7 +50,7 @@ def compute_wavelens_of_interest(spectrum: np.ndarray, max_to_fetch: int = 16) -
     return list(wavelen_magnitude_pairs.items())
 
 
-def analyze_freq_spectrum(image: np.ndarray, max_items: int = 16) -> size_weight_pairs:
+def analyze_freq_spectrum(image: np.ndarray, max_items: int = 16) -> SizeWeightPairs:
     magnitude_spectrum = compute_fft(image)
     wlen_mag_pairs = compute_wavelens_of_interest(magnitude_spectrum, max_items)
     return wlen_mag_pairs

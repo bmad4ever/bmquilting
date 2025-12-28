@@ -1,17 +1,19 @@
 # An alternative approach to making the texture seamless using a single large patch
-from .synthesis_subroutines import compute_errors, get_match_template_method, get_min_cut_patch_horizontal, update_seams_map_view
-from .make_seamless import patch_horizontal_seam
-from .types import UiCoordData, GenParams
+from .synthesis_subroutines import (
+    compute_errors, get_match_template_method, get_min_cut_patch_horizontal, update_seams_map_view)
+from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui
+from .generate import RetOnInterrupt, ret_val_on_interrupt
+from .misc.custom_decorators import clear_cache_post_exec
+from .make_seamless import _patch_horizontal_seam
+from .types import GenParams
 import dataclasses
 import numpy as np
 import cv2 as cv
-from .misc.custom_decorators import clear_cache_post_exec
-
-RETURN_VALUE_WHEN_INTERRUPTED = (None, None)
 
 
-def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
-                         gen_params: GenParams, rng, seams_map=None, uicd: UiCoordData | None = None):
+def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, gen_params: GenParams,
+                         rng: np.random.Generator, seams_map=None,
+                         uicd: UiCoordData | None = None):
     block_size, overlap = gen_params.bo
     lookup_texture = image if lookup_texture is None else lookup_texture
     image = np.roll(image, +block_size // 2, axis=1)  # move seam to addressable space
@@ -23,13 +25,11 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
     template_method = get_match_template_method(gen_params.version)
     lo_errs = cv.matchTemplate(image=lookup_texture[:, :-block_size],
                                templ=image[:, :overlap], method=template_method)
-    if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
-        return RETURN_VALUE_WHEN_INTERRUPTED
+    check_ui(uicd, 1)
 
     ro_errs = cv.matchTemplate(image=np.roll(lookup_texture, -block_size + overlap, axis=1)[:, :-block_size],
                                templ=image[:, block_size - overlap:block_size], method=template_method)
-    if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
-        return RETURN_VALUE_WHEN_INTERRUPTED
+    check_ui(uicd, 1)
 
     err_mat = compute_errors([lo_errs, ro_errs], gen_params.version)
     min_val = np.min(err_mat)  # ignore tolerance in this solution
@@ -57,8 +57,7 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
         )
     right_side_patch = np.fliplr(right_side_patch)
 
-    if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
-        return RETURN_VALUE_WHEN_INTERRUPTED
+    check_ui(uicd, 1)
 
     # paste vertical stripe patch
     image[:, :block_size] = lookup_texture[y:y + image.shape[0], x:x + block_size]
@@ -74,48 +73,62 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
 
 
 def _seamless_vertical(image: np.ndarray, lookup_texture: np.ndarray,
-                       gen_params: GenParams, rng, uicd: UiCoordData | None = None):
+                       gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
     texture, seams = _seamless_horizontal(image=np.rot90(image), gen_params=gen_params, rng=rng, uicd=uicd,
                                           lookup_texture=None if lookup_texture is None else np.rot90(lookup_texture))
     if texture is None:
-        return RETURN_VALUE_WHEN_INTERRUPTED
+        return ret_val_on_interrupt
     else:
         # seams should have been already fixed by seamless_horizontal
         return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
 
 
 @clear_cache_post_exec()
-def seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray,
-                         gen_params: GenParams, rng, seams_map=None, uicd: UiCoordData | None = None):
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
+def seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, gen_params: GenParams,
+                        rng: np.random.Generator, seams_map=None,
+                        uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     return _seamless_horizontal(image, lookup_texture, gen_params, rng, seams_map, uicd)
 
 
 @clear_cache_post_exec()
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_vertical(image: np.ndarray, lookup_texture: np.ndarray,
-                      gen_params: GenParams, rng, uicd: UiCoordData | None = None):
+                      gen_params: GenParams, rng: np.random.Generator,
+                      uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     return _seamless_vertical(image, lookup_texture, gen_params, rng, uicd)
 
 
 @clear_cache_post_exec()
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_both(image: np.ndarray, lookup_texture: np.ndarray,
-                  gen_params: GenParams, rng, uicd: UiCoordData | None = None):
+                  gen_params: GenParams, rng: np.random.Generator,
+                  uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """
+    :param image: source texture to be made seamless.
+    :param lookup_texture: texture from where the patches will be extracted.
+    :param gen_params: generation parameters.
+    :param rng: random number generator (RNG).
+    :param uicd: optional element to keep track of the generation or interrupt it.
+    :return: the tuple: (texture, seam map)
+    """
     lookup_texture = image if lookup_texture is None else lookup_texture
     block_size = gen_params.block_size
 
     texture, seams = _seamless_vertical(image, lookup_texture, gen_params, rng, uicd)
     if texture is None:
-        return RETURN_VALUE_WHEN_INTERRUPTED
+        return ret_val_on_interrupt
     for m in [texture, seams]:
         m[:] = np.roll(m, -block_size // 2, axis=0)  # center future seam at stripes interception
     texture, seams = _seamless_horizontal(texture, lookup_texture, gen_params, rng, seams, uicd)
     if texture is None:
-        return RETURN_VALUE_WHEN_INTERRUPTED
+        return ret_val_on_interrupt
 
     # center seam & patch it
     for m in [texture, seams]:
         m[:] = np.roll(m, texture.shape[0] // 2, axis=0)
         m[:] = np.roll(m, texture.shape[1] // 2 - block_size // 2, axis=1)
-    texture, seams = patch_horizontal_seam(texture, seams, [lookup_texture], gen_params, rng, uicd)
+    texture, seams = _patch_horizontal_seam(texture, seams, [lookup_texture], gen_params, rng, uicd)
 
     # fix overvalues due to seams overlap
     np.clip(seams, 0, 1, out=seams)

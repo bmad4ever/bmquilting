@@ -1,10 +1,10 @@
 from .synthesis_subroutines import get_4way_min_cut_patch, find_patch_vx, update_seams_map_view
-from .types import UiCoordData, GenParams
+from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui
+from .generate import RetOnInterrupt, ret_val_on_interrupt
+from .misc.custom_decorators import clear_cache_post_exec
+from .types import GenParams
 from math import ceil
 import numpy as np
-from .misc.custom_decorators import clear_cache_post_exec
-
-RETURN_VALUE_WHEN_INTERRUPTED = (None, None)
 
 
 def get_numb_of_blocks_to_fill_stripe(block_size, overlap, dim_length):
@@ -13,12 +13,7 @@ def get_numb_of_blocks_to_fill_stripe(block_size, overlap, dim_length):
 
 def _make_seamless_horizontally(image: np.ndarray, gen_params: GenParams, rng: np.random.Generator,
                                lookup_textures: list[np.ndarray] = None, seams_map: np.ndarray | None = None,
-                               uicd: UiCoordData | None = None):
-    """
-    @param image: the image to make seamless; also be used to fetch the patches.
-    @param fnc: when evaluating potential patches the errors of different adjacency will be combined using this function
-    @param lookup_textures: if provided, the patches will be obtained from the list of "lookup_textures" instead.
-    """
+                               uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray]:
     lookup_textures = [image] if lookup_textures is None else lookup_textures
     if seams_map is None:
         seams_map = np.zeros(image.shape[:2], dtype=np.float32)
@@ -46,8 +41,7 @@ def _make_seamless_horizontally(image: np.ndarray, gen_params: GenParams, rng: n
 
     update_seams_map_view(seams_map[:block_size, :block_size], gen_params, patch_weights)
 
-    if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
-        return RETURN_VALUE_WHEN_INTERRUPTED
+    check_ui(uicd, 1)
 
     for y in range(1, n_h):
         blk_1y = y * bmo  # block top corner y
@@ -62,8 +56,7 @@ def _make_seamless_horizontally(image: np.ndarray, gen_params: GenParams, rng: n
 
         ref_block[:] = min_cut_patch
         update_seams_map_view(seams_map[blk_1y:blk_2y, :block_size], gen_params, patch_weights)
-        if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
-            return RETURN_VALUE_WHEN_INTERRUPTED
+        check_ui(uicd, 1)
 
     # fill last block
     ref_block = texture_map[-block_size:, :block_size]
@@ -74,8 +67,7 @@ def _make_seamless_horizontally(image: np.ndarray, gen_params: GenParams, rng: n
         True, True, True, True, ref_block, patch_block, gen_params)
     ref_block[:] = min_cut_patch
     update_seams_map_view(seams_map[-block_size:, :block_size], gen_params, patch_weights)
-    if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
-        return RETURN_VALUE_WHEN_INTERRUPTED
+    check_ui(uicd, 1)
 
     # fix overvalues due to seams overlap
     np.clip(seams_map, 0, 1, out=seams_map)
@@ -84,9 +76,14 @@ def _make_seamless_horizontally(image: np.ndarray, gen_params: GenParams, rng: n
 
 
 @clear_cache_post_exec()
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def make_seamless_horizontally(image: np.ndarray, gen_params: GenParams, rng: np.random.Generator,
                                lookup_textures: list[np.ndarray] = None, seams_map: np.ndarray | None = None,
-                               uicd: UiCoordData | None = None):
+                               uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """
+    :param image: the image to make seamless; also be used to fetch the patches.
+    :param lookup_textures: if provided, the patches will be obtained from the list of "lookup_textures" instead.
+    """
     return _make_seamless_horizontally(image, gen_params, rng, lookup_textures, seams_map, uicd)
 
 
@@ -97,21 +94,25 @@ def _make_seamless_vertically(image: np.ndarray, gen_params: GenParams, rng: np.
         lookup_textures=None if lookup_textures is None else [np.rot90(txt) for txt in lookup_textures])
 
     if texture is None:
-        return RETURN_VALUE_WHEN_INTERRUPTED
+        return ret_val_on_interrupt
     else:
         # seams should have been already fixed by seamless_horizontal
         return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
 
 
 @clear_cache_post_exec()
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def make_seamless_vertically(image: np.ndarray, gen_params: GenParams, rng: np.random.Generator,
-                             lookup_textures: list[np.ndarray] = None, uicd: UiCoordData | None = None):
+                             lookup_textures: list[np.ndarray] = None,
+                             uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     return _make_seamless_vertically(image, gen_params, rng, lookup_textures, uicd)
 
 
 @clear_cache_post_exec()
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def make_seamless_both(image, gen_params: GenParams, rng: np.random.Generator,
-                       lookup_textures: list[np.ndarray] = None, uicd: UiCoordData | None = None):
+                       lookup_textures: list[np.ndarray] = None,
+                       uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     lookup_textures = [image] if lookup_textures is None else lookup_textures
     block_size = gen_params.block_size
 
@@ -127,21 +128,19 @@ def make_seamless_both(image, gen_params: GenParams, rng: np.random.Generator,
             uicd=uicd)
 
     if texture is None:
-        return RETURN_VALUE_WHEN_INTERRUPTED
+        return ret_val_on_interrupt
 
     # center the area to patch 1st, this will make the rolls in the next step easier
     for m in [texture, seams]:
         m[:] = np.roll(m, texture.shape[0] // 2, axis=0)
         m[:] = np.roll(m, (texture.shape[1] - block_size) // 2, axis=1)
 
-    return patch_horizontal_seam(texture, seams, lookup_textures, gen_params, rng, uicd=uicd)
+    return _patch_horizontal_seam(texture, seams, lookup_textures, gen_params, rng, uicd=uicd)
 
 
-def patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, lookup_textures: list[np.ndarray],
-                          gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
-    """
-    Patches the center of the texture
-    """
+def _patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, lookup_textures: list[np.ndarray],
+                           gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
+    """Patches the artificial seam at the center of the texture when using make seamless both. """
     block_size, overlap = gen_params.bo
 
     ys = (texture_to_patch.shape[0] - block_size) // 2
@@ -155,8 +154,7 @@ def patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, l
     patch, patch_weights = get_4way_min_cut_patch(True, False, True, True, ref_block, patch, gen_params)
     ref_block[:] = patch
     update_seams_map_view(seams_map[ys:ye, xs - overlap:xe - overlap], gen_params, patch_weights)
-    if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
-        return RETURN_VALUE_WHEN_INTERRUPTED
+    check_ui(uicd, 1)
 
     # PATCH H SEAM -> RIGHT PATCH
     ref_block = texture_to_patch[ys:ye, xs + overlap:xe + overlap]
@@ -166,10 +164,7 @@ def patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, l
                                                   ref_block, patch, gen_params)
     ref_block[:] = patch
     update_seams_map_view(seams_map[ys:ye, xs + overlap:xe + overlap], gen_params, patch_weights)
-    if uicd is not None and uicd.add_to_job_data_slot_and_check_interrupt(1):
-        return RETURN_VALUE_WHEN_INTERRUPTED
+    check_ui(uicd, 1)
 
-    # fix overvalues due to seams overlap
-    np.clip(seams_map, 0, 1, out=seams_map)
-
+    np.clip(seams_map, 0, 1, out=seams_map) # fix overvalues
     return texture_to_patch, seams_map
