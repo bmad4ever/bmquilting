@@ -1,7 +1,5 @@
-from multiprocessing.shared_memory import SharedMemory
 from dataclasses import dataclass, field
 from enum import Enum
-import numpy as np
 
 from .misc.functions import FuncWrapper, LogScalingFunc, TwoNTS
 
