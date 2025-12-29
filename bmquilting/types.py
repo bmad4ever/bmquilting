@@ -14,6 +14,8 @@ type Percentage = float
 type PatchIdx = tuple[int, int, int]
 """patches indexes (texture index, y coord, x coord), where coords are relative to the top-left corner."""
 
+type _2D_Slice = tuple[slice, slice]
+
 
 class Orientation(Enum):
     H = "H"

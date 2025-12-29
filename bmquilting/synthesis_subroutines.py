@@ -1,10 +1,9 @@
-from numpy.lib._index_tricks_impl import IndexExpression
 from functools import lru_cache
 import importlib.util
 import numpy as np
 import cv2 as cv
 
-from .types import GenParams, NumPixels, SquarePatchingBlendConfig, PatchIdx
+from .types import GenParams, NumPixels, SquarePatchingBlendConfig, PatchIdx, _2D_Slice
 from .seam_smartblur import compute_adaptive_blend_mask
 from .misc.shmem_utils import SharedTextureList
 from .misc.dry import apply_mask
@@ -14,10 +13,10 @@ from .jena2020.generate import inf, getMinCutPatchHorizontal, getMinCutPatchVert
 epsilon = np.finfo(float).eps
 
 type FindPatchSlices = tuple[
-    tuple[IndexExpression, IndexExpression],
-    tuple[IndexExpression, IndexExpression],
-    tuple[IndexExpression, IndexExpression],
-    tuple[IndexExpression, IndexExpression]
+    tuple[_2D_Slice, _2D_Slice],
+    tuple[_2D_Slice, _2D_Slice],
+    tuple[_2D_Slice, _2D_Slice],
+    tuple[_2D_Slice, _2D_Slice]
 ]
 
 
@@ -136,7 +135,7 @@ def find_patch_vx(overlaps_left: bool,
 
 
 @lru_cache(maxsize=2)
-def get_slice_metadata_for_find_patch(block_size, overlap):
+def get_slice_metadata_for_find_patch(block_size, overlap) -> FindPatchSlices:
     """
     Auxiliary function for the template matching used in the find_patch_vx_idx function.
     Computes and caches the slice objects for the texture and for the template & mask respectively.

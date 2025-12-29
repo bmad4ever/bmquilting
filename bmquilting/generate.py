@@ -2,7 +2,7 @@ from .synthesis_subroutines import (
     get_find_patch_to_the_right_method, get_find_patch_below_method, get_find_patch_both_method,
     get_min_cut_patch_horizontal_method, get_min_cut_patch_vertical_method, get_min_cut_patch_both_method,
     update_seams_map_view)
-from .types import GenParams, NumPixels
+from .types import GenParams, NumPixels, _2D_Slice
 from .misc.shmem_utils import SharedTextureList
 from .misc.texture_utils import quick_checksum
 from .misc.custom_decorators import clear_cache_post_exec
@@ -12,15 +12,17 @@ from multiprocessing.shared_memory import SharedMemory
 from joblib.externals.loky import get_reusable_executor
 from joblib import Parallel, delayed
 
-from numpy.lib._index_tricks_impl import IndexExpression
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Optional
+from collections.abc import Callable
 from math import ceil
 import numpy as np
 
 type RetOnInterrupt = tuple[None, None]
 ret_val_on_interrupt = (None, None)
+
+type FindPatchFunc = Callable[[np.ndarray, list[np.ndarray] | SharedTextureList, GenParams, np.random.Generator], np.ndarray]
+type MinCutFunc = Callable[[np.ndarray, np.ndarray, GenParams], np.ndarray]
 
 
 # -- NOTE -- ___________________________________________________________________________________________________________
@@ -71,8 +73,8 @@ ret_val_on_interrupt = (None, None)
 
 def process_block(text_view: np.ndarray, seams_view: np.ndarray,
                   lookup_textures: list[np.ndarray] | SharedTextureList,
-                  block_idx: IndexExpression,
-                  find_patch_func: callable, get_min_cut_func: callable,
+                  block_idx: _2D_Slice,
+                  find_patch_func: FindPatchFunc, get_min_cut_func: MinCutFunc,
                   gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None) -> None:
     ref_block = text_view[block_idx]
     patch_block = find_patch_func(ref_block, lookup_textures, gen_params, rng)
@@ -419,10 +421,10 @@ def shm_pair(h: int, w: int, channels: int, dtype: np.dtype, use_shm: bool):
 
 def _run_fill_quad(rows, columns, gen_params, texture, seams_map,
                    ltxts: list[np.ndarray] | SharedTextureList,
-                   p_strips, rng, shm_text: Optional[SharedMemory], shm_smap: Optional[SharedMemory],
+                   p_strips, rng, shm_text: SharedMemory | None, shm_smap: SharedMemory | None,
                    uicd: UiCoordData | None):
     """
-    Call fill_quad_ps (when using SHM) or fill_quad (when not).
+    Call fill_quad_ps (when using SHM for p_strips > 1) or fill_quad (when not).
     :return: the (texture, seams_map) pair.
     """
     if p_strips > 1:
