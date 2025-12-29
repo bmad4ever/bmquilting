@@ -1,6 +1,10 @@
 from ..seam_smartblur import get_max_possible_gradient_diff, circular_kernel, get_radii_limiter
 from ..synthesis_subroutines import patch_blending_vignette, get_slice_metadata_for_find_patch
 from functools import wraps
+import logging
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 
 DEFAULT_CACHED_FUNCTIONS = [
@@ -22,7 +26,7 @@ def clear_cache_post_exec(*functions_to_clear):
     :param functions_to_clear: A list of functions (with @lru_cache) whose caches should be cleared.
     """
     if not functions_to_clear:
-        # If the tuple is empty, use the standard default list
+        # If the tuple is empty, use the default list
         functions_to_clear = DEFAULT_CACHED_FUNCTIONS
 
     def decorator(func):
@@ -33,16 +37,16 @@ def clear_cache_post_exec(*functions_to_clear):
                 # Execute the original function
                 return func(*args, **kwargs)
             finally:
-                print("--- Starting Cache Cleanup ---")
+                logger.info("--- Starting Cache Cleanup ---")
                 for cached_func in functions_to_clear:
                     # Check if the function has the cache_clear method (i.e., is cached)
                     if hasattr(cached_func, 'cache_clear'):
                         cached_func.cache_clear()
-                        print(f"  - Cleared cache for: {cached_func.__name__}")
+                        logger.info(f"  - Cleared cache for: {cached_func.__name__}")
                     else:
                         # Should not happen if used correctly, but good for robust code
-                        print(f"  - WARNING: {cached_func.__name__} does not have cache_clear.")
-                print("--- Cache Cleanup Complete ---")
+                        logger.warning(f"  - WARNING: {cached_func.__name__} does not have cache_clear.")
+                logger.info("--- Cache Cleanup Complete ---")
 
         return wrapper
 
