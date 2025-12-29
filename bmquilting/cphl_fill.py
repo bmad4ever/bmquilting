@@ -9,12 +9,12 @@ from functools import cached_property
 try:
     from .synthesis_subroutines import (
         apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace)
-    from .types import num_pixels, percentage, BlendConfig
+    from .types import NumPixels, Percentage, BlendConfig
     from .seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_2
 except:
     from bmquilting.synthesis_subroutines import (
         apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace)
-    from bmquilting.types import num_pixels, percentage, BlendConfig
+    from bmquilting.types import NumPixels, Percentage, BlendConfig
     from bmquilting.seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_2
 
 
@@ -33,9 +33,9 @@ TEMP_BLEND_CONFIG = auto_blend_config_2(9, 40, 1, True)
 
 @dataclass
 class CircularPatchingConfig:
-    radius: num_pixels
-    overlap_r: num_pixels
-    tolerance: percentage
+    radius: NumPixels
+    overlap_r: NumPixels
+    tolerance: Percentage
     outer_corners_weighted_template_matching: bool
     spacing_factor: float
 
@@ -219,7 +219,8 @@ def reverse_blured_circle_mask(mask, overlap_radius):
 def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
                                lookup: np.ndarray,  # TODO replace with list | SharedTextList
                                x: int, y: int,
-                               config: CircularPatchingConfig, debug_img):
+                               config: CircularPatchingConfig,
+                               rng: np.random.Generator, debug_img):
     """
     Finds and applies a single circular patch at location (x, y).
 
@@ -260,7 +261,7 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
 
     # 4. Find the best matching patch from the lookup texture
     # Now using the config's tolerance
-    patch: np.ndarray = find_circular_patch(lookup, block, tmpl_mask, tolerance, radius * 2)
+    patch: np.ndarray = _find_circular_patch(lookup, block, tmpl_mask, tolerance, radius * 2, rng)
 
     # 5. Compute Errors prior to warping
     errors = avg_squared_diff(block, patch)
@@ -320,6 +321,7 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
 def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
                  lookup: np.ndarray,  # TODO change to list / SharedTextList
                  config: CircularPatchingConfig,
+                 rng: np.random.Generator,
                  debug_img: np.ndarray = None) -> np.ndarray:
     """
     Applies texture synthesis to the ROI by tiling circular patches on a hexagonal lattice
@@ -378,7 +380,7 @@ def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
                 cv2.circle(debug_img, (int(x - radius), int(y - radius)), radius, color, -1)
                 cv2.circle(debug_img, (int(x - radius), int(y - radius)), 5, (0, 0, 0), -1)
 
-            _process_patch_at_location(image, filled_mask, lookup, x, y, config, debug_img)
+            _process_patch_at_location(image, filled_mask, lookup, x, y, config, rng, debug_img)
 
     # --- 3. Final Cleanup ---
 
@@ -397,7 +399,7 @@ def find_first_2adjacent_all_zero_rows(mask):
     return None
 
 
-def min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: num_pixels) -> np.ndarray:
+def min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPixels) -> np.ndarray:
     """
     @param errors: warped matrix with the pre-computed errors
     @param roi: warped binary mask of the region of interest
@@ -455,14 +457,14 @@ def min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: num_pi
     return mask
 
 
-def _x_squared_distance_1D(A_1D: np.ndarray, B_1D: np.ndarray):
+def _x_squared_distance_1D(a_1d: np.ndarray, b_1d: np.ndarray) -> np.ndarray:
     """
     Computes the squared distance matrix based on 1D arrays of X-coordinates.
     """
     # Reshape for broadcasting: (N, 1) and (1, M)
-    a_coords = A_1D.reshape(-1, 1)
-    b_coords = B_1D.reshape(1, -1)
-    squared_dist_matrix = (a_coords - b_coords) ** 2
+    a_coords = a_1d.reshape(-1, 1)
+    b_coords = b_1d.reshape(1, -1)
+    squared_dist_matrix = (a_coords - b_coords) ** 2  # gets rid of the sign
     return squared_dist_matrix
 
 
@@ -527,7 +529,7 @@ def find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[in
     return top_point, bottom_point
 
 
-def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  # TODO rng
+def _find_circular_patch(lookup, block, mask, tolerance, block_size, rng: np.random.Generator):
     # texture is for output
     # image is for patch search
     showInMovedWindow("roi used in match template", mask, 50 + block_size * 3, 25)
@@ -544,7 +546,7 @@ def find_circular_patch(lookup, block, mask, tolerance, block_size, rng=None):  
         min_val = np.min(err_mat)
     print(f"{min_val = }    err_threshhold = {(1.0 + tolerance) * min_val}      {np.any(min_val <= (1.0 + tolerance) * min_val)}")
     y, x = np.nonzero(err_mat <= (1.0 + tolerance) * min_val)
-    c = np.random.randint(len(y))  # rng.integers(len(y)) # TODO replace w/ generator
+    c = rng.integers(len(y))
     y, x = y[c], x[c]
     return lookup[y:y + block_size, x:x + block_size]
 
@@ -571,8 +573,10 @@ if __name__ == "__main__":
         outer_corners_weighted_template_matching=True
     )
 
+    rng = np.random.default_rng(seed=0)
     debug_img = np.stack((mask.copy(),) * 3, axis=-1)
-    img = circle_quilt(image=img, roi_mask=mask, lookup=lookup, debug_img=debug_img, config=config)
+    img = circle_quilt(image=img, roi_mask=mask, lookup=lookup, debug_img=debug_img,
+                       config=config, rng=rng)
     cv2.imshow("Result", img)
     cv2.imshow("Patches Visualizer", debug_img)
     cv2.waitKey(0)
