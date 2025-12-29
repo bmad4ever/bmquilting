@@ -542,7 +542,7 @@ class FuncSum(FuncWrapper):   # could be more generic, but would be overkill rn
     The computation is:
 
     [ (f1(x * s1_in + o1_in) * s1_out + o1_out) ]
-    \+ [ (f2(x * s2_in + o2_in) * s2_out + o2_out) ]
+    + [ (f2(x * s2_in + o2_in) * s2_out + o2_out) ]
 
     It prioritizes using f2's in-place method to minimize memory allocation
     for the final sum operation.
