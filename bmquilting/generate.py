@@ -107,13 +107,13 @@ def _pfill_column(lookup_textures: list[np.ndarray] | SharedTextureList,
         seams_map[:initial_block_seams.shape[0], :block_size] = initial_block_seams
     seams_map_view = seams_map[initial_block.shape[0] - block_size:, :]
 
-    fill_column_inplace(texture_map_view, seams_map_view, lookup_textures, gen_params, rng, uicd)
+    _fill_column_inplace(texture_map_view, seams_map_view, lookup_textures, gen_params, rng, uicd)
     return texture_map, seams_map
 
 
-def fill_column_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
-                        lookup_textures: list[np.ndarray] | SharedTextureList,
-                        gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
+def _fill_column_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
+                         lookup_textures: list[np.ndarray] | SharedTextureList,
+                         gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
     find_patch_below = get_find_patch_below_method()
     get_min_cut_patch = get_min_cut_patch_vertical_method(gen_params.version)
     b, o = gen_params.block_size, gen_params.overlap
@@ -146,13 +146,13 @@ def _pfill_row(lookup_textures: list[np.ndarray] | SharedTextureList,
         seams_map[:block_size, :initial_block_seams.shape[1]] = initial_block_seams
     seams_map_view = seams_map[:, initial_block.shape[1] - block_size:]
 
-    fill_row_inplace(texture_map_view, seams_map_view, lookup_textures, gen_params, rng, uicd)
+    _fill_row_inplace(texture_map_view, seams_map_view, lookup_textures, gen_params, rng, uicd)
     return texture_map, seams_map
 
 
-def fill_row_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
-                     lookup_textures: list[np.ndarray] | SharedTextureList,
-                     gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
+def _fill_row_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
+                      lookup_textures: list[np.ndarray] | SharedTextureList,
+                      gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
     find_patch_to_the_right = get_find_patch_to_the_right_method()
     get_min_cut_patch = get_min_cut_patch_horizontal_method(gen_params.version)
     b, o = gen_params.block_size, gen_params.overlap
@@ -180,9 +180,9 @@ def _pfill_quad(gen_params: GenParams, texture_map, seams_map,
     return texture_map, seams_map
 
 
-def fill_quad_purist(gen_params: GenParams, texture_map, seams_map,
-                     lookup_textures: list[np.ndarray] | SharedTextureList,
-                     rng: np.random.Generator, uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray]:
+def _fill_quad_purist(gen_params: GenParams, texture_map, seams_map,
+                      lookup_textures: list[np.ndarray] | SharedTextureList,
+                      rng: np.random.Generator, uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray]:
     """
         Only requires the first Row already filled.
         A "purist" solution, where there is no apriori column generation.
@@ -329,7 +329,7 @@ def generate_texture_parallel(
             (vs, hs, shm_ltxts, rows_per_quad, cols_per_quad, gen_params, nps, rng, sm_vs, sm_hs, uicd),
             (vs, his, shm_hi_ltxts, rows_per_quad, cols_per_quad, gen_params, nps, rng, sm_vs, sm_his, uicd)
         ]
-        funcs = [quad1, quad2, quad3, quad4]
+        funcs = [_quad1, _quad2, _quad3, _quad4]
         quads = parallel(delayed(funcs[i])(*args[i]) for i in range(4))
         check_ui(uicd)  # add nothing, just check for a potential interrupt
 
@@ -395,7 +395,7 @@ def _allocate_arrays(h: int, w: int, channels: int, dtype: np.dtype, use_shm: bo
 
 
 @contextmanager
-def shm_pair(h: int, w: int, channels: int, dtype: np.dtype, use_shm: bool):
+def _shm_pair(h: int, w: int, channels: int, dtype: np.dtype, use_shm: bool):
     """
     Context manager that yields (texture, seams_map, shm_text, shm_smap).
     On exit it always closes & unlinks SHM objects if they were created.
@@ -445,11 +445,11 @@ def _run_fill_quad(rows, columns, gen_params, texture, seams_map,
 # endregion     sub-routines for quadX functions
 
 
-def quad1(vis, his,
-          hi_ltxts: list[np.ndarray] | SharedTextureList,
-          rows: int, columns: int, gen_params: GenParams, p_strips, rng,
-          sm_vis: np.ndarray, sm_his: np.ndarray,
-          uicd: UiCoordData | None):
+def _quad1(vis, his,
+           hi_ltxts: list[np.ndarray] | SharedTextureList,
+           rows: int, columns: int, gen_params: GenParams, p_strips, rng,
+           sm_vis: np.ndarray, sm_his: np.ndarray,
+           uicd: UiCoordData | None):
     """
     :param vis: vertical inverted stripe
     :param his: horizontal inverted stripe
@@ -471,7 +471,7 @@ def quad1(vis, his,
     H, W = vis.shape[0], his.shape[1]
     use_shm = (p_strips > 1)
 
-    with shm_pair(H, W, vis.shape[2], vis.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
+    with _shm_pair(H, W, vis.shape[2], vis.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
         # place stripes & seams
         texture[:vi_hi_s.shape[0], :vi_hi_s.shape[1]] = vi_hi_s[:, :]
         texture[vi_hi_s.shape[0]:hi_vi_s.shape[0], :hi_vi_s.shape[1]] = hi_vi_s[vi_hi_s.shape[0]:, :]
@@ -493,11 +493,11 @@ def quad1(vis, his,
     return texture_out, seams_map_out
 
 
-def quad2(vis, hs,
-          vi_ltxts: list[np.ndarray] | SharedTextureList,
-          rows: int, columns: int, gen_params: GenParams, p_strips, rng,
-          sm_vis: np.ndarray, sm_hs: np.ndarray,
-          uicd: UiCoordData | None):
+def _quad2(vis, hs,
+           vi_ltxts: list[np.ndarray] | SharedTextureList,
+           rows: int, columns: int, gen_params: GenParams, p_strips, rng,
+           sm_vis: np.ndarray, sm_hs: np.ndarray,
+           uicd: UiCoordData | None):
     vi_hs = np.ascontiguousarray(np.flipud(hs))  # flip the stripe
     sm_vi_hs = np.ascontiguousarray(np.flipud(sm_hs))
     sm_vis_f = np.ascontiguousarray(np.flipud(sm_vis))
@@ -505,7 +505,7 @@ def quad2(vis, hs,
     H, W = vis.shape[0], hs.shape[1]
     use_shm = (p_strips > 1)
 
-    with shm_pair(H, W, vis.shape[2], vis.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
+    with _shm_pair(H, W, vis.shape[2], vis.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
         texture[:hs.shape[0], :hs.shape[1]] = vi_hs
         texture[hs.shape[0]:vis.shape[0], :vis.shape[1]] = vis[hs.shape[0]:]
         seams_map[:hs.shape[0], :hs.shape[1]] = sm_vi_hs
@@ -525,11 +525,11 @@ def quad2(vis, hs,
     return texture_out, seams_map_out
 
 
-def quad4(vs, his,
-          hi_ltxts: list[np.ndarray] | SharedTextureList,
-          rows: int, columns: int, gen_params: GenParams, p_strips, rng,
-          sm_vs: np.ndarray, sm_his: np.ndarray,
-          uicd: UiCoordData | None):
+def _quad4(vs, his,
+           hi_ltxts: list[np.ndarray] | SharedTextureList,
+           rows: int, columns: int, gen_params: GenParams, p_strips, rng,
+           sm_vs: np.ndarray, sm_his: np.ndarray,
+           uicd: UiCoordData | None):
     hi_vs = np.ascontiguousarray(np.fliplr(vs))
 
     sm_hi_vs = np.ascontiguousarray(np.flipud(sm_vs))
@@ -538,7 +538,7 @@ def quad4(vs, his,
     H, W = vs.shape[0], his.shape[1]
     use_shm = (p_strips > 1)
 
-    with shm_pair(H, W, hi_vs.shape[2], hi_vs.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
+    with _shm_pair(H, W, hi_vs.shape[2], hi_vs.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
         texture[:his.shape[0], :his.shape[1]] = his
         texture[his.shape[0]:vs.shape[0], :vs.shape[1]] = hi_vs[his.shape[0]:]
         seams_map[:his.shape[0], :his.shape[1]] = sm_his_f
@@ -558,15 +558,15 @@ def quad4(vs, his,
     return texture_out, seams_map_out
 
 
-def quad3(vs, hs,
-          ltxts: list[np.ndarray] | SharedTextureList,
-          rows: int, columns: int, gen_params: GenParams, p_strips, rng,
-          sm_vs: np.ndarray, sm_hs: np.ndarray,
-          uicd: UiCoordData | None):
+def _quad3(vs, hs,
+           ltxts: list[np.ndarray] | SharedTextureList,
+           rows: int, columns: int, gen_params: GenParams, p_strips, rng,
+           sm_vs: np.ndarray, sm_hs: np.ndarray,
+           uicd: UiCoordData | None):
     H, W = vs.shape[0], hs.shape[1]
     use_shm = (p_strips > 1)
 
-    with shm_pair(H, W, vs.shape[2], vs.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
+    with _shm_pair(H, W, vs.shape[2], vs.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
         texture[:hs.shape[0], :hs.shape[1]] = hs
         texture[hs.shape[0]:vs.shape[0], :vs.shape[1]] = vs[hs.shape[0]:]
         seams_map[:hs.shape[0], :hs.shape[1]] = sm_hs
@@ -606,7 +606,7 @@ def _pfill_quad_ps(rows, columns, gen_params: GenParams,
             np_coord[2 * ip] = 1 + ip
             np_coord[2 * ip + 1] = 1
 
-        job_data = ParaRowsJobInfo(
+        job_data = _ParaRowsJobInfo(
             total_procs=total_procs,
             coord_shared_list_name=shm_coord.name,
             texture_shm_name=texture_shared_mem_name,
@@ -628,7 +628,7 @@ def _pfill_quad_ps(rows, columns, gen_params: GenParams,
 
 
 @dataclass
-class ParaRowsJobInfo:
+class _ParaRowsJobInfo:
     total_procs: int
     coord_shared_list_name: str
     texture_shm_name: str
@@ -641,7 +641,7 @@ class ParaRowsJobInfo:
 
 
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def _pfill_rows_ps(pid: int, job: ParaRowsJobInfo, jobs_events: list, uicd: UiCoordData | None):
+def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiCoordData | None):
     gen_params = job.gen_params
     find_patch_both = get_find_patch_both_method()
     get_min_cut_patch = get_min_cut_patch_both_method(gen_params.version)
@@ -740,8 +740,8 @@ def generate_texture(src_textures: list[np.ndarray],
     del image  # access texture list instead after this point
 
     # --- "Purist" generation: fill only the 1st row and then the rest ---
-    fill_row_inplace(texture_map[:block_size, :], seams_map[:block_size, :], src_textures, gen_params, rng)
-    fill_quad_purist(gen_params, texture_map, seams_map, src_textures, rng, uicd)
+    _fill_row_inplace(texture_map[:block_size, :], seams_map[:block_size, :], src_textures, gen_params, rng)
+    _fill_quad_purist(gen_params, texture_map, seams_map, src_textures, rng, uicd)
 
     # fix overvalues due to seams overlap
     np.clip(seams_map, 0, 1, out=seams_map)
@@ -798,8 +798,8 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
     d_ixd = o  # texture offset ( both for x & y )
 
     # fill the 1st row & column
-    fill_row_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_textures, gen_params, rng)
-    fill_column_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_textures, gen_params, rng)
+    _fill_row_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_textures, gen_params, rng)
+    _fill_column_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_textures, gen_params, rng)
 
     # fill the rest iterating diagonally
     find_patch = get_find_patch_both_method()
