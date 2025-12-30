@@ -169,9 +169,7 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     min_blur_diameter, max_blur_diameter = blend_config.min_blur_diameter, blend_config.max_blur_diameter
 
     # Calculate theoretical maximum (cached)
-    # Convert dtype to string for hashable cache key
-    dtype_str = np.dtype(dtype).name
-    max_gradient_diff = get_max_possible_gradient_diff(dtype_str, blend_config.sobel_kernel_size)
+    max_gradient_diff = get_max_possible_gradient_diff(dtype.name, blend_config.sobel_kernel_size)
 
     # --- 2. Normalize & map to func ---
     tdiff_norm = tdiff_map / max_gradient_diff  # normalize
