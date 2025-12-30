@@ -1,10 +1,10 @@
+import cachetools
 import cv2
 import numpy as np
 import math
 from numpy import random
 from dataclasses import dataclass
-from functools import cached_property
-
+from functools import cached_property, lru_cache
 
 try:
     from .synthesis_subroutines import (
@@ -31,22 +31,68 @@ TEMP_BLEND_CONFIG = auto_blend_config_2(9, 40, 1, True)
 # -> implement comfyui node
 # -> implement "radial" parallel texture generation using this quilting variant
 
-@dataclass
+@dataclass(frozen=True, slots=True)
+class CircularPatchParams:
+    """
+    Parameters for defining a circular patch with pre-calculated dimensions.
+
+    note: values are set up to work with cv2.circle.
+
+    :ivar diameter: The total width/height of the patch (must be odd).
+    :ivar overlap_ratio: Percentage of the radius within the overlapping area (0.0 to 1.0).
+
+    :ivar radius: The radius of the patch, calculated as ``diameter // 2``.
+    :ivar overlap_radius: The radial distance that overlaps with adjacent patches.
+    :ivar non_overlap_radius: The radius of the patch excluding the overlap area.
+    """
+
+    diameter: NumPixels
+    overlap_ratio: Percentage
+
+    # These are default-initialized but overwritten in __post_init__
+    overlap_radius: NumPixels = 0
+    non_overlap_radius: NumPixels = 0
+    radius: NumPixels = 0
+
+    def __post_init__(self):
+        if self.diameter % 2 != 1:
+            raise ValueError(f"diameter={self.diameter} must be odd to ensure a symmetric center.")
+
+        r_val = self.diameter // 2
+        ov_r_val = round(r_val * self.overlap_ratio)
+
+        object.__setattr__(self, "radius", r_val)
+        object.__setattr__(self, "overlap_radius", ov_r_val)
+        object.__setattr__(self, "non_overlap_radius", r_val - ov_r_val)
+
+    @property
+    def block_size(self) -> NumPixels:
+        """
+        The size of the square bounding box containing the circular patch.
+        :return: The diameter of the patch.
+        """
+        return self.diameter
+
+    @property
+    def center(self) -> NumPixels:
+        """
+        The relative center coordinate of the patch.
+        :return: The pixel index of the center.
+        """
+        return self.block_size // 2
+
+
+@dataclass(frozen=True, slots=True)
 class CircularPatchingConfig:
-    radius: NumPixels
-    overlap_r: NumPixels
+    patch_params: CircularPatchParams
     tolerance: Percentage
     outer_corners_weighted_template_matching: bool
     spacing_factor: float
 
     def __post_init__(self):
-        if not (0.0 <= self.tolerance <= 1.0):
-            raise ValueError(f"{self.tolerance = } tolerance should be in the [0,1] range.")
+        if 0.0 > self.tolerance:
+            raise ValueError(f"{self.tolerance = } tolerance should be greater than 0.")
 
-    @cached_property
-    def non_overlap_radius(self) -> int:
-        """Calculates the radius of the central non-overlap region."""
-        return self.radius - self.overlap_r
 
 
 def showInMovedWindow(winname, img, x, y):
@@ -150,24 +196,20 @@ def create_mock_mask(shape):
     return mask
 
 
-def get_bounding_box(mask):
+def get_bounding_box(mask: np.ndarray) -> tuple[int, int, int, int]:
     """
     Get the bounding box of the black shape in the mask.
-
-    Args:
-    - mask (numpy.ndarray): The mask with the black shape.
-
-    Returns:
-    - bounding_box (tuple): The bounding box of the black shape in the format (x, y, w, h).
+    :param mask: The mask with the black shape.
+    :return: bounding_box (tuple): The bounding box of the black shape in the format (x, y, w, h).
     """
     mask = 1 - mask
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         largest_contour = max(contours, key=cv2.contourArea)
         x, y, w, h = cv2.boundingRect(largest_contour)
-        return (x, y, w, h)
+        return x, y, w, h
     else:
-        return (0, 0, 0, 0)  # edge case: no contours
+        return 0, 0, 0, 0  # edge case: no contours
 
 
 kernelx3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -175,9 +217,10 @@ kernelx5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 kernelx15 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
 
 
-def blur_annulus_mask(mask, inner_radius):
+def blur_annulus_mask(mask: np.ndarray, inner_radius: NumPixels) -> np.ndarray:
     """
     UNUSED, likely not needed...
+    TODO is this needed / salvageable ?
     """
     height, width = mask.shape
 
@@ -196,10 +239,10 @@ def blur_annulus_mask(mask, inner_radius):
     return blurred_mask
 
 
-def reverse_blured_circle_mask(mask, overlap_radius):
+def reverse_blured_circle_mask(mask: np.ndarray, overlap_radius):
     """
-    Args:
-        mask: circle mask as uint8 w/ values from [0 to 255]
+    :param mask: circle mask as uint8 w/ values from [0 to 255]
+    TODO is this needed / salvageable?
     """
     _, width = mask.shape[:2]
     ksize = width // 2 + 1
@@ -215,6 +258,17 @@ def reverse_blured_circle_mask(mask, overlap_radius):
     return blured_mask
 
 
+@lru_cache(maxsize=1)
+def _get_annular_mask(patch_params: CircularPatchParams, dtype_name: str= "float32") -> np.ndarray:
+    """:return: Binary annular mask for the circular patch overlapping region."""
+    block_size, center = patch_params.block_size, patch_params.center
+    radius, non_overlap_radius = patch_params.radius, patch_params.non_overlap_radius
+    annulus_roi_block = np.zeros((block_size, block_size), dtype=np.dtype(dtype_name))
+    cv2.circle(annulus_roi_block, (center, center), radius, (1,), -1)
+    cv2.circle(annulus_roi_block, (center, center), round(non_overlap_radius), (0,), -1)
+    return annulus_roi_block
+
+
 # Helper function: Signature updated to accept only config
 def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
                                lookup: np.ndarray,  # TODO replace with list | SharedTextList
@@ -224,28 +278,27 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     """
     Finds and applies a single circular patch at location (x, y).
 
+    :param image: Image being patched or generated.
+        Should be of type float, with values in the interval [0, 1].
+    :param filled_mask: Mask that keeps track of the area already filled.
+        Should be of type float, with values in the interval [0, 1].
+
     Updates image block and the blending mask.
     """
     # --- Fetch Config Parameters ---
-    radius = config.radius
+    radius = config.patch_params.radius
     f_radius = float(radius)
-    non_overlap_radius = config.non_overlap_radius
-    tolerance = config.tolerance
+    non_overlap_radius = config.patch_params.non_overlap_radius
 
     # 1. Calculate the bounding box for the current circular patch
-    y1, y2, x1, x2 = y - radius, y + radius, x - radius, x + radius
+    y1, y2, x1, x2 = y - radius, y + radius + 1, x - radius, x + radius + 1
 
     # 2. Extract the current image block and the region of interest (ROI)
     block = image[y1:y2, x1:x2]
     roi = filled_mask[y1:y2, x1:x2]
 
-    # Create the circular and annular masks used for this patch
-    circ_roi = np.zeros((radius * 2, radius * 2), dtype=np.uint8)
-    cv2.circle(circ_roi, (radius, radius), radius, (1,), -1)
-
-    annulus_roi_block = np.zeros((radius * 2, radius * 2), dtype=np.uint8)
-    cv2.circle(annulus_roi_block, (radius, radius), radius, (1,), -1)
-    cv2.circle(annulus_roi_block, (radius, radius), round(non_overlap_radius), (0,), -1)
+    # Get the annular mask used for this patch
+    annulus_roi_block = _get_annular_mask(config.patch_params, dtype_name=roi.dtype.name)
 
     roi = annulus_roi_block * roi  # confines the ROI to the annulus (overlap) region
     tmpl_mask = roi                # mask used w/ template matching
@@ -261,14 +314,14 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
 
     # 4. Find the best matching patch from the lookup texture
     # Now using the config's tolerance
-    patch: np.ndarray = _find_circular_patch(lookup, block, tmpl_mask, tolerance, radius * 2, rng)
+    patch: np.ndarray = _find_circular_patch(lookup, block, tmpl_mask, config, rng)
 
     # 5. Compute Errors prior to warping
     errors = avg_squared_diff(block, patch)
     adjust_errors_func_inplace(errors)
 
     # 6. Find Seam using Polar Coordinates
-    center = [d / 2 - .5 for d in circ_roi.shape]
+    center = [ d / 2 - .5 for d in roi.shape ] #[d / 2 - .5 for d in circ_roi.shape]
     warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
 
     # Warp current block, new patch, and overlap ROI to polar coordinates
@@ -329,7 +382,7 @@ def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
     """
 
     # --- 0. Fetch Config Parameters ---
-    radius = config.radius
+    radius = config.patch_params.radius
     spacing_factor = config.spacing_factor
 
     # --- 1. Initial Setup and Padding ---
@@ -529,7 +582,23 @@ def find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[in
     return top_point, bottom_point
 
 
-def _find_circular_patch(lookup, block, mask, tolerance, block_size, rng: np.random.Generator):
+def _find_circular_patch(lookup,
+                         block: np.ndarray, mask: np.ndarray,
+                         params: CircularPatchingConfig, rng: np.random.Generator):
+    """
+
+    :param lookup: TODO -> should be a list or SharedTextList
+    :param block: 2D slice of the texture being patched containing the overlapping region.
+        The array should be of type float.
+    :param mask: Mask of the overlapping region. It should of type float, having values in the interval [0, 1].
+        The mask can be weighted to prioritize or neglect certain spots within the overlapping region.
+    :param tolerance:
+    :param block_size:
+    :param rng:
+    :return:
+    """
+    block_size, tolerance = params.patch_params.block_size, params.tolerance
+
     # texture is for output
     # image is for patch search
     showInMovedWindow("roi used in match template", mask, 50 + block_size * 3, 25)
@@ -566,8 +635,7 @@ if __name__ == "__main__":
     img[mask == 0] = (0, 0, 0)
 
     config = CircularPatchingConfig(
-        radius=80,
-        overlap_r=40,
+        patch_params=CircularPatchParams(diameter=161, overlap_ratio=.5),
         spacing_factor=0.9,
         tolerance=0.0,
         outer_corners_weighted_template_matching=True
