@@ -111,63 +111,63 @@ def showInMovedWindow(winname, img, x, y):
     cv2.imshow(winname, img)
 
 
-def find_annulus_outer_corners(mask: np.ndarray, inner_radius: int, outer_radius: int) -> list[tuple[int, int]]:
-    """
-    Args:
-        mask: the mask w/ the annulus
-        inner_radius: inner radius of the annulus
-        outer_radius: outer radius of the annulus
+# region Weight Template Matching Auxiliary Funcs ____START
 
-    Returns:
-        list of points in the following tuple format: (y, x)
+def _find_annulus_outer_corners(mask: np.ndarray, inner_radius: int, outer_radius: int) -> np.ndarray | None:
+    """
+    :param mask: the mask w/ the annulus
+    :param inner_radius: inner radius of the annulus
+    :param outer_radius: outer radius of the annulus
+    :return: uint8 mask with the painted corners if any were found; or None, if no corners were found
     """
     margin: int = 4
     extended_mask = np.zeros((margin * 2 + mask.shape[0], margin * 2 + mask.shape[1]), dtype=mask.dtype)
     extended_mask[4:-4, 4:-4] = mask
 
     dst = cv2.cornerHarris(extended_mask, blockSize=2, ksize=5, k=0.06)
-    corners = np.nonzero(dst > int(0.01 * dst.max()))
-    corners = zip(corners[1], corners[0])  # generator to iterate all corners; also swaps y & x
-    corners = ((c[0] - margin, c[1] - margin) for c in corners)  # offset w/ margin
 
-    # ___ filter out inner corners __________
+    # Mask out the center
     center = (outer_radius + margin, outer_radius + margin)
-    sqr_cut_off_radius = ((outer_radius + inner_radius) / 2) ** 2
+    cut_off_radius = (outer_radius + inner_radius) // 2
+    cv2.circle(dst, center, cut_off_radius, 0, -1)
 
-    def corner_filter_predicate(corner):
-        nonlocal center, sqr_cut_off_radius
-        return sqr_cut_off_radius < (corner[0] - center[0]) ** 2 + (corner[1] - center[1]) ** 2
+    # Crop to mask region
+    dst = dst[4:-4, 4:-4]
 
-    outer_corners = [c for c in corners if corner_filter_predicate(c)]
-    return outer_corners
+    # Check maximum, if zero there are no corners
+    max_val = dst.max()
+    if max_val <= 0:
+        return None
+
+    # Threshold
+    threshold = 0.01 * max_val
+    bool_mask = dst > threshold
+
+    if not bool_mask.any():
+        return None
+
+    showInMovedWindow('Corners', bool_mask.astype(np.uint8)*255, 50 + bool_mask.shape[0] , 25)
+    return bool_mask.astype(np.uint8)
 
 
-def distance_to_points(shape: tuple[int, int], points: list[tuple[int, int]]) -> np.ndarray:
+def _distance_to_points(points_mask: np.ndarray) -> np.ndarray:
     """
-    Args:
-        shape: output mask shape
-        points: list of points in the format: (y, x).
-
-    Returns:
-        a float32 mask with the distance transform
+    :param points_mask: uint8 binary mask with the points to set the distance to.
+    :return: a float32 mask with a gaussian blurred inverse normalized distance transform, i.e.
+        the closer to the points the closer to one.
     """
-    corners = np.zeros(shape, dtype=np.uint8)
-    for p in points:  # paint points
-        # points are drawn using cv.circle to avoid out of bound errors at the edges
-        cv2.circle(corners, p, 3, (255,), -1)
+    np.subtract(1, points_mask, out=points_mask)
+    distance_map = cv2.distanceTransform(points_mask, cv2.DIST_L2, 5, dst=points_mask)
+    ksize = min(min(distance_map.shape)//4, 15)
+    cv2.GaussianBlur(distance_map, (ksize, ksize), sigmaX=0, sigmaY=0, dst=distance_map)
+    dst_norm = distance_map.astype(np.float32)
+    cv2.normalize(dst_norm, dst_norm, 0, 1, cv2.NORM_MINMAX)
+    np.subtract(1, dst_norm, out=dst_norm)
 
-    showInMovedWindow("annulus corners", corners, 50 + shape[0] * 1, 25)
-
-    distance_map = cv2.distanceTransform(255 - corners, cv2.DIST_L2, 5, dst=corners)
-    cv2.GaussianBlur(distance_map, (15, 15), sigmaX=0, sigmaY=0,
-                     dst=distance_map)  # TODO this requires a min radius of ~8
-    dst_norm = np.empty_like(distance_map, dtype=np.float32)
-    dst_norm = cv2.normalize(distance_map, dst_norm, 0, 1, cv2.NORM_MINMAX)
-    dst_norm = 1 - dst_norm
-
-    showInMovedWindow('Weighted Mask', dst_norm, 50 + shape[0] * 2, 25)
+    showInMovedWindow('Weighted Mask', dst_norm, 50 + distance_map.shape[0] * 2, 25)
     return dst_norm
 
+# endregion Weight Template Matching Auxiliary Funcs ____END
 
 def create_mock_mask_with_polygon(width, height, polygon_points):
     """
@@ -314,13 +314,12 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     tmpl_mask = roi                # mask used w/ template matching
 
     # 3. Weighted Template Matching Setup
-    # The 'outer_corners_weighted_template_matching' flag can be used here later
     if config.outer_corners_weighted_template_matching:
-        corners = find_annulus_outer_corners(roi, non_overlap_radius, radius)
-        if len(corners) > 0:
-            tmpl_mask = distance_to_points(roi.shape[:2], corners)
+        corners_mask = _find_annulus_outer_corners(roi, non_overlap_radius, radius)
+        if corners_mask is not None:
+            tmpl_mask = _distance_to_points(corners_mask)
             tmpl_mask *= roi
-        del corners
+        del corners_mask
 
     # 4. Find the best matching patch from the lookup texture
     # Now using the config's tolerance
