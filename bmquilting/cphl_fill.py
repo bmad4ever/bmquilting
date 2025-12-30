@@ -44,6 +44,7 @@ class CircularPatchParams:
     :ivar radius: The radius of the patch, calculated as ``diameter // 2``.
     :ivar overlap_radius: The radial distance that overlaps with adjacent patches.
     :ivar non_overlap_radius: The radius of the patch excluding the overlap area.
+    :ivar warped_len: The length of the patch along the y-axis when warped.
     """
 
     diameter: NumPixels
@@ -53,6 +54,7 @@ class CircularPatchParams:
     overlap_radius: NumPixels = 0
     non_overlap_radius: NumPixels = 0
     radius: NumPixels = 0
+    warped_len: NumPixels = 0
 
     def __post_init__(self):
         if self.diameter % 2 != 1:
@@ -64,6 +66,7 @@ class CircularPatchParams:
         object.__setattr__(self, "radius", r_val)
         object.__setattr__(self, "overlap_radius", ov_r_val)
         object.__setattr__(self, "non_overlap_radius", r_val - ov_r_val)
+        object.__setattr__(self, "warped_len", round(r_val * 2 * np.pi))
 
     @property
     def block_size(self) -> NumPixels:
@@ -76,10 +79,17 @@ class CircularPatchParams:
     @property
     def center(self) -> NumPixels:
         """
-        The relative center coordinate of the patch.
-        :return: The pixel index of the center.
+        :return: The pixel index of the center (usable with cv2.circle).
         """
-        return self.block_size // 2
+        return self.radius
+
+    @property
+    def center_2d_f(self) -> tuple[float, float]:
+        """
+        :return: The pixel indices of the center as a floats (usable with cv2.warpPolar).
+        """
+        center = float(self.center)
+        return center, center
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,12 +331,13 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     adjust_errors_func_inplace(errors)
 
     # 6. Find Seam using Polar Coordinates
-    center = [ d / 2 - .5 for d in roi.shape ] #[d / 2 - .5 for d in circ_roi.shape]
+    center = config.patch_params.center_2d_f
+    warped_len = config.patch_params.warped_len
     warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
 
     # Warp current block, new patch, and overlap ROI to polar coordinates
     polar_errors, polar_roi = (
-        cv2.warpPolar(i, (radius, round(radius * 2 * np.pi)), center, f_radius, warp_flags)
+        cv2.warpPolar(i, (radius, warped_len), center, f_radius, warp_flags)
         for i in [errors, roi])
 
     # Find the "optimal" seam
