@@ -2,21 +2,25 @@ import cachetools
 import cv2
 import numpy as np
 import math
+
 from numpy import random
 from dataclasses import dataclass
 from functools import cached_property, lru_cache
 
 try:
     from .synthesis_subroutines import (
-        apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace)
+        apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace,
+        _filter_candidate_patches, _select_a_random_patch)
     from .types import NumPixels, Percentage, BlendConfig
     from .seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_2
+    from .misc.shmem_utils import SharedTextureList
 except:
     from bmquilting.synthesis_subroutines import (
-        apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace)
+        apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace,
+        _filter_candidate_patches, _select_a_random_patch)
     from bmquilting.types import NumPixels, Percentage, BlendConfig
     from bmquilting.seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_2
-
+    from bmquilting.misc.shmem_utils import SharedTextureList
 
 TEMP_BLEND_CONFIG = auto_blend_config_2(9, 40, 1, True)
 # quilting using Circular Patches over a Hexagonal Lattice (CPHL)
@@ -25,8 +29,6 @@ TEMP_BLEND_CONFIG = auto_blend_config_2(9, 40, 1, True)
 # TODO
 # -> test: test w/ additional textures
 # -> cleanup: remove comments & unused
-# -> tolerance must be an argument
-# -> blend into patch feature
 # -> expose patch "hole" function
 # -> implement comfyui node
 # -> implement "radial" parallel texture generation using this quilting variant
@@ -281,10 +283,10 @@ def _get_annular_mask(patch_params: CircularPatchParams, dtype_name: str= "float
 
 # Helper function: Signature updated to accept only config
 def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
-                               lookup: np.ndarray,  # TODO replace with list | SharedTextList
+                               lookup_textures: list[np.ndarray] | SharedTextureList,
                                x: int, y: int,
                                config: CircularPatchingConfig,
-                               rng: np.random.Generator, debug_img):
+                               rng: np.random.Generator):
     """
     Finds and applies a single circular patch at location (x, y).
 
@@ -323,7 +325,7 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
 
     # 4. Find the best matching patch from the lookup texture
     # Now using the config's tolerance
-    patch: np.ndarray = _find_circular_patch(lookup, block, tmpl_mask, config, rng)
+    patch: np.ndarray = _find_circular_patch(lookup_textures, block, tmpl_mask, config, rng)
 
     # 5. Compute Errors prior to warping
     errors = avg_squared_diff(block, patch)
@@ -382,7 +384,7 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
 
 
 def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
-                 lookup: np.ndarray,  # TODO change to list / SharedTextList
+                 lookup_textures: list[np.ndarray] | SharedTextureList,
                  config: CircularPatchingConfig,
                  rng: np.random.Generator,
                  debug_img: np.ndarray = None) -> np.ndarray:
@@ -393,13 +395,16 @@ def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
 
     # --- 0. Fetch Config Parameters ---
     radius = config.patch_params.radius
+    diameter = config.patch_params.diameter
     spacing_factor = config.spacing_factor
 
     # --- 1. Initial Setup and Padding ---
 
     # Pad the image and mask
-    image = cv2.copyMakeBorder(image, radius, radius, radius, radius, borderType=cv2.BORDER_REFLECT_101)
-    roi_mask = cv2.copyMakeBorder(roi_mask, radius, radius, radius, radius, borderType=cv2.BORDER_REFLECT_101)
+    # NOTE: Since the mask is slightly eroded, diameter is used instead of the radius,
+    #       so that there is enough leeway in worst case scenario.
+    image = cv2.copyMakeBorder(image, diameter, diameter, diameter, diameter, borderType=cv2.BORDER_REPLICATE)
+    roi_mask = cv2.copyMakeBorder(roi_mask, diameter, diameter, diameter, diameter, borderType=cv2.BORDER_REPLICATE)
     roi_mask_i = roi_mask.astype(np.uint8)
     roi_mask = roi_mask.astype(np.float32)
     roi_mask /= np.max(roi_mask)
@@ -440,19 +445,19 @@ def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
 
             if debug_img is not None:      # debug lattice, TODO remove later
                 color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-                cv2.circle(debug_img, (int(x - radius), int(y - radius)), radius, color, -1)
-                cv2.circle(debug_img, (int(x - radius), int(y - radius)), 5, (0, 0, 0), -1)
+                cv2.circle(debug_img, (int(x - diameter), int(y - diameter)), radius, color, -1)
+                cv2.circle(debug_img, (int(x - diameter), int(y - diameter)), 5, (0, 0, 0), -1)
 
-            _process_patch_at_location(image, filled_mask, lookup, x, y, config, rng, debug_img)
+            _process_patch_at_location(image, filled_mask, lookup_textures, x, y, config, rng)
 
     # --- 3. Final Cleanup ---
 
     # Remove the padding from the final image before returning
-    return image[radius:-radius, radius:-radius]
+    return image[diameter:-diameter, diameter:-diameter]
 
 
-def find_first_2adjacent_all_zero_rows(mask):
-    """return the index of the second all zero row"""
+def _find_first_2adjacent_all_zero_rows(mask:np.ndarray) -> int | None:
+    """:return: the index of the second all zero row, or None if none found"""
     prev = False
     for i, row in enumerate(mask):
         current = all(pixel == 0 for pixel in row)
@@ -479,7 +484,7 @@ def min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPix
 
     adjust_errors_for_pystar2d_inplace(errors, errors.shape[0])
 
-    offset_row = find_first_2adjacent_all_zero_rows(roi[:, non_overlap_radius:])
+    offset_row = _find_first_2adjacent_all_zero_rows(roi[:, non_overlap_radius:])
     if offset_row is not None:
         errors = np.roll(errors, -offset_row, axis=0)
         roi = np.roll(roi, -offset_row, axis=0)
@@ -542,10 +547,9 @@ def find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[in
     The coordinates of the pair of points nearest each other at y_center and y_center -1 is returned.
     If multiple pairs have the same minimum distance, only one is returned.
 
-    Args:
-        errors: polar unwrapped errors
-        roi: polar unwrapped overlap roi
-    Returns: a tuple containing the top and bottom row endpoints (column idx) for the min cut
+    :param errors: polar unwrapped errors
+    :param roi: polar unwrapped overlap roi
+    :return: a tuple containing the top and bottom row endpoints (column idx) for the min cut
     """
     import pyastar2d
 
@@ -592,42 +596,50 @@ def find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[in
     return top_point, bottom_point
 
 
-def _find_circular_patch(lookup,
+def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
                          block: np.ndarray, mask: np.ndarray,
-                         params: CircularPatchingConfig, rng: np.random.Generator):
+                         params: CircularPatchingConfig, rng: np.random.Generator) -> np.ndarray:
     """
 
-    :param lookup: TODO -> should be a list or SharedTextList
+    :param lookup_textures: textures used for patch searching.
     :param block: 2D slice of the texture being patched containing the overlapping region.
         The array should be of type float.
-    :param mask: Mask of the overlapping region. It should of type float, having values in the interval [0, 1].
+    :param mask: Mask of the overlapping region. It should be of type float, having values in the interval [0, 1].
         The mask can be weighted to prioritize or neglect certain spots within the overlapping region.
-    :param tolerance:
-    :param block_size:
-    :param rng:
-    :return:
+    :param rng: random generator for results reproducibility.
+    :return: block sized patch containing the overlapping region.
     """
     block_size, tolerance = params.patch_params.block_size, params.tolerance
+    err_mats: list[np.ndarray | None] = []
+    global_min_error = np.inf
 
-    # texture is for output
-    # image is for patch search
     showInMovedWindow("roi used in match template", mask, 50 + block_size * 3, 25)
 
-    # according to documentation only TM_SQDIFF and TM_CCORR_NORMED accept a mask
-    # also, if given as a float it can be weighted... may come in handy later
-    err_mat = cv2.matchTemplate(image=lookup, templ=block, mask=mask, method=cv2.TM_SQDIFF)
+    # --- PASS 1: Compute errors for each texture & find the absolute global minimum error ---
+    for texture in lookup_textures:
 
-    #err_mat = 1 - ncs  # for TM_CCOEFF_NORMED
-    if tolerance > 0:
-        # attempt to ignore zeroes in order to apply tolerance, but mind edge case (e.g., blank image)
-        min_val = np.min(pos_vals) if (pos_vals := err_mat[err_mat > 0]).size > 0 else 0
-    else:
-        min_val = np.min(err_mat)
-    print(f"{min_val = }    err_threshhold = {(1.0 + tolerance) * min_val}      {np.any(min_val <= (1.0 + tolerance) * min_val)}")
-    y, x = np.nonzero(err_mat <= (1.0 + tolerance) * min_val)
-    c = rng.integers(len(y))
-    y, x = y[c], x[c]
-    return lookup[y:y + block_size, x:x + block_size]
+        # Skip if texture is too small for a block
+        if texture.shape[0] < block_size or texture.shape[1] < block_size:
+            err_mats.append(None)  # Keep placeholder for alignment
+            continue
+
+        # Compute errors & add to errors list
+        # notes: only TM_SQDIFF and TM_CCORR_NORMED accept a mask, which is required even if not weighted
+        err_mat = cv2.matchTemplate(image=texture, templ=block, mask=mask, method=cv2.TM_SQDIFF)
+        err_mat = np.maximum(err_mat, 1e-8)  # clip floor to zero
+        err_mats.append(err_mat)
+
+        global_min_error = min(global_min_error, np.min(err_mat))  # update minimum
+
+    # --- Check for impossible match ---
+    if global_min_error == np.inf:
+        raise ValueError("Could not find a suitable patch in any lookup texture "
+                         "(all textures were too small or had matching issues).")
+
+    # --- PASS 2: Collect all candidates within the final tolerance window ---
+    final_candidates = _filter_candidate_patches(err_mats, global_min_error, tolerance)
+    best_texture_idx, best_x, best_y = _select_a_random_patch(final_candidates, rng)
+    return lookup_textures[best_texture_idx][best_y:best_y+block_size, best_x:best_x+block_size]
 
 
 if __name__ == "__main__":
@@ -653,7 +665,7 @@ if __name__ == "__main__":
 
     rng = np.random.default_rng(seed=0)
     debug_img = np.stack((mask.copy(),) * 3, axis=-1)
-    img = circle_quilt(image=img, roi_mask=mask, lookup=lookup, debug_img=debug_img,
+    img = circle_quilt(image=img, roi_mask=mask, lookup_textures=[lookup], debug_img=debug_img,
                        config=config, rng=rng)
     cv2.imshow("Result", img)
     cv2.imshow("Patches Visualizer", debug_img)
