@@ -1,7 +1,11 @@
 from functools import lru_cache
 import importlib.util
+from typing import Any
+
 import numpy as np
 import cv2 as cv
+from numpy import dtype, ndarray
+from numpy.random import Generator
 
 from .types import GenParams, NumPixels, SquarePatchingBlendConfig, PatchIdx, _2D_Slice
 from .seam_smartblur import compute_adaptive_blend_mask
@@ -235,32 +239,51 @@ def find_patch_vx_idx(overlaps_left: bool,
                          "(all textures were too small or had matching issues).")
 
     # --- PASS 2: Collect all candidates within the final tolerance window ---
-    final_candidates: list[tuple[int, int, int]] = []  # (texture_idx, y, x)
-    acceptable_error = (1.0 + tolerance) * global_min_error
+    final_candidates = _filter_candidate_patches(err_mats, global_min_error, tolerance)
+    best_texture_idx, best_x, best_y = _select_a_random_patch(final_candidates, rng)
+    return best_texture_idx, best_y, best_x
 
-    for texture_idx, err_mat in enumerate(err_mats):
-        if err_mat is None:  # Skip small textures
-            continue
 
-        # Find all positions (y, x) that satisfy the global tolerance threshold
-        y_T, x_T = np.nonzero(err_mat <= acceptable_error)
-
-        # Record all valid patch coordinates
-        for y, x in zip(y_T, x_T):
-            final_candidates.append((texture_idx, y, x))
-
-    # 3. Random Selection and Patch Extraction
+def _select_a_random_patch(final_candidates: list[tuple[int, int, int]], rng: Generator) -> tuple[int, int, int]:
+    """
+    :param final_candidates: the list of patches' metadata in the following tuple format: ( texture index, y-coord, x-coord )
+    :param rng: random generator used to select the patch.
+    :return: tuple with the selected patch metadata: ( texture index, y-coord, x-coord )
+    """
     if not final_candidates:
         # This occurs if the tolerance factor is so small it filters out everything,
         # but the check for global_min_error == np.inf should usually catch the
         # true impossible cases.
         raise ValueError("No patches met the final tolerance criteria.")
-
-    # Randomly select one candidate from the final set
     c = rng.integers(len(final_candidates))
     best_texture_idx, best_y, best_x = final_candidates[c]
+    return best_texture_idx, best_x, best_y
 
-    return best_texture_idx, best_y, best_x
+
+def _filter_candidate_patches(err_mats: list[ndarray | None],
+                              global_min_error: float , tolerance: float) -> list[tuple[int, int, int]]:
+    """
+
+    :param err_mats: error matrices resulting from template matching.
+        NOTE: the error matrices indices should match the texture indices.
+              if a texture is too small, or has some other problem that invalidates fetching a patch from it,
+              its' corresponding err_mat can be set as None to preserve the indices correspondence.
+    :param global_min_error: the min error found from all the provided matrices.
+        NOTE: the iteration used to obtain the err_mats should also compute the global minimum error,
+        there is no need to iterate the list an additional time to obtain this value prior to filtering the candidates.
+    :param tolerance: how high, percentage wise, can the error be above the global minimum error to pass as a candidate.
+    :return: the list of candidates in the following tuple format: ( index in err_mats, y-coord, x-coord )
+    """
+    final_candidates: list[tuple[int, int, int]] = []  # (texture_idx, y, x)
+    acceptable_error = (1.0 + tolerance) * global_min_error
+
+    for texture_idx, err_mat in enumerate(err_mats):
+        if err_mat is None:  # skip small or invalid textures
+            continue
+        y_t, x_t = np.nonzero(err_mat <= acceptable_error)  # filter positions with respect to the tolerance threshold
+        for y, x in zip(y_t, x_t):   # record all valid patch coordinates
+            final_candidates.append((texture_idx, y, x))
+    return final_candidates
 
 
 def get_4way_min_cut_patch(
