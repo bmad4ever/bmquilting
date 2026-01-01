@@ -92,6 +92,13 @@ class BlendConfig:
         theoretical possible maximum defined by `max_blur_diameter`).
     """
 
+    use_blur_radii_limiter: bool = True
+    """
+    Attempts to mitigate seam blurring artifacts AFTER seam computation.
+    This is done by limiting the seam blur radius with respect to its proximity to the overlapping area edges.
+    This helps prevent seam artifacts near the edges that could visually give away the generation grid layout.
+    """
+
     def __post_init__(self):
         if self.sobel_kernel_size % 2 == 0:
             raise ValueError(f"{self.sobel_kernel_size = } is invalid, kernel size should be an odd number.")
@@ -103,13 +110,6 @@ class BlendConfig:
 
 @dataclass
 class SquarePatchingBlendConfig(BlendConfig):
-    use_blur_radii_limiter: bool = True
-    """
-    Attempts to mitigate seam blurring artifacts AFTER seam computation.
-    This is done by limiting the seam blur radius with respect to its proximity to the overlapping area edges.
-    This helps prevent seam artifacts near the edges that could visually give away the generation grid layout.
-    """
-
     use_blur_radii_guess_pathfind_limiter: bool = True
     """
     Attempts to mitigate seam blurring artifacts BEFORE seam computation.

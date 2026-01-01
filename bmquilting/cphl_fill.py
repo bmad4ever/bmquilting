@@ -99,14 +99,18 @@ class CircularPatchParams:
 @dataclass(frozen=True, slots=True)
 class CircularPatchingConfig:
     patch_params: CircularPatchParams
+    blend_config: BlendConfig | None
     tolerance: Percentage
     outer_corners_weighted_template_matching: bool
     spacing_factor: float
-    blend_into_patch: bool
 
     def __post_init__(self):
         if 0.0 > self.tolerance:
             raise ValueError(f"{self.tolerance = } tolerance should be greater than 0.")
+
+    @property
+    def blend_into_patch(self) -> bool:
+        return self.blend_config is not None
 
 
 
@@ -139,13 +143,8 @@ def _find_annulus_outer_corners(mask: np.ndarray, inner_radius: int, outer_radiu
     # Crop to mask region
     dst = dst[4:-4, 4:-4]
 
-    # Check maximum, if zero there are no corners
-    max_val = dst.max()
-    if max_val <= 0:
-        return None
-
     # Threshold
-    threshold = 0.01 * max_val
+    threshold = 1e-4
     bool_mask = dst > threshold
 
     if not bool_mask.any():
@@ -284,7 +283,6 @@ def _get_annular_mask(patch_params: CircularPatchParams, dtype_name: str= "float
     return annulus_roi_block
 
 
-# Helper function: Signature updated to accept only config
 def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_map: np.ndarray,
                                lookup_textures: list[np.ndarray] | SharedTextureList,
                                x: int, y: int,
@@ -356,13 +354,24 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams
 
     # 8. Blend mask with respect to gradients diff.
     if config.blend_into_patch:
-        tdiff_map = gradients_differences_at_the_seam(TEMP_BLEND_CONFIG.sobel_kernel_size,  # TODO remove hardcoding
-                                                      mask, block, patch, patched)
+        tdiff_map = gradients_differences_at_the_seam(config.blend_config.sobel_kernel_size, mask, block, patch, patched)
+
+        if config.blend_config.use_blur_radii_limiter:
+            radii_limiter = cv2.distanceTransform(roi.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3)
+            cv2.GaussianBlur(radii_limiter, (5, 5), 5, dst=radii_limiter)
+            # note: alternatively, I could cache a limiter using annular mask, this would be way more efficient;
+            #       however, such solution may have a blur derived seam at the transition between the
+            #       "filled" and "unfilled" sections of the patch.
+        else:
+            # mask out external area while allowing blurring on the overlapping region
+            radii_limiter = roi * config.patch_params.diameter
+
+        showInMovedWindow("radii limiter", radii_limiter / np.max(radii_limiter) , 50 + radius * 2 * 4, 25)
         mask = create_adaptive_blend_mask(
             tdiff_map=tdiff_map,
             mc_mask_overlap=mask,
-            blend_config=TEMP_BLEND_CONFIG, # TODO replace with actual configs
-            radii_limiter_mask=roi,
+            blend_config=config.blend_config,
+            radii_limiter_mask=radii_limiter,
             dtype=block.dtype
         )
 
@@ -508,7 +517,7 @@ def min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPix
     start_x = end_x = errors.shape[1] - 1
     if offset_row is None:
         # when no empty row is found, search for the cut endpoints at the top & bottom so that the path is not broken
-        start_x, end_x = find_min_cut_circ_endpoints(errors, roi)
+        start_x, end_x = _find_min_cut_circ_endpoints(errors, roi)
 
     errors[:, -1] = roi[:, -1] * errors[:, -1] + (1 - roi[:, -1])  # bottom holes escape path
     errors[:, :-1][roi[:, :-1] == 0] = np.inf  # don't travel outside the mask, unless via the escape path
@@ -536,10 +545,8 @@ def min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPix
     return mask
 
 
-def _x_squared_distance_1D(a_1d: np.ndarray, b_1d: np.ndarray) -> np.ndarray:
-    """
-    Computes the squared distance matrix based on 1D arrays of X-coordinates.
-    """
+def _x_squared_distance_1d(a_1d: np.ndarray, b_1d: np.ndarray) -> np.ndarray:
+    """Computes the squared distance matrix based on 1D arrays of X-coordinates."""
     # Reshape for broadcasting: (N, 1) and (1, M)
     a_coords = a_1d.reshape(-1, 1)
     b_coords = b_1d.reshape(1, -1)
@@ -547,7 +554,7 @@ def _x_squared_distance_1D(a_1d: np.ndarray, b_1d: np.ndarray) -> np.ndarray:
     return squared_dist_matrix
 
 
-def find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[int, int]:
+def _find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[int, int]:
     """
     Consider the roi as the following sections: | A | B | C | D |
     This functions rolls & crops it to get the section: | D | A |
@@ -587,7 +594,7 @@ def find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[in
     err_len_div4_minus1 = err_len_div4 - 1
     points_of_interest_top = [x for (y, x) in path if y - 1 == err_len_div4]
     points_of_interest_bottom = [x for (y, x) in path if y - 1 == err_len_div4_minus1]
-    dist_matrix = _x_squared_distance_1D(np.array(points_of_interest_top), np.array(points_of_interest_bottom))
+    dist_matrix = _x_squared_distance_1d(np.array(points_of_interest_top), np.array(points_of_interest_bottom))
 
     # Find the indices of the minimum distance
     min_index = np.unravel_index(np.argmin(dist_matrix), dist_matrix.shape)
@@ -672,7 +679,7 @@ if __name__ == "__main__":
         spacing_factor=0.9,
         tolerance=0.0,
         outer_corners_weighted_template_matching=True,
-        blend_into_patch=True,
+        blend_config=TEMP_BLEND_CONFIG,
     )
 
     rng = np.random.default_rng(seed=0)
