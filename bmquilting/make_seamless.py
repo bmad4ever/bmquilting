@@ -39,7 +39,7 @@ def _make_seamless_horizontally(image: np.ndarray, gen_params: GenParams, rng: n
 
     ref_block[:] = min_cut_patch
 
-    update_seams_map_view(seams_map[:block_size, :block_size], gen_params, patch_weights)
+    update_seams_map_view(seams_map[:block_size, :block_size], patch_weights, gen_params.blend_into_patch)
 
     check_ui(uicd, 1)
 
@@ -55,7 +55,7 @@ def _make_seamless_horizontally(image: np.ndarray, gen_params: GenParams, rng: n
             True, True, True, False, ref_block, patch_block, gen_params)
 
         ref_block[:] = min_cut_patch
-        update_seams_map_view(seams_map[blk_1y:blk_2y, :block_size], gen_params, patch_weights)
+        update_seams_map_view(seams_map[blk_1y:blk_2y, :block_size], patch_weights, gen_params.blend_into_patch)
         check_ui(uicd, 1)
 
     # fill last block
@@ -66,7 +66,7 @@ def _make_seamless_horizontally(image: np.ndarray, gen_params: GenParams, rng: n
     min_cut_patch, patch_weights = get_4way_min_cut_patch(
         True, True, True, True, ref_block, patch_block, gen_params)
     ref_block[:] = min_cut_patch
-    update_seams_map_view(seams_map[-block_size:, :block_size], gen_params, patch_weights)
+    update_seams_map_view(seams_map[-block_size:, :block_size], patch_weights, gen_params.blend_into_patch)
     check_ui(uicd, 1)
 
     # fix overvalues due to seams overlap
@@ -153,7 +153,7 @@ def _patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, 
     patch = find_patch_vx(True, False, True, True, ref_block, lookup_textures, gen_params, rng)
     patch, patch_weights = get_4way_min_cut_patch(True, False, True, True, ref_block, patch, gen_params)
     ref_block[:] = patch
-    update_seams_map_view(seams_map[ys:ye, xs - overlap:xe - overlap], gen_params, patch_weights)
+    update_seams_map_view(seams_map[ys:ye, xs - overlap:xe - overlap], patch_weights, gen_params.blend_into_patch)
     check_ui(uicd, 1)
 
     # PATCH H SEAM -> RIGHT PATCH
@@ -163,7 +163,7 @@ def _patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, 
     patch, patch_weights = get_4way_min_cut_patch(True, True, True, True,
                                                   ref_block, patch, gen_params)
     ref_block[:] = patch
-    update_seams_map_view(seams_map[ys:ye, xs + overlap:xe + overlap], gen_params, patch_weights)
+    update_seams_map_view(seams_map[ys:ye, xs + overlap:xe + overlap], patch_weights, gen_params.blend_into_patch)
     check_ui(uicd, 1)
 
     np.clip(seams_map, 0, 1, out=seams_map) # fix overvalues

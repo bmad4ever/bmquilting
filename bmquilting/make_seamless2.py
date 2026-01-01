@@ -63,8 +63,8 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, gen_para
     image[:, :block_size] = lookup_texture[y:y + image.shape[0], x:x + block_size]
     image[:, :overlap] = left_side_patch[:, :overlap]
     image[:, block_size - overlap:block_size] = right_side_patch[:, -overlap:]
-    update_seams_map_view(seams_map[:, :overlap], gen_params, left_weights[:, :overlap])
-    update_seams_map_view(seams_map[:, block_size - overlap:block_size], gen_params, right_weights[:, -overlap:])
+    update_seams_map_view(seams_map[:, :overlap], left_weights[:, :overlap], gen_params.blend_into_patch)
+    update_seams_map_view(seams_map[:, block_size - overlap:block_size], right_weights[:, -overlap:], gen_params.blend_into_patch)
 
     # fix overvalues due to seams overlap
     np.clip(seams_map, 0, 1, out=seams_map)

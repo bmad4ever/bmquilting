@@ -76,7 +76,7 @@ def _compute_synthesis_map(
         store_patch_mask(patch_weights)
         ref_block[:] = min_cut_patch
         seams_map_sub_view = seams_map_view[blk_idx]
-        update_seams_map_view(seams_map_sub_view, gen_params, patch_weights)
+        update_seams_map_view(seams_map_sub_view, patch_weights, gen_params.blend_into_patch)
         check_ui(uicd, 1)
 
     def fill_row_inplace_proxy():

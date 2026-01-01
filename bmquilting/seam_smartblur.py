@@ -227,6 +227,7 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     blend_config.blur_shape_func.inplace_func(t)
     blend_mask = t
 
+    np.subtract(1, blend_mask, out=blend_mask)
     return blend_mask
 
 
@@ -285,13 +286,9 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     # Get patched overlap region
     patched_overlap = apply_mask(source_overlap, 1.0 - cut_mask_overlap) + apply_mask(patch_overlap, cut_mask_overlap)
 
-    # Gradients Diffs Map
+    # Compute Gradients Difference & Create Adaptive Blend Mask for the overlap section
     tdiff_map = gradients_differences_at_the_seam(sobel_ksize, cut_mask_overlap,
                                                   source_overlap, patch_overlap, patched_overlap)
-
-    # endregion Compute "Transition Difference Map" END
-
-    # Create adaptive blend mask
     blended = create_adaptive_blend_mask(
         tdiff_map=tdiff_map,
         mc_mask_overlap=cut_mask_overlap,
@@ -300,9 +297,7 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
         dtype=source.dtype
     )
 
-    # Update min-cut mask with adaptive blend  -> (1 - blended)
-    blended *= -1
-    blended += 1
+    # Update min-cut mask with adaptive blend
     cut_mask[:block_size, :overlap] = blended
 
 

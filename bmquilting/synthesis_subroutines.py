@@ -203,7 +203,7 @@ def find_patch_vx_idx(overlaps_left: bool,
     conditions = [overlaps_left, overlaps_right, overlaps_top, overlaps_bottom]
     slice_definitions = get_slice_metadata_for_find_patch(block_size, overlap)  # (texture, template & mask)
 
-    # --- PASS 1: Find the absolute global minimum error ---
+    # --- PASS 1: Compute errors for each texture & find the absolute global minimum error ---
     for texture in lookup_textures:
 
         # Skip if texture is too small for a block
@@ -492,8 +492,8 @@ def get_min_cut_patch_mask_horizontal_jena2020(block1, block2, block_size: NumPi
     return mask
 
 
-def update_seams_map_view(seams_map_view, gen_params, patch_weights):
-    seam_map_block = get_seam_mask_from_patch_weights(patch_weights, gen_params)
+def update_seams_map_view(seams_map_view: np.ndarray, patch_weights: np.ndarray, blends_into_patch: bool):
+    seam_map_block = get_seam_mask_from_patch_weights(patch_weights, blends_into_patch)
     clear_seam_overlapped_by_patch(seams_map_view, patch_weights)
     #seams_map_view += seam_map_block
     np.maximum(seams_map_view, seam_map_block, out=seams_map_view)
@@ -642,8 +642,8 @@ def get_min_cut_patch_both(ref_block, patch_block, gen_params: GenParams):
 # endregion
 
 
-def get_seam_mask_from_patch_weights(patch_weights: np.ndarray, gen_params: GenParams) -> np.ndarray:
-    if gen_params.blend_into_patch:
+def get_seam_mask_from_patch_weights(patch_weights: np.ndarray, blends_into_patch: bool) -> np.ndarray:
+    if blends_into_patch:
         # Has blending, compute distance to 0.5
         seam_mask = 1 - np.abs(.5 - patch_weights) * 2
         np.clip(seam_mask, 0, 1, out=seam_mask)  # just in case

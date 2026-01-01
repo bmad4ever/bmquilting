@@ -81,7 +81,7 @@ def process_block(text_view: np.ndarray, seams_view: np.ndarray,
     min_cut_patch, patch_weights = get_min_cut_func(ref_block, patch_block, gen_params)
     ref_block[:] = min_cut_patch
     seams_map_sub_view = seams_view[block_idx]
-    update_seams_map_view(seams_map_sub_view, gen_params, patch_weights)
+    update_seams_map_view(seams_map_sub_view, patch_weights, gen_params.blend_into_patch)
     check_ui(uicd, 1)
 
 

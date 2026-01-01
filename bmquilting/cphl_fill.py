@@ -10,14 +10,16 @@ from functools import cached_property, lru_cache
 try:
     from .synthesis_subroutines import (
         apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace,
-        _filter_candidate_patches, _select_a_random_patch)
+        _filter_candidate_patches, _select_a_random_patch,
+        get_seam_mask_from_patch_weights, clear_seam_overlapped_by_patch, update_seams_map_view)
     from .types import NumPixels, Percentage, BlendConfig
     from .seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_2
     from .misc.shmem_utils import SharedTextureList
 except:
     from bmquilting.synthesis_subroutines import (
         apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace,
-        _filter_candidate_patches, _select_a_random_patch)
+        _filter_candidate_patches, _select_a_random_patch,
+        get_seam_mask_from_patch_weights, clear_seam_overlapped_by_patch, update_seams_map_view)
     from bmquilting.types import NumPixels, Percentage, BlendConfig
     from bmquilting.seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_2
     from bmquilting.misc.shmem_utils import SharedTextureList
@@ -100,6 +102,7 @@ class CircularPatchingConfig:
     tolerance: Percentage
     outer_corners_weighted_template_matching: bool
     spacing_factor: float
+    blend_into_patch: bool
 
     def __post_init__(self):
         if 0.0 > self.tolerance:
@@ -282,7 +285,7 @@ def _get_annular_mask(patch_params: CircularPatchParams, dtype_name: str= "float
 
 
 # Helper function: Signature updated to accept only config
-def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
+def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_map: np.ndarray,
                                lookup_textures: list[np.ndarray] | SharedTextureList,
                                x: int, y: int,
                                config: CircularPatchingConfig,
@@ -308,6 +311,7 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     # 2. Extract the current image block and the region of interest (ROI)
     block = image[y1:y2, x1:x2]
     roi = filled_mask[y1:y2, x1:x2]
+    seams = seams_map[y1:y2, x1:x2]
 
     # Get the annular mask used for this patch
     annulus_roi_block = _get_annular_mask(config.patch_params, dtype_name=roi.dtype.name)
@@ -315,7 +319,7 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     roi = annulus_roi_block * roi  # confines the ROI to the annulus (overlap) region
     tmpl_mask = roi                # mask used w/ template matching
 
-    # 3. Weighted Template Matching Setup
+    # 3. (optional) Weighted Template Matching Setup
     if config.outer_corners_weighted_template_matching:
         corners_mask = _find_annulus_outer_corners(roi, non_overlap_radius, radius)
         if corners_mask is not None:
@@ -324,7 +328,6 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
         del corners_mask
 
     # 4. Find the best matching patch from the lookup texture
-    # Now using the config's tolerance
     patch: np.ndarray = _find_circular_patch(lookup_textures, block, tmpl_mask, config, rng)
 
     # 5. Compute Errors prior to warping
@@ -336,7 +339,7 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     warped_len = config.patch_params.warped_len
     warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
 
-    # Warp current block, new patch, and overlap ROI to polar coordinates
+    # Warp errors & overlap ROI to polar coordinates
     polar_errors, polar_roi = (
         cv2.warpPolar(i, (radius, warped_len), center, f_radius, warp_flags)
         for i in [errors, roi])
@@ -348,46 +351,52 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius,
                          cv2.WARP_INVERSE_MAP | warp_flags)
 
-    showInMovedWindow("mask", mask * 255, 50 + radius * 2 * 4, 25)
-
     # 7. Compute patched result
     patched = apply_mask(image[y1:y2, x1:x2], (1 - mask)) + apply_mask(patch, mask)
 
-    # TODO CURRENT START
+    # 8. Blend mask with respect to gradients diff.
+    if config.blend_into_patch:
+        tdiff_map = gradients_differences_at_the_seam(TEMP_BLEND_CONFIG.sobel_kernel_size,  # TODO remove hardcoding
+                                                      mask, block, patch, patched)
+        mask = create_adaptive_blend_mask(
+            tdiff_map=tdiff_map,
+            mc_mask_overlap=mask,
+            blend_config=TEMP_BLEND_CONFIG, # TODO replace with actual configs
+            radii_limiter_mask=roi,
+            dtype=block.dtype
+        )
 
-    tdiff_map = gradients_differences_at_the_seam(TEMP_BLEND_CONFIG.sobel_kernel_size,  # TODO remove hardcoding
-                                                  mask, block, patch, patched)
+    showInMovedWindow("mask", mask * 255, 50 + radius * 2 * 4, 25)
 
-    blended = create_adaptive_blend_mask(
-        tdiff_map=tdiff_map,
-        mc_mask_overlap=mask,
-        blend_config=TEMP_BLEND_CONFIG, # TODO replace with actual configs
-        radii_limiter_mask=roi,
-        dtype=block.dtype
-    )
+    # 9. Update Seams & Filled Mask State
+    update_seams_map_view(seams, mask, config.blend_into_patch)
+    np.maximum(mask, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
 
-    #showInMovedWindow("blended", blended * 255, 50 + radius * 2 * 5, 25)
+    # 10 Paste into the Source Image
+    if config.blend_into_patch:
+        #  patch * mask  +  source * (1 - mask)     # mind that patch is a view into the lookup texture
+        patched[:] = patch                          # re-used patched array, no need to allocate a new one
+        apply_mask(patched, mask, True)             # patched <- patch * mask
+        np.subtract(1, mask, out=mask)              # mask    <- (1 - mask)
+        apply_mask(image[y1:y2, x1:x2], mask, True) # source  <- source * (1 - mask)
+        image[y1:y2, x1:x2] += patched              # + patch * mask
+    else:
+        image[y1:y2, x1:x2] = patched
 
-    # TODO END
-
-    # 8. Paste into the source image
-    image[y1:y2, x1:x2] = apply_mask(image[y1:y2, x1:x2], blended) + apply_mask(patch, 1-blended)
+    # TODO REMOVE DEBUG LATER
     showInMovedWindow("patched single", image, 1920 - image.shape[1], 25)
     cv2.waitKey(0)
 
-    # 9. Update the filled mask state
-    np.maximum(mask, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
+    # TODO REMOVE DEBUG LATER
     cv2.imshow("filled state", filled_mask * 255)
     cv2.waitKey(0)
-
-    return image[y1:y2, x1:x2], mask
 
 
 def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
                  lookup_textures: list[np.ndarray] | SharedTextureList,
                  config: CircularPatchingConfig,
                  rng: np.random.Generator,
-                 debug_img: np.ndarray = None) -> np.ndarray:
+                 debug_img: np.ndarray = None) -> tuple[np.ndarray, np.ndarray]:
     """
     Applies texture synthesis to the ROI by tiling circular patches on a hexagonal lattice
     and blending them using min-cut in polar coordinates, driven by a configuration object.
@@ -409,6 +418,8 @@ def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
     roi_mask = roi_mask.astype(np.float32)
     roi_mask /= np.max(roi_mask)
 
+    seams_map = np.zeros(image.shape[:2], dtype=np.float32)
+
     # Get the bounding box of the ROI (in the padded image coordinates)
     min_x, min_y, w, h = get_bounding_box(roi_mask_i)
     max_x, max_y = min_x + w, min_y + h
@@ -423,11 +434,6 @@ def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
     cv2.morphologyEx(roi_mask, cv2.MORPH_ERODE, kernel=circular_kernel, dst=roi_mask)
     del kernel_size, circular_kernel
     cv2.imshow("eroded roi_mask", roi_mask * 255)
-
-    # Debug visualization for the bounding box
-    if debug_img is not None:           # TODO remove debug
-        cv2.rectangle(debug_img, (int(min_x - radius), int(min_y - radius)), (int(max_x - radius), int(max_y - radius)),
-                      (1.0, 0.0, 0.0), 2)
 
     # --- 2. Hexagonal Lattice Iteration ---
     # Calculates the spacing for the patch centers based on config.spacing_factor
@@ -448,12 +454,17 @@ def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
                 cv2.circle(debug_img, (int(x - diameter), int(y - diameter)), radius, color, -1)
                 cv2.circle(debug_img, (int(x - diameter), int(y - diameter)), 5, (0, 0, 0), -1)
 
-            _process_patch_at_location(image, filled_mask, lookup_textures, x, y, config, rng)
+            _process_patch_at_location(image, filled_mask, seams_map, lookup_textures, x, y, config, rng)
 
     # --- 3. Final Cleanup ---
 
+    # Debug visualization for the bounding box
+    if debug_img is not None:           # TODO remove debug
+        cv2.rectangle(debug_img, (int(min_x - diameter), int(min_y - diameter)), (int(max_x - diameter), int(max_y - diameter)),
+                      (255, 255, 255), 2)
+
     # Remove the padding from the final image before returning
-    return image[diameter:-diameter, diameter:-diameter]
+    return image[diameter:-diameter, diameter:-diameter], seams_map
 
 
 def _find_first_2adjacent_all_zero_rows(mask:np.ndarray) -> int | None:
@@ -660,14 +671,16 @@ if __name__ == "__main__":
         patch_params=CircularPatchParams(diameter=161, overlap_ratio=.5),
         spacing_factor=0.9,
         tolerance=0.0,
-        outer_corners_weighted_template_matching=True
+        outer_corners_weighted_template_matching=True,
+        blend_into_patch=True,
     )
 
     rng = np.random.default_rng(seed=0)
     debug_img = np.stack((mask.copy(),) * 3, axis=-1)
-    img = circle_quilt(image=img, roi_mask=mask, lookup_textures=[lookup], debug_img=debug_img,
+    img, seams = circle_quilt(image=img, roi_mask=mask, lookup_textures=[lookup], debug_img=debug_img,
                        config=config, rng=rng)
     cv2.imshow("Result", img)
+    cv2.imshow("Seams", seams)
     cv2.imshow("Patches Visualizer", debug_img)
     cv2.waitKey(0)
 
