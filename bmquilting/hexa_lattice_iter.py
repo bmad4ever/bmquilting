@@ -1,9 +1,9 @@
 import numpy as np
-from multiprocessing import Pool, shared_memory
-from functools import partial
+from multiprocessing import shared_memory
 import cv2
-from typing import List, Tuple, Set, Callable
+from collections.abc import Callable
 from joblib import Parallel, delayed
+import math
 
 
 class HexagonalLatticeIterator:
@@ -23,7 +23,7 @@ class HexagonalLatticeIterator:
         # Generate all lattice points
         self.points = self._generate_all_points()
 
-    def _generate_all_points(self) -> Set[Tuple[int, int]]:
+    def _generate_all_points(self) -> set[tuple[int, int]]:
         """Generate all points in the hexagonal lattice"""
         points = set()
         for y in range(int(self.min_y), int(self.max_y + self.y_spacing), self.y_spacing):
@@ -34,7 +34,7 @@ class HexagonalLatticeIterator:
                 points.add((actual_x, y))
         return points
 
-    def _find_center_point(self) -> Tuple[int, int]:
+    def _find_center_point(self) -> tuple[int, int]:
         """Find the lattice point nearest to the center"""
         center_x = (self.min_x + self.max_x) / 2
         center_y = (self.min_y + self.max_y) / 2
@@ -50,40 +50,29 @@ class HexagonalLatticeIterator:
 
         return center_point
 
-    def _get_hex_neighbors(self, point: Tuple[int, int]) -> List[Tuple[int, int]]:
+    def _get_hex_neighbors(self, point: tuple[int, int]) -> list[tuple[int, int]]:
         """Get the 6 adjacent hexagonal neighbors of a point"""
         x, y = point
-        row = y // self.y_spacing
 
         # Hexagonal neighbors depend on whether we're in an even or odd row
-        if row % 2 == 0:  # even row
-            neighbors = [
-                (x + self.x_spacing, y),  # right
-                (x + self.x_spacing // 2, y + self.y_spacing),  # bottom-right
-                (x - self.x_spacing // 2, y + self.y_spacing),  # bottom-left
-                (x - self.x_spacing, y),  # left
-                (x - self.x_spacing // 2, y - self.y_spacing),  # top-left
-                (x + self.x_spacing // 2, y - self.y_spacing),  # top-right
-            ]
-        else:  # odd row
-            neighbors = [
-                (x + self.x_spacing, y),  # right
-                (x + self.x_spacing // 2, y + self.y_spacing),  # bottom-right
-                (x - self.x_spacing // 2, y + self.y_spacing),  # bottom-left
-                (x - self.x_spacing, y),  # left
-                (x - self.x_spacing // 2, y - self.y_spacing),  # top-left
-                (x + self.x_spacing // 2, y - self.y_spacing),  # top-right
-            ]
+        neighbors = [
+            (x + self.x_spacing, y),  # right
+            (x + self.x_spacing // 2, y + self.y_spacing),  # bottom-right
+            (x - self.x_spacing // 2, y + self.y_spacing),  # bottom-left
+            (x - self.x_spacing, y),  # left
+            (x - self.x_spacing // 2, y - self.y_spacing),  # top-left
+            (x + self.x_spacing // 2, y - self.y_spacing),  # top-right
+        ]
 
         # Filter to only include points that exist in the lattice
         return [n for n in neighbors if n in self.points]
 
-    def _get_direction_vector(self, from_point: Tuple[int, int], to_point: Tuple[int, int]) -> Tuple[int, int]:
+    def _get_direction_vector(self, from_point: tuple[int, int], to_point: tuple[int, int]) -> tuple[int, int]:
         """Calculate direction vector between two points"""
-        return (to_point[0] - from_point[0], to_point[1] - from_point[1])
+        return to_point[0] - from_point[0], to_point[1] - from_point[1]
 
-    def _get_points_in_direction(self, start: Tuple[int, int], direction: Tuple[int, int],
-                                 visited: Set[Tuple[int, int]]) -> List[Tuple[int, int]]:
+    def _get_points_in_direction(self, start: tuple[int, int], direction: tuple[int, int],
+                                 visited: set[tuple[int, int]]) -> list[tuple[int, int]]:
         """Get all points in a given direction from start point"""
         points = []
         current = (start[0] + direction[0], start[1] + direction[1])
@@ -94,16 +83,14 @@ class HexagonalLatticeIterator:
 
         return points
 
-    def _get_angle(self, center: Tuple[int, int], point: Tuple[int, int]) -> float:
+    def _get_angle(self, center: tuple[int, int], point: tuple[int, int]) -> float:
         """Calculate angle from center to point in radians"""
-        import math
         dx = point[0] - center[0]
         dy = point[1] - center[1]
         return math.atan2(dy, dx)
 
     def _normalize_angle(self, angle: float) -> float:
         """Normalize angle to [0, 2π)"""
-        import math
         while angle < 0:
             angle += 2 * math.pi
         while angle >= 2 * math.pi:
@@ -112,8 +99,6 @@ class HexagonalLatticeIterator:
 
     def _is_angle_between(self, test_angle: float, start_angle: float, end_angle: float) -> bool:
         """Check if test_angle is between start_angle and end_angle (going counterclockwise)"""
-        import math
-
         # Normalize all angles
         test = self._normalize_angle(test_angle)
         start = self._normalize_angle(start_angle)
@@ -124,13 +109,12 @@ class HexagonalLatticeIterator:
         else:  # Wraps around 0
             return test >= start or test <= end
 
-    def _get_sector_at_angle(self, center: Tuple[int, int], angle1: float, angle2: float,
-                             visited: Set[Tuple[int, int]], sector_name: str) -> List[Tuple[int, int]]:
+    def _get_sector_at_angle(self, center: tuple[int, int], angle1: float, angle2: float,
+                             visited: set[tuple[int, int]]) -> list[tuple[int, int]]:
         """
         Get all unvisited points in the sector between angle1 and angle2,
         sorted by distance from center (nearest first for scan-line filling)
         """
-        import math
 
         sector_points = []
 
@@ -150,47 +134,20 @@ class HexagonalLatticeIterator:
 
         return [point for dist, point in sector_points]
 
-    def _partition_remaining_points(self, center: Tuple[int, int],
-                                    neighbors: List[Tuple[int, int]],
-                                    directional_points: List[List[Tuple[int, int]]],
-                                    visited: Set[Tuple[int, int]]) -> List[Tuple[str, List[Tuple[int, int]]]]:
+    def _partition_remaining_points(self, center: tuple[int, int],
+                                    neighbors: list[tuple[int, int]],
+                                    visited: set[tuple[int, int]]) -> list[list[tuple[int, int]]]:
         """
         Partition all remaining unvisited points into 6 triangular sectors.
         Each sector is named by its angle and filled in scan-line fashion from center outward.
         """
-        import math
-
-        # Calculate angles for each of the 6 directions
-        sector_info = []
-        for i, neighbor in enumerate(neighbors):
-            angle = self._get_angle(center, neighbor)
-            sector_info.append({
-                'index': i,
-                'angle': angle,
-                'neighbor': neighbor
-            })
-
-        # Sort by angle to get proper ordering
-        sector_info.sort(key=lambda x: x['angle'])
-
-        # Create 6 sectors, each between consecutive angles
-        sectors = []
-        for i in range(len(sector_info)):
-            angle1 = sector_info[i]['angle']
-            angle2 = sector_info[(i + 1) % len(sector_info)]['angle']
-
-            # Create descriptive name based on angle
-            angle1_deg = math.degrees(angle1) % 360
-            angle2_deg = math.degrees(angle2) % 360
-            sector_name = f"sector_{int(angle1_deg)}_{int(angle2_deg)}"
-
-            # Get points in this sector, sorted by distance from center
-            sector_points = self._get_sector_at_angle(center, angle1, angle2, visited, sector_name)
-
-            if sector_points:
-                sectors.append((sector_name, sector_points))
-
-        return sectors
+        angles = [self._get_angle(center, neighbor) for neighbor in neighbors]
+        angles.sort()
+        sector_points = [
+            self._get_sector_at_angle(center, ang, angles[(i+1)%len(angles)], visited)
+            for i, ang in enumerate(angles)
+        ]
+        return sector_points
 
     def iterate_spiral(self):
         """
@@ -235,11 +192,10 @@ class HexagonalLatticeIterator:
 
             # Step 4: Process regions between directions
             print("Processing regions between directions")
-            sectors = self._partition_remaining_points(center, neighbors, directional_points, visited)
+            sectors = self._partition_remaining_points(center, neighbors, visited)
 
             print(f"Processing {len(sectors)} sectors sequentially")
-            for sector_name, sector_points in sectors:
-                print(f"  {sector_name}: {len(sector_points)} points")
+            for sector_points in sectors:
                 yield sector_points
                 visited.update(sector_points)
 
@@ -302,18 +258,16 @@ class HexagonalLatticeIterator:
 
         # Step 4: Process 6 sectors in parallel with joblib
         print("Processing sectors between directions")
-        sectors = self._partition_remaining_points(center, neighbors, directional_points, visited)
+        sectors = self._partition_remaining_points(center, neighbors, visited)
 
-        sector_points_list = [sector_points for _, sector_points in sectors]
-
-        print(f"Processing {len(sector_points_list)} sectors in parallel")
+        print(f"Processing {len(sectors)} sectors in parallel")
         parallel(
             delayed(self.process_func)(batch, self.shared_data)
-            for batch in sector_points_list
+            for batch in sectors
         )
 
         # Update visited after all parallel processes complete
-        for sector_points in sector_points_list:
+        for sector_points in sectors:
             visited.update(sector_points)
 
         print(f"Total points processed: {len(visited)}")
