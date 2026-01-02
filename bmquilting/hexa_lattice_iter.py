@@ -1,9 +1,9 @@
-import numpy as np
+from collections.abc import Callable, Generator
 from multiprocessing import shared_memory
-import cv2
-from collections.abc import Callable
 from joblib import Parallel, delayed
+import numpy as np
 import math
+import cv2
 
 
 class HexagonalLatticeIterator:
@@ -61,7 +61,6 @@ class HexagonalLatticeIterator:
     def _get_hex_neighbors(self, point: Vec2_int) -> list[Vec2_int]:
         """Get the 6 adjacent hexagonal neighbors of a point"""
         x, y = point
-        row = y // self.y_spacing
 
         # Hexagonal neighbors depend on whether we're in an even or odd row
         neighbors = [
@@ -82,18 +81,14 @@ class HexagonalLatticeIterator:
         return to_point[0] - from_point[0], to_point[1] - from_point[1]
 
     def _get_points_in_direction(self, start: Vec2_int, direction: Vec2_int,
-                                 visited: set[Vec2_int]) -> list[Vec2_int]:
+                                 visited: set[Vec2_int]) -> Generator[Vec2_int]:
         """Get all points in a given direction from start point"""
-        points = []
         current = (start[0] + direction[0], start[1] + direction[1])
-
         while (self._is_valid_point(current) and
                self._is_on_grid(current) and
                current not in visited):
-            points.append(current)
+            yield current
             current = (current[0] + direction[0], current[1] + direction[1])
-
-        return points
 
     @staticmethod
     def _get_angle(center: Vec2_int, point: Vec2_int) -> float:
@@ -123,99 +118,61 @@ class HexagonalLatticeIterator:
         else:  # Wraps around 0
             return test >= start or test <= end
 
-    def _get_sector_at_angle(self, center: Vec2_int, angle1: float, angle2: float,
-                             visited: set[Vec2_int]) -> list[Vec2_int]:
+    def _get_sector_between(self, center: Vec2_int, dir1_neighbor: Vec2_int, dir2_neighbor: Vec2_int,
+                            visited: set[Vec2_int]) -> Generator[Vec2_int]:
         """
         Get all unvisited points in the sector between angle1 and angle2,
-        sorted by distance from center (nearest first for scan-line filling)
+        using scanline iteration along the sector boundaries.
         """
-        sector_points = []
+        # Calculate direction vectors
+        dir1 = self._get_direction_vector(center, dir1_neighbor)
+        dir2 = self._get_direction_vector(center, dir2_neighbor)
+        angle1 = self._get_angle(center, dir1_neighbor)
+        angle2 = self._get_angle(center, dir2_neighbor)
 
-        min_y_search, min_x_search, max_y_search, max_x_search = self._get_sector_bbox(angle1, angle2, center)
+        # Outer loop: move along angle1 direction
+        current_start = (center[0] + dir1[0], center[1] + dir1[1])
 
-        # Iterate through the limited region
-        for y in range(int(min_y_search), int(max_y_search + self.y_spacing), self.y_spacing):
-            row = y // self.y_spacing
-            x_offset = (self.x_spacing // 2) if (row % 2 != 0) else 0
+        while True:
+            # Check if we've gone out of bounds along angle1
+            if not self._is_valid_point(current_start):
+                break
 
-            for x in range(int(min_x_search), int(max_x_search + self.x_spacing), self.x_spacing):
-                actual_x = x + x_offset
-                point = (actual_x, y)
+            # Inner loop: scan parallel to angle2 direction from current_start
+            scan_point = current_start
+            while True:
+                # Move to next point along angle2 direction
+                scan_point = (scan_point[0] + dir2[0], scan_point[1] + dir2[1])
 
-                if point in visited or not self._is_valid_point(point):
-                    continue
+                # Check bounds
+                if not self._is_valid_point(scan_point):
+                    break
 
-                point_angle = self._get_angle(center, point)
+                # TODO REMOVE ASSERTS
+                assert self._is_on_grid(scan_point) # DEBUG: confirm they always land on the grid
+                assert scan_point not in visited    # DEBUG: confirm we are not repeating a point on a line or center
+                # TODO once above asserts are removed, the visited can be removed from the func args
 
-                # Check if point is in this sector
+                point_angle = self._get_angle(center, scan_point)
                 if self._is_angle_between(point_angle, angle1, angle2):
-                    dist = math.sqrt((point[0] - center[0]) ** 2 + (point[1] - center[1]) ** 2)
-                    sector_points.append((dist, point))
+                    yield scan_point
 
-        # Sort by distance (scan from center outward)
-        sector_points.sort(key=lambda x: x[0])
+            # If we didn't find any valid points in this scanline, we might be done
+            # But continue to be safe (the sector might have gaps)
 
-        return [point for dist, point in sector_points]
-
-    def _get_sector_bbox(self, angle1: float, angle2: float, center: Vec2_int) -> tuple[int, int, int, int]:
-        """:return: (min_y, min_x, max_y, max_x)"""
-        # Determine which quadrant(s) this sector spans to limit search space
-        # Normalize angles to [0, 2π)
-        a1 = self._normalize_angle(angle1)
-        a2 = self._normalize_angle(angle2)
-
-        # Calculate the midpoint angle of the sector
-        if a2 < a1:
-            mid_angle = (a1 + a2 + 2 * math.pi) / 2
-        else:
-            mid_angle = (a1 + a2) / 2
-        mid_angle = self._normalize_angle(mid_angle)
-
-        # Determine x bounds based on sector direction
-        # Right half (angle in [-π/4, π/4] roughly, accounting for hexagonal geometry)
-        if -math.pi / 3 <= mid_angle <= math.pi / 3 or mid_angle >= 5 * math.pi / 3:
-            min_x_search = center[0]
-            max_x_search = self.max_x
-        # Left half
-        elif 2 * math.pi / 3 <= mid_angle <= 4 * math.pi / 3:
-            min_x_search = self.min_x
-            max_x_search = center[0]
-        else:
-            # Diagonal sectors - can't optimize x
-            min_x_search = self.min_x
-            max_x_search = self.max_x
-
-        # Determine y bounds based on sector direction
-        # Top half (angle in [π/3, 2π/3] roughly)
-        if math.pi / 3 <= mid_angle <= 2 * math.pi / 3:
-            min_y_search = center[1]
-            max_y_search = self.max_y
-        # Bottom half (angle in [4π/3, 5π/3] roughly)
-        elif 4 * math.pi / 3 <= mid_angle <= 5 * math.pi / 3:
-            min_y_search = self.min_y
-            max_y_search = center[1]
-        else:
-            # Left/Right sectors - can't optimize y
-            min_y_search = self.min_y
-            max_y_search = self.max_y
-
-        # Snap bounds to grid to avoid missing boundary points
-        min_y_search = (min_y_search // self.y_spacing) * self.y_spacing
-        min_x_search = (min_x_search // self.x_spacing) * self.x_spacing
-        return min_y_search, min_x_search, max_y_search, max_x_search
+            # Move to next scanline along angle1
+            current_start = (current_start[0] + dir1[0], current_start[1] + dir1[1])
 
     def _partition_remaining_points(self, center: Vec2_int,
                                     neighbors: list[Vec2_int],
-                                    visited: set[Vec2_int]) -> list[list[Vec2_int]]:
+                                    visited: set[Vec2_int]) -> list[Generator[Vec2_int]]:
         """
         Partition all remaining unvisited points into 6 triangular sectors.
         Each sector is named by its angle and filled in scan-line fashion from center outward.
         """
-        angles = [self._get_angle(center, neighbor) for neighbor in neighbors]
-        angles.sort()
         sector_points = [
-            self._get_sector_at_angle(center, ang, angles[(i+1)%len(angles)], visited)
-            for i, ang in enumerate(angles)
+            self._get_sector_between(center, neighbor, neighbors[(i + 1) % len(neighbors)], visited)
+            for i, neighbor in enumerate(neighbors)
         ]
         return sector_points
 
@@ -363,8 +320,6 @@ def my_center_func(batch, shared_data=None):
 
 def my_func(batch, shared_data=None):
     """User-defined processing function for all other points"""
-    print(f"  Processing batch of {len(batch)} points")
-
     if shared_data:
         shm = shared_memory.SharedMemory(name=shared_data['name'])
         debug_img = np.ndarray(shared_data['shape'], dtype=shared_data['dtype'], buffer=shm.buf)
@@ -411,6 +366,8 @@ if __name__ == "__main__":
         # Process with automatic parallelization
         lattice.process_spiral(n_processes=1)
         #print(f"\nFinished processing {len(processed_points)} points")
+        #for batch in lattice.iterate_spiral():
+        #    my_func(batch, shared_data)
 
         # Display final result
         cv2.imshow("Final Result", shared_img)
