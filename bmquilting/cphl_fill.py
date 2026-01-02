@@ -162,7 +162,7 @@ def _distance_to_points(points_mask: np.ndarray) -> np.ndarray:
     """
     np.subtract(1, points_mask, out=points_mask)
     distance_map = cv2.distanceTransform(points_mask, cv2.DIST_L2, 5, dst=points_mask)
-    ksize = min(min(distance_map.shape)//4, 15)
+    ksize = min(min(distance_map.shape)//4 + 1, 15)
     cv2.GaussianBlur(distance_map, (ksize, ksize), sigmaX=0, sigmaY=0, dst=distance_map)
     dst_norm = distance_map.astype(np.float32)
     cv2.normalize(dst_norm, dst_norm, 0, 1, cv2.NORM_MINMAX)
