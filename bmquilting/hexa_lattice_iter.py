@@ -109,8 +109,8 @@ class HexagonalLatticeIterator:
     def _get_points_in_direction(self, start: Vec2_int, direction: Vec2_int) -> Generator[Vec2_int]:
         """Get all points in a given direction from start point"""
         current = (start[0] + direction[0], start[1] + direction[1])
-        while (self._is_valid_point(current) and
-               self._is_on_grid(current)  ):
+        while self._is_valid_point(current):
+            current = self._snap_to_grid(*current)
             yield current
             current = (current[0] + direction[0], current[1] + direction[1])
 
