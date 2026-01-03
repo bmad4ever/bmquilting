@@ -91,8 +91,6 @@ class HexagonalLatticeIterator:
     def _get_hex_neighbors(self, point: Vec2_int) -> list[Vec2_int]:
         """Get the 6 adjacent hexagonal neighbors of a point"""
         x, y = point
-
-        # Hexagonal neighbors depend on whether we're in an even or odd row
         neighbors = [
             (x + self.x_spacing, y),  # right
             (x + self.x_spacing // 2, y + self.y_spacing),  # bottom-right
@@ -101,9 +99,7 @@ class HexagonalLatticeIterator:
             (x - self.x_spacing // 2, y - self.y_spacing),  # top-left
             (x + self.x_spacing // 2, y - self.y_spacing),  # top-right
         ]
-
-        # Filter to only include points that are valid and on grid
-        return [n for n in neighbors if self._is_valid_point(n) and self._is_on_grid(n)]
+        return [self._snap_to_grid(*n) for n in neighbors]
 
     @staticmethod
     def _get_direction_vector(from_point: Vec2_int, to_point: Vec2_int) -> Vec2_int:
