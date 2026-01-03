@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable
 from multiprocessing import shared_memory
 from joblib import Parallel, delayed
 import numpy as np
@@ -11,9 +11,9 @@ import cv2
 Vec2_int = tuple[int, int]
 """(x, y)"""
 
-def _wrap_generator_func(user_func, generator_func, generator_args, shared_data):
+def _wrap_generator_func(user_func, generator_func, generator_args, shared_data=None, job_id=0):
     batch = generator_func(*generator_args)
-    user_func(batch, shared_data)
+    user_func(batch, shared_data, job_id)
 
 class _DebugSet(set):
     def add(self, item):
@@ -37,10 +37,12 @@ class HexagonalLatticeIterator:
         return {k: v for k, v in self.__dict__.items() if k not in ["center_func", "process_func", "shared_data"]}
 
     def __init__(self, min_x, max_x, min_y, max_y, x_spacing, y_spacing,
-                 center_func: Callable = None, process_func: Callable = None,
+                 center_func: Callable[[Vec2_int, dict, int], None] = None,
+                 process_func: Callable[[Iterable[Vec2_int], dict, int], None] = None,
                  shared_data: dict = None):
         """
-        :param process_func: should receive the following args: points_batch, shared_data
+        :param process_func: should receive the following args: points_batch, shared_data, job_id
+        :param center_func: should receive the following args: center_point, shared_data, job_id
         """
         self.min_x = min_x
         self.max_x = max_x
@@ -247,7 +249,7 @@ class HexagonalLatticeIterator:
             for sector_points in sectors:
                 yield sector_points
 
-    def process_spiral(self, n_processes=6):
+    def process_spiral(self, n_processes=4):
         """
         Process the lattice using the strategy pattern with proper parallel execution:
         - First batch (center) processed with center_func (or process_func if center_func not set)
@@ -262,20 +264,25 @@ class HexagonalLatticeIterator:
         if self.process_func is None:
             raise ValueError("process_func must be set to use process_spiral()")
 
-        # Use center_func if provided, otherwise use process_func
-        center_processing_func = self.center_func if self.center_func is not None else self.process_func
+        if n_processes <= 0:
+            raise ValueError("n_processes must be positive")
+
+        if n_processes > 6:
+            raise ValueError("n_processes must be <= 6")
 
         center = self._find_center_point()
 
         # Step 1: Process center with center_func (or process_func)
         print(f"Processing center point: {center}")
-        center_batch = [center]
-        center_processing_func(center_batch, self.shared_data)
+        if self.center_func is None:
+            self.process_func([center], self.shared_data, 0)
+        else:
+            self.center_func(center, self.shared_data, 0)
 
         # Step 2: Process neighbors sequentially
         neighbors = self._get_hex_neighbors(center)
         print(f"Processing {len(neighbors)} immediate neighbors")
-        self.process_func(neighbors, self.shared_data)
+        self.process_func(neighbors, self.shared_data, 0)
 
         # Step 3: Process 6 directions in parallel with joblib
         directions = [self._get_direction_vector(center, n) for n in neighbors]
@@ -288,7 +295,9 @@ class HexagonalLatticeIterator:
                 self.process_func,
                 self._get_points_in_direction,
                 (neighbors[i], direction),
-                self.shared_data)
+                self.shared_data,
+                i  # job_id
+            )
             for i, direction in enumerate(directions)
         )
 
@@ -299,7 +308,9 @@ class HexagonalLatticeIterator:
                 self.process_func,
                 self._get_sector_between,
                 (center, neighbor, neighbors[(i + 1) % len(neighbors)]),
-                self.shared_data)
+                self.shared_data,
+                i  # job_id
+            )
             for i, neighbor in enumerate(neighbors)
         )
 
@@ -311,7 +322,7 @@ def _worker_with_shared_data(batch, func, shared_data):
 
 
 # Example usage
-def my_center_func(batch, shared_data=None):
+def my_center_func(point, shared_data=None, job_id=0):
     """Special function for processing the center point"""
     print("  [CENTER] Processing center")
 
@@ -319,11 +330,11 @@ def my_center_func(batch, shared_data=None):
         shm = shared_memory.SharedMemory(name=shared_data['name'])
         debug_img = np.ndarray(shared_data['shape'], dtype=shared_data['dtype'], buffer=shm.buf)
 
-        for x, y in batch:
-            cv2.circle(debug_img, (int(x + 10), int(y + 10)), 5, (0, 0, 255), -1)
+        x, y = point
+        cv2.circle(debug_img, (int(x + 10), int(y + 10)), 5, (0, 0, 255), -1)
 
 
-def my_func(batch, shared_data=None):
+def my_func(batch, shared_data=None, job_id=0):
     """User-defined processing function for all other points"""
     if shared_data:
         shm = shared_memory.SharedMemory(name=shared_data['name'])
@@ -369,10 +380,10 @@ if __name__ == "__main__":
         #print(f"Total points in lattice: {len(lattice.points)}\n")
 
         # Process with automatic parallelization
-        #lattice.process_spiral(n_processes=1)
+        lattice.process_spiral(n_processes=1)
         #print(f"\nFinished processing {len(processed_points)} points")
-        for batch in lattice._debug_iterate_spiral():
-            my_func(batch, shared_data)
+        #for batch in lattice._debug_iterate_spiral():
+        #    my_func(batch, shared_data)
 
         # Display final result
         cv2.imshow("Final Result", shared_img)

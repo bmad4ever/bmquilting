@@ -160,6 +160,7 @@ class JobMemoryManager:
             self._shm.close()
             try:
                 self._shm.unlink()
+                logger.info("UICD-JMM: shared memory was unlinked.")
             except FileNotFoundError:
                 pass
 
@@ -169,12 +170,13 @@ class JobInterrupted(Exception):
     pass
 
 
-def handle_ui_interrupts(return_on_cancel: any = "INTERRUPTED", auto_close: bool = True):
+def handle_ui_interrupts(return_on_cancel: any = "INTERRUPTED", auto_close: bool = True, re_raise: bool = False):
     """
     Decorator for job functions that handle UI interruptions via UiCoordData.
 
     :param return_on_cancel: The value to return if a JobInterrupted exception is caught.
     :param auto_close: If True, automatically calls .close() on the 'uicd' object found in arguments.
+    :param re_raise: Raise JobInterrupted again after closing uicd.
     """
 
     def decorator(func):
@@ -192,10 +194,15 @@ def handle_ui_interrupts(return_on_cancel: any = "INTERRUPTED", auto_close: bool
             try:
                 return func(*args, **kwargs)
             except JobInterrupted:
+                logger.info("HUI: JobInterrupted catched")
+                if re_raise:
+                    logger.info("HUI: Re-Raise JobInterrupted")
+                    raise JobInterrupted()
                 return return_on_cancel
             finally:
                 if auto_close and uicd is not None:
                     uicd.close()
+
 
         return wrapper
 

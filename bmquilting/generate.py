@@ -85,7 +85,7 @@ def process_block(text_view: np.ndarray, seams_view: np.ndarray,
     check_ui(uicd, 1)
 
 
-@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
+@handle_ui_interrupts(auto_close=True, re_raise=True)
 def _pfill_column(lookup_textures: list[np.ndarray] | SharedTextureList,
                   initial_block, gen_params: GenParams, rows: int, rng: np.random.Generator,
                   initial_block_seams: np.ndarray = None, uicd: UiCoordData | None = None
@@ -124,7 +124,7 @@ def _fill_column_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarra
                       find_patch_below, get_min_cut_patch, gen_params, rng, uicd)
 
 
-@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
+@handle_ui_interrupts(auto_close=True, re_raise=True)
 def _pfill_row(lookup_textures: list[np.ndarray] | SharedTextureList,
                initial_block, gen_params: GenParams, columns: int, rng: np.random.Generator,
                initial_block_seams: np.ndarray = None, uicd: UiCoordData | None = None
@@ -163,7 +163,7 @@ def _fill_row_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
                       find_patch_to_the_right, get_min_cut_patch, gen_params, rng, uicd)
 
 
-@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
+@handle_ui_interrupts(auto_close=True, re_raise=True)
 def _pfill_quad(gen_params: GenParams, texture_map, seams_map,
                 lookup_textures: list[np.ndarray] | SharedTextureList,
                 rng: np.random.Generator, uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
@@ -314,7 +314,6 @@ def generate_texture_parallel(
         funcs = [_pfill_row, _pfill_row, _pfill_column, _pfill_column]
 
         stripes = parallel(delayed(funcs[i])(*args[i]) for i in range(4))
-        check_ui(uicd)  # add nothing, just check for a potential interrupt
 
         text_stripes, smap_stripes = zip(*stripes)
         hs, his, vs, vis = text_stripes
@@ -331,7 +330,6 @@ def generate_texture_parallel(
         ]
         funcs = [_quad1, _quad2, _quad3, _quad4]
         quads = parallel(delayed(funcs[i])(*args[i]) for i in range(4))
-        check_ui(uicd)  # add nothing, just check for a potential interrupt
 
         text_quads, smap_quads = zip(*quads)
         tq1, tq2, tq3, tq4 = text_quads
@@ -640,7 +638,7 @@ class _ParaRowsJobInfo:
     rows: int
 
 
-@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
+@handle_ui_interrupts(auto_close=True, re_raise=True)
 def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiCoordData | None):
     gen_params = job.gen_params
     find_patch_both = get_find_patch_both_method()
