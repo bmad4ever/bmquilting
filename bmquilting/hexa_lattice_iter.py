@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Callable, Generator
 from multiprocessing import shared_memory
 from joblib import Parallel, delayed
@@ -5,14 +7,41 @@ import numpy as np
 import math
 import cv2
 
+# type Vec2_int = tuple[int, int]  BECOMES NOT PICKABLE, can't be used with parallel...
+Vec2_int = tuple[int, int]
+"""(x, y)"""
+
+def _wrap_generator_func(user_func, generator_func, generator_args, shared_data):
+    batch = generator_func(*generator_args)
+    user_func(batch, shared_data)
+
+class _DebugSet(set):
+    def add(self, item):
+        assert item not in self
+        super().add(item)
+
+    def update(self, *iterables):
+        for iterable in iterables:
+            for item in iterable:
+                self.add(item)
+
+    def __ior__(self, other):
+        """Handles the 'set_a |= set_b' syntax"""
+        self.update(other)
+        return self
+
 
 class HexagonalLatticeIterator:
-    type Vec2_int = tuple[int, int]
-    """(x, y)"""
+    def __getstate__(self):
+        """clear external funcs """
+        return {k: v for k, v in self.__dict__.items() if k not in ["center_func", "process_func", "shared_data"]}
 
     def __init__(self, min_x, max_x, min_y, max_y, x_spacing, y_spacing,
                  center_func: Callable = None, process_func: Callable = None,
                  shared_data: dict = None):
+        """
+        :param process_func: should receive the following args: points_batch, shared_data
+        """
         self.min_x = min_x
         self.max_x = max_x
         self.min_y = min_y
@@ -22,6 +51,7 @@ class HexagonalLatticeIterator:
         self.center_func = center_func  # Function specifically for center point
         self.process_func = process_func  # Strategy pattern: user-defined processing function
         self.shared_data = shared_data  # Dictionary containing shared memory info
+
 
     def _is_valid_point(self, point: Vec2_int) -> bool:
         """Check if a point is within the lattice bounds"""
@@ -80,13 +110,11 @@ class HexagonalLatticeIterator:
         """Calculate direction vector between two points"""
         return to_point[0] - from_point[0], to_point[1] - from_point[1]
 
-    def _get_points_in_direction(self, start: Vec2_int, direction: Vec2_int,
-                                 visited: set[Vec2_int]) -> Generator[Vec2_int]:
+    def _get_points_in_direction(self, start: Vec2_int, direction: Vec2_int) -> Generator[Vec2_int]:
         """Get all points in a given direction from start point"""
         current = (start[0] + direction[0], start[1] + direction[1])
         while (self._is_valid_point(current) and
-               self._is_on_grid(current) and
-               current not in visited):
+               self._is_on_grid(current)  ):
             yield current
             current = (current[0] + direction[0], current[1] + direction[1])
 
@@ -118,10 +146,10 @@ class HexagonalLatticeIterator:
         else:  # Wraps around 0
             return test >= start or test <= end
 
-    def _get_sector_between(self, center: Vec2_int, dir1_neighbor: Vec2_int, dir2_neighbor: Vec2_int,
-                            visited: set[Vec2_int]) -> Generator[Vec2_int]:
+    def _get_sector_between(self, center: Vec2_int,
+                            dir1_neighbor: Vec2_int, dir2_neighbor: Vec2_int) -> Generator[Vec2_int]:
         """
-        Get all unvisited points in the sector between angle1 and angle2,
+        Get points in the sector between angle1 and angle2,
         using scanline iteration along the sector boundaries.
         """
         # Calculate direction vectors
@@ -143,15 +171,11 @@ class HexagonalLatticeIterator:
             while True:
                 # Move to next point along angle2 direction
                 scan_point = (scan_point[0] + dir2[0], scan_point[1] + dir2[1])
+                scan_point = self._snap_to_grid(*scan_point)
 
                 # Check bounds
                 if not self._is_valid_point(scan_point):
                     break
-
-                # TODO REMOVE ASSERTS
-                assert self._is_on_grid(scan_point) # DEBUG: confirm they always land on the grid
-                assert scan_point not in visited    # DEBUG: confirm we are not repeating a point on a line or center
-                # TODO once above asserts are removed, the visited can be removed from the func args
 
                 point_angle = self._get_angle(center, scan_point)
                 if self._is_angle_between(point_angle, angle1, angle2):
@@ -163,18 +187,25 @@ class HexagonalLatticeIterator:
             # Move to next scanline along angle1
             current_start = (current_start[0] + dir1[0], current_start[1] + dir1[1])
 
-    def _partition_remaining_points(self, center: Vec2_int,
-                                    neighbors: list[Vec2_int],
-                                    visited: set[Vec2_int]) -> list[Generator[Vec2_int]]:
+    def _partition_remaining_points(self, center: Vec2_int, neighbors: list[Vec2_int], ) -> list[Generator[Vec2_int]]:
         """
-        Partition all remaining unvisited points into 6 triangular sectors.
+        Partition points into 6 triangular sectors.
         Each sector is named by its angle and filled in scan-line fashion from center outward.
         """
         sector_points = [
-            self._get_sector_between(center, neighbor, neighbors[(i + 1) % len(neighbors)], visited)
+            self._get_sector_between(center, neighbor, neighbors[(i + 1) % len(neighbors)])
             for i, neighbor in enumerate(neighbors)
         ]
         return sector_points
+
+    def _debug_iterate_spiral(self):
+        visited = _DebugSet()
+        for batch in self.iterate_spiral():
+            batch = list(batch)
+            for x, y in batch:
+                assert self._is_on_grid((x, y))
+            visited.update(batch)
+            yield batch
 
     def iterate_spiral(self):
         """
@@ -188,19 +219,15 @@ class HexagonalLatticeIterator:
 
         NOTE: This is a generator for manual control. Use process_spiral() for automatic processing.
         """
-        visited = set()
-
         # Step 1: Find and process center point
         center = self._find_center_point()
         print(f"Center point: {center}")
         yield [center]
-        visited.add(center)
 
         # Step 2: Process 6 immediate neighbors
         neighbors = self._get_hex_neighbors(center)
         print(f"Immediate neighbors ({len(neighbors)} points)")
         yield neighbors
-        visited.update(neighbors)
 
         # Step 3: Process points along 6 directions
         if len(neighbors) >= 2:
@@ -208,23 +235,21 @@ class HexagonalLatticeIterator:
 
             directional_points = []
             for i, direction in enumerate(directions):
-                points = self._get_points_in_direction(neighbors[i], direction, visited)
+                points = self._get_points_in_direction(neighbors[i], direction)
                 directional_points.append(points)
 
             print(f"Processing {len(directional_points)} directions sequentially")
             for points in directional_points:
                 if points:
                     yield points
-                    visited.update(points)
 
             # Step 4: Process regions between directions
             print("Processing regions between directions")
-            sectors = self._partition_remaining_points(center, neighbors, visited)
+            sectors = self._partition_remaining_points(center, neighbors)
 
             print(f"Processing {len(sectors)} sectors sequentially")
             for sector_points in sectors:
                 yield sector_points
-                visited.update(sector_points)
 
     def process_spiral(self, n_processes=6):
         """
@@ -244,60 +269,44 @@ class HexagonalLatticeIterator:
         # Use center_func if provided, otherwise use process_func
         center_processing_func = self.center_func if self.center_func is not None else self.process_func
 
-        visited = set()  # Simple set, no need for Manager since we update after batches complete
-
         center = self._find_center_point()
 
         # Step 1: Process center with center_func (or process_func)
         print(f"Processing center point: {center}")
         center_batch = [center]
         center_processing_func(center_batch, self.shared_data)
-        visited.add(center)
 
         # Step 2: Process neighbors sequentially
         neighbors = self._get_hex_neighbors(center)
         print(f"Processing {len(neighbors)} immediate neighbors")
         self.process_func(neighbors, self.shared_data)
-        visited.update(neighbors)
-
-        if len(neighbors) < 2:
-            print(f"Total points processed: {len(visited)}")
-            return
 
         # Step 3: Process 6 directions in parallel with joblib
         directions = [self._get_direction_vector(center, n) for n in neighbors]
         directional_points = []
 
-        for i, direction in enumerate(directions):
-            points = self._get_points_in_direction(neighbors[i], direction, visited)
-            directional_points.append(points)
-
         print(f"Processing {len(directional_points)} directions in parallel")
         parallel = Parallel(n_jobs=n_processes, backend="loky", timeout=None, verbose=0)
         parallel(
-            delayed(self.process_func)(batch, self.shared_data)
-            for batch in directional_points
+            delayed(_wrap_generator_func)(
+                self.process_func,
+                self._get_points_in_direction,
+                (neighbors[i], direction),
+                self.shared_data)
+            for i, direction in enumerate(directions)
         )
-
-        # Update visited after all parallel processes complete
-        for points in directional_points:
-            visited.update(points)
 
         # Step 4: Process 6 sectors in parallel with joblib
         print("Processing sectors between directions")
-        sectors = self._partition_remaining_points(center, neighbors, visited)
-
-        print(f"Processing {len(sectors)} sectors in parallel")
         parallel(
-            delayed(self.process_func)(batch, self.shared_data)
-            for batch in sectors
+            delayed(_wrap_generator_func)(
+                self.process_func,
+                self._get_sector_between,
+                (center, neighbor, neighbors[(i + 1) % len(neighbors)]),
+                self.shared_data)
+            for i, neighbor in enumerate(neighbors)
         )
 
-        # Update visited after all parallel processes complete
-        for sector_points in sectors:
-            visited.update(sector_points)
-
-        print(f"Total points processed: {len(visited)}")
 
 # Worker function to handle shared data
 def _worker_with_shared_data(batch, func, shared_data):
@@ -364,10 +373,10 @@ if __name__ == "__main__":
         #print(f"Total points in lattice: {len(lattice.points)}\n")
 
         # Process with automatic parallelization
-        lattice.process_spiral(n_processes=1)
+        #lattice.process_spiral(n_processes=1)
         #print(f"\nFinished processing {len(processed_points)} points")
-        #for batch in lattice.iterate_spiral():
-        #    my_func(batch, shared_data)
+        for batch in lattice._debug_iterate_spiral():
+            my_func(batch, shared_data)
 
         # Display final result
         cv2.imshow("Final Result", shared_img)
