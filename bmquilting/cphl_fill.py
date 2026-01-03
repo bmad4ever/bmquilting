@@ -283,11 +283,11 @@ def _get_annular_mask(patch_params: CircularPatchParams, dtype_name: str= "float
     return annulus_roi_block
 
 
-def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_map: np.ndarray,
-                               lookup_textures: list[np.ndarray] | SharedTextureList,
-                               x: int, y: int,
-                               config: CircularPatchingConfig,
-                               rng: np.random.Generator):
+def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_map: np.ndarray,
+                              lookup_textures: list[np.ndarray] | SharedTextureList,
+                              x: int, y: int,
+                              config: CircularPatchingConfig,
+                              rng: np.random.Generator):
     """
     Finds and applies a single circular patch at location (x, y).
 
@@ -366,7 +366,7 @@ def _process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams
             # mask out external area while allowing blurring on the overlapping region
             radii_limiter = roi * config.patch_params.diameter
 
-        showInMovedWindow("radii limiter", radii_limiter / np.max(radii_limiter) , 50 + radius * 2 * 4, 25)
+        showInMovedWindow("radii limiter", radii_limiter / max(np.max(radii_limiter), 1e-5) , 50 + radius * 2 * 4, 25)
         mask = create_adaptive_blend_mask(
             tdiff_map=tdiff_map,
             mc_mask_overlap=mask,
@@ -463,7 +463,7 @@ def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
                 cv2.circle(debug_img, (int(x - diameter), int(y - diameter)), radius, color, -1)
                 cv2.circle(debug_img, (int(x - diameter), int(y - diameter)), 5, (0, 0, 0), -1)
 
-            _process_patch_at_location(image, filled_mask, seams_map, lookup_textures, x, y, config, rng)
+            process_patch_at_location(image, filled_mask, seams_map, lookup_textures, x, y, config, rng)
 
     # --- 3. Final Cleanup ---
 
@@ -512,7 +512,7 @@ def min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPix
     showInMovedWindow("rolled polar roi", roi * 255, 100, 200)
 
     errors[roi == 0] = 0  # TODO only for DEBUG purposes, can be removed later
-    showInMovedWindow("errors", errors / np.max(errors), 100 + (8 + roi.shape[1]) * 2, 200)
+    showInMovedWindow("errors", errors / max(np.max(errors), 1e-5), 100 + (8 + roi.shape[1]) * 2, 200)
 
     start_x = end_x = errors.shape[1] - 1
     if offset_row is None:
@@ -572,8 +572,8 @@ def _find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[i
     import pyastar2d
 
     err_len_div4 = errors.shape[0] // 4
-    errors = np.roll(errors, -err_len_div4, axis=0)[err_len_div4 * 2:, :]
-    roi = np.roll(roi, -err_len_div4, axis=0)[err_len_div4*2:, :]
+    errors = np.roll(errors, -err_len_div4, axis=0)[-err_len_div4*2:, :]
+    roi = np.roll(roi, -err_len_div4, axis=0)[-err_len_div4*2:, :]
     showInMovedWindow("rolled roi section", roi * 255, 100 + (8 + roi.shape[1]) * 5, 200)
 
     maze = np.ones((errors.shape[0] + 2, errors.shape[1]), dtype=np.float32)
