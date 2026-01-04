@@ -515,6 +515,7 @@ if importlib.util.find_spec("pyastar2d") is not None:
         :return: ONLY the mask (not the patched overlap section)
         """
         # get min and max safety radii
+        safety_radius = 0  # suppose zero until computed
         if blend_config is not None and blend_config.use_blur_radii_guess_pathfind_limiter:
             min_safe_rad = blend_config.min_blur_diameter // 2
             max_safe_rad = blend_config.max_blur_diameter // 2
@@ -526,30 +527,28 @@ if importlib.util.find_spec("pyastar2d") is not None:
         block1_safe_overlap_view = ref_block[:, :overlap]
         block2_safe_overlap_view = patch_block[:, :overlap]
         if min_safe_rad > 0:
-            # trim to avoid unneeded computations
+            # pre-trim to avoid unneeded computations
             block1_safe_overlap_view = block1_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
             block2_safe_overlap_view = block2_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
 
         err = avg_squared_diff(block1_safe_overlap_view, block2_safe_overlap_view)
 
-        # adjust safety_radius
-        safety_radius = min(
-            # try to get more real estate if errors are small instead of defaulting to max possible radius
-            # mind that this guess is heuristic, err here does not translate directly to the seam diff map
-            # meaning that: without opting for the max blur radius
-            #   there is always the risk of getting a blur near the edges
-            (round(min_safe_rad + (max_safe_rad - min_safe_rad) * np.max(err)) + max_safe_rad) // 2,
-            # safeguard against big save_radius values
-            round(overlap / 3)
-        )
-        print((max_safe_rad - min_safe_rad) * np.max(err))
-        print(min_safe_rad)
-        print(max_safe_rad)
-        print(safety_radius)
-        # trim the err matrix so that values within the adjusted safety radius are not used
-        to_trim = safety_radius - min_safe_rad
-        if to_trim > 0:
-            err = err[:, to_trim:-to_trim]
+        if max_safe_rad > 0:
+            # compute safety_radius & trim the remaining area
+            safety_radius = min(
+                # try to get more real estate if errors are small instead of defaulting to max possible radius
+                # mind that this guess is heuristic, err here does not translate directly to the seam diff map
+                # meaning that: without opting for the max blur radius
+                #   there is always the risk of getting a blur near the edges
+                (round(min_safe_rad + (max_safe_rad - min_safe_rad) * np.max(err)) + max_safe_rad) // 2,
+                # safeguard against big save_radius values
+                overlap // 3
+            )
+
+            # trim the err matrix so that values within the adjusted safety radius are not used
+            to_trim = safety_radius - min_safe_rad
+            if to_trim > 0:
+                err = err[:, to_trim:-to_trim]
 
         adjust_errors_func_inplace(err)
         adjust_errors_for_pystar2d_inplace(err, block_size)

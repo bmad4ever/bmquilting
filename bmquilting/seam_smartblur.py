@@ -283,12 +283,15 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     source_overlap = source[:block_size, :overlap]
     patch_overlap = patch[:block_size, :overlap]
 
-    # Get patched overlap region
-    patched_overlap = apply_mask(source_overlap, 1.0 - cut_mask_overlap) + apply_mask(patch_overlap, cut_mask_overlap)
+    # Get patched overlap region -> mask*patch + (1-mask)*source
+    patched_overlap = patch_overlap.copy(order='C')
+    apply_mask(patched_overlap, cut_mask_overlap, True)
+    patched_overlap += apply_mask(source_overlap, 1 - cut_mask_overlap)
 
     # Compute Gradients Difference & Create Adaptive Blend Mask for the overlap section
     tdiff_map = gradients_differences_at_the_seam(sobel_ksize, cut_mask_overlap,
-                                                  source_overlap, patch_overlap, patched_overlap)
+                                                  source_overlap, patch_overlap, patched_overlap,
+                                                  _tmp=patched_overlap)
     blended = create_adaptive_blend_mask(
         tdiff_map=tdiff_map,
         mc_mask_overlap=cut_mask_overlap,
@@ -303,7 +306,8 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
 
 def gradients_differences_at_the_seam(
         sobel_ksize: int, cut_mask_overlap: np.ndarray,
-        source_overlap: np.ndarray, patch_overlap: np.ndarray, patched_overlap: np.ndarray) -> np.ndarray:
+        source_overlap: np.ndarray, patch_overlap: np.ndarray, patched_overlap: np.ndarray,
+        _tmp: np.ndarray=None) -> np.ndarray:
     """
     This function does the following, albeit minimizing mem. allocations (thus being harder to read).
     1. Get the gradients for all provided textures (source, patch, and patched)
@@ -315,6 +319,11 @@ def gradients_differences_at_the_seam(
     :param source_overlap: source view of the area which overlaps with the patch
     :param patch_overlap: patch view of the area which overlaps with the source
     :param patched_overlap: patched view of the area where source and patch overlap
+
+    :param _tmp: If there is a patch shaped array available with no use,
+    it can be re-used here to avoid an additional allocation.
+    Provided there is no use for the patched_overlap array after this function is called,
+    it can be passed here to slightly optimize memory usage.
 
     :return: a 2D array with shape equal to grad_shape[:2] that contains the gradients differences around the seam
     """
@@ -333,7 +342,7 @@ def gradients_differences_at_the_seam(
     cv2.Sobel(patched_overlap, ddepth, 0, 1, dst=gy, ksize=sobel_ksize)
 
     # Pre-allocate diff array (will reuse)
-    diff_source = np.empty(grad_shape, dtype=_dtype)
+    diff_source = np.empty(grad_shape, dtype=_dtype) if _tmp is None else _tmp
 
     # Compute diff_source in-place
     # diff_source = sqrt((gx_patched - gx_source)² + (gy_patched - gy_source)²)
