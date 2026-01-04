@@ -367,7 +367,7 @@ def gradients_differences_at_the_seam(
 
     # TODO consider adding different methods here, such as the average
     # Take maximum across channels
-    if len(diff_source.shape) == 3:
+    if diff_source.ndim == 3:
         max_diffs_source = np.max(diff_source, axis=2)
         max_diffs_patch = np.max(diff_patch, axis=2)
     else:
