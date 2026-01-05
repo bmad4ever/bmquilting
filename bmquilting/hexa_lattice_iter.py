@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Generator, Iterable
-from multiprocessing import shared_memory
 from joblib import Parallel, delayed
 import numpy as np
 import math
-import cv2
 
 # type Vec2_int = tuple[int, int]  BECOMES NOT PICKABLE, can't be used with parallel...
 Vec2_int = tuple[int, int]
@@ -36,23 +34,22 @@ class HexagonalLatticeIterator:
         """clear external funcs """
         return {k: v for k, v in self.__dict__.items() if k not in ["center_func", "process_func", "shared_data"]}
 
-    def __init__(self, min_x, max_x, min_y, max_y, x_spacing, y_spacing,
-                 center_func: Callable[[Vec2_int, dict, int], None] = None,
+    def __init__(self, min_x, max_x, min_y, max_y, spacing,
+                 first_patch_func: Callable[[Vec2_int, dict, int], None] = None,
                  process_func: Callable[[Iterable[Vec2_int], dict, int], None] = None,
                  shared_data: dict = None):
         """
         :param process_func: should receive the following args: points_batch, shared_data, job_id
-        :param center_func: should receive the following args: center_point, shared_data, job_id
+        :param first_patch_func: should receive the following args: point, shared_data, job_id
         """
         self.min_x = min_x
         self.max_x = max_x
         self.min_y = min_y
         self.max_y = max_y
-        self.x_spacing = x_spacing
-        self.y_spacing = y_spacing
-        self.center_func = center_func  # Function specifically for center point
-        self.process_func = process_func  # Strategy pattern: user-defined processing function
-        self.shared_data = shared_data  # Dictionary containing shared memory info
+        self.spacing = spacing
+        self.first_point_func = first_patch_func
+        self.process_func = process_func
+        self.shared_data = shared_data
 
 
     def _is_valid_point(self, point: Vec2_int) -> bool:
@@ -63,24 +60,24 @@ class HexagonalLatticeIterator:
 
     def _snap_to_grid(self, x: float, y: float) -> Vec2_int:
         """Snap coordinates to the nearest hexagonal grid point"""
-        y_grid = round(y / self.y_spacing) * self.y_spacing
-        row = int(y_grid // self.y_spacing)
-        x_offset = (self.x_spacing // 2) if (row % 2 != 0) else 0
-        x_grid = round((x - x_offset) / self.x_spacing) * self.x_spacing + x_offset
+        y_grid = round(y / self.spacing) * self.spacing
+        row = int(y_grid // self.spacing)
+        x_offset = (self.spacing // 2) if (row % 2 != 0) else 0
+        x_grid = round((x - x_offset) / self.spacing) * self.spacing + x_offset
         return int(x_grid), int(y_grid)
 
     def _is_on_grid(self, point: Vec2_int) -> bool:
         """Check if a point is exactly on the hexagonal grid"""
         x, y = point
 
-        if y % self.y_spacing != 0:
+        if y % self.spacing != 0:
             return False  # not on grid y-wise
 
-        row = y // self.y_spacing
-        x_offset = (self.x_spacing // 2) if (row % 2 != 0) else 0
+        row = y // self.spacing
+        x_offset = (self.spacing // 2) if (row % 2 != 0) else 0
 
         # Check if x is on grid (considering row offset)
-        return (x - x_offset) % self.x_spacing == 0
+        return (x - x_offset) % self.spacing == 0
 
     def _find_center_point(self) -> Vec2_int:
         """Find the lattice point nearest to the center"""
@@ -94,12 +91,12 @@ class HexagonalLatticeIterator:
         """Get the 6 adjacent hexagonal neighbors of a point"""
         x, y = point
         neighbors = [
-            (x + self.x_spacing, y),  # right
-            (x + self.x_spacing // 2, y + self.y_spacing),  # bottom-right
-            (x - self.x_spacing // 2, y + self.y_spacing),  # bottom-left
-            (x - self.x_spacing, y),  # left
-            (x - self.x_spacing // 2, y - self.y_spacing),  # top-left
-            (x + self.x_spacing // 2, y - self.y_spacing),  # top-right
+            (x + self.spacing, y),  # right
+            (x + self.spacing // 2, y + self.spacing),  # bottom-right
+            (x - self.spacing // 2, y + self.spacing),  # bottom-left
+            (x - self.spacing, y),  # left
+            (x - self.spacing // 2, y - self.spacing),  # top-left
+            (x + self.spacing // 2, y - self.spacing),  # top-right
         ]
         return [self._snap_to_grid(*n) for n in neighbors]
 
@@ -196,7 +193,7 @@ class HexagonalLatticeIterator:
         ]
         return sector_points
 
-    def _debug_iterate_spiral(self):
+    def _debug_iterate_spiral(self) -> Iterable[Iterable[Vec2_int]]:
         visited = _DebugSet()
         for batch in self.iterate_spiral():
             batch = list(batch)
@@ -205,9 +202,10 @@ class HexagonalLatticeIterator:
             visited.update(batch)
             yield batch
 
-    def iterate_spiral(self):
+    def iterate_spiral(self) -> Iterable[Iterable[Vec2_int]]:
         """
-        Iterate through the lattice in spiral pattern from center
+        Iterate through the lattice in spiral pattern from center.
+        :return: yields point batches.
 
         Steps:
         1. Find center point
@@ -249,7 +247,7 @@ class HexagonalLatticeIterator:
             for sector_points in sectors:
                 yield sector_points
 
-    def process_spiral(self, n_processes=4):
+    def process_spiral(self, n_processes=4) -> None:
         """
         Process the lattice using the strategy pattern with proper parallel execution:
         - First batch (center) processed with center_func (or process_func if center_func not set)
@@ -274,10 +272,10 @@ class HexagonalLatticeIterator:
 
         # Step 1: Process center with center_func (or process_func)
         print(f"Processing center point: {center}")
-        if self.center_func is None:
+        if self.first_point_func is None:
             self.process_func([center], self.shared_data, 0)
         else:
-            self.center_func(center, self.shared_data, 0)
+            self.first_point_func(center, self.shared_data, 0)
 
         # Step 2: Process neighbors sequentially
         neighbors = self._get_hex_neighbors(center)
@@ -314,83 +312,25 @@ class HexagonalLatticeIterator:
             for i, neighbor in enumerate(neighbors)
         )
 
+    def iterate_row_major(self, mask: np.ndarray | None = None) -> Iterable[Vec2_int]:
+        """
+        :param mask: Mask to filter points of interest.
+            Only points whose value is **zero** on the mask **are** processed.
+        :return: yields individual points (x, y)
+        """
+        has_mask = mask is not None
+        if has_mask:
+            if mask.shape[0] <= self.max_y - self.min_y:
+                raise ValueError("mask must not be smaller than max_y - min_y")
+            if mask.shape[1] <= self.max_x - self.min_x:
+                raise ValueError("mask must not be smaller than max_x - min_x")
 
-# Worker function to handle shared data
-def _worker_with_shared_data(batch, func, shared_data):
-    """Wrapper that reconstructs shared memory and calls the user function"""
-    return func(batch, shared_data)
+        for y in range(int(self.min_y), int(self.max_y + self.spacing), self.spacing):
+            for x in range(int(self.min_x), int(self.max_x + self.spacing), self.spacing):
+                if (y // self.spacing) % 2 != 0:  # offset every odd row to create a hexagonal pattern
+                    x += self.spacing // 2
 
+                if has_mask and mask[y, x] > 0:
+                    continue    # skip if non zero
 
-# Example usage
-def my_center_func(point, shared_data=None, job_id=0):
-    """Special function for processing the center point"""
-    print("  [CENTER] Processing center")
-
-    if shared_data:
-        shm = shared_memory.SharedMemory(name=shared_data['name'])
-        debug_img = np.ndarray(shared_data['shape'], dtype=shared_data['dtype'], buffer=shm.buf)
-
-        x, y = point
-        cv2.circle(debug_img, (int(x + 10), int(y + 10)), 5, (0, 0, 255), -1)
-
-
-def my_func(batch, shared_data=None, job_id=0):
-    """User-defined processing function for all other points"""
-    if shared_data:
-        shm = shared_memory.SharedMemory(name=shared_data['name'])
-        debug_img = np.ndarray(shared_data['shape'], dtype=shared_data['dtype'], buffer=shm.buf)
-
-        for x, y in batch:
-            cv2.circle(debug_img, (int(x + 10), int(y + 10)), 5, (255, 255, 255), -1)
-            cv2.imshow("ITER", debug_img)
-            cv2.waitKey(0)
-
-
-
-if __name__ == "__main__":
-    # Create shared memory for the image
-    debug_img = np.zeros((220, 120, 3), dtype=np.uint8)
-
-    # Create shared memory block
-    shm = shared_memory.SharedMemory(create=True, size=debug_img.nbytes)
-
-    # Create a numpy array backed by shared memory
-    shared_img = np.ndarray(debug_img.shape, dtype=debug_img.dtype, buffer=shm.buf)
-    shared_img[:] = debug_img[:]  # Copy initial data
-
-    # Package shared memory info
-    shared_data = {
-        'name': shm.name,
-        'shape': debug_img.shape,
-        'dtype': debug_img.dtype
-    }
-
-    print("=== Processing with shared memory ===\n")
-
-    try:
-        lattice = HexagonalLatticeIterator(
-            min_x=0, max_x=100,
-            min_y=0, max_y=200,
-            x_spacing=10, y_spacing=10,
-            center_func=my_center_func,
-            process_func=my_func,
-            shared_data=shared_data  # Pass shared memory info
-        )
-
-        #print(f"Total points in lattice: {len(lattice.points)}\n")
-
-        # Process with automatic parallelization
-        lattice.process_spiral(n_processes=1)
-        #print(f"\nFinished processing {len(processed_points)} points")
-        #for batch in lattice._debug_iterate_spiral():
-        #    my_func(batch, shared_data)
-
-        # Display final result
-        cv2.imshow("Final Result", shared_img)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-    finally:
-        # Clean up shared memory
-        shm.close()
-        shm.unlink()
+                yield x, y
