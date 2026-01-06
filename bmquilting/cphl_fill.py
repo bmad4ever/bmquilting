@@ -355,7 +355,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
                                                       _tmp=patched)
 
         if config.blend_config.use_blur_radii_limiter:
-            radii_limiter = cv2.distanceTransform(roi.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3)
+            radii_limiter = cv2.distanceTransform(roi.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3, dstType=cv2.CV_32F)
             cv2.GaussianBlur(radii_limiter, (5, 5), 5, dst=radii_limiter)
             # note: alternatively, I could cache a limiter using annular mask, this would be way more efficient;
             #       however, such solution may have a blur derived seam at the transition between the
@@ -668,16 +668,99 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
 
 def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst:np.ndarray=None) -> np.ndarray:
     center = (patch_params.center, patch_params.center)
-    vignette = (roi>0).astype(np.uint8)  # copy & change dtype for dist. transf
-    cv2.floodFill(vignette, None, center, (1,))
-    vignette = cv2.distanceTransform(vignette, cv2.DIST_L2, cv2.DIST_MASK_3, dst=dst)
-    cv2.GaussianBlur(vignette, (5, 5), 0, dst=vignette)
-    vignette[vignette>=patch_params.overlap_radius] = 0
-    vignette[vignette<=0] = np.max(vignette)
+    ks = patch_params.radius//3+1
+
+    radial = (roi>0).astype(np.uint8)  # copy & set dtype for dist. transf
+    _radial_extrapolate(radial, patch_params.radius - 2, radial)
+
+    # Patch the transition going from the overlapping area to the non overlapping area
+    patch_edge = cv2.distanceTransform(radial, cv2.DIST_L2, cv2.DIST_MASK_3, dstType=cv2.CV_32F)
+    patch_edge[patch_edge > patch_params.overlap_radius] = patch_params.overlap_radius
+    np.subtract(patch_params.overlap_radius, patch_edge, out=patch_edge)
+    cv2.normalize(patch_edge, patch_edge, 0, 1, cv2.NORM_MINMAX, cv2.CV_32F)
+    #cv2.dilate(patch_edge, np.ones((3, 3), dtype=np.float32), dst=patch_edge)
+
+    # Create the vignette fading into the prior, already placed, texture
+    np.subtract(1, radial, out=radial)
+    cv2.circle(radial, center, patch_params.radius, (1,), -1)
+    vignette = cv2.distanceTransform(radial, cv2.DIST_L2, cv2.DIST_MASK_3, dst=dst, dstType=cv2.CV_32F)
+    vignette[vignette > patch_params.overlap_radius] = patch_params.overlap_radius
     cv2.normalize(vignette, vignette, 0, 1, cv2.NORM_MINMAX, cv2.CV_32F)
-    np.clip(vignette, 0, 1, out=vignette)
-    vignette **= 1/6
+    cv2.blur(vignette, (ks, ks), dst=vignette)
+
+    np.maximum(vignette, patch_edge, out=vignette)
+
+    vignette **= 1/7
     return vignette
+
+
+@lru_cache(maxsize=2)
+def _get_radial_map(h: NumPixels, w: NumPixels, radius: NumPixels) -> tuple[np.ndarray, np.ndarray]:
+    """:return: (pixel coordinates: CV_16SC2, interpolation coefficients: CV_16UC1)"""
+    cx, cy = w // 2, h // 2
+
+    # Allocate one contiguous block of memory so that coords & coeffs are adjacent in memory
+    total_elements = h * w * 3
+    raw_data = np.empty(total_elements, dtype=np.uint16)
+
+    # Create views
+    coords = raw_data[:h * w * 2].view(np.int16).reshape(h, w, 2)
+    coeffs = raw_data[h * w * 2:].reshape(h, w)
+
+    # Compute map in float32
+    y, x = np.indices((h, w))
+    dx, dy = x - cx, y - cy
+    theta = np.arctan2(dy, dx)
+
+    tmp_float_map = np.empty((h, w, 2), dtype=np.float32)
+    tmp_float_map[..., 0] = cx + radius * np.cos(theta)
+    tmp_float_map[..., 1] = cy + radius * np.sin(theta)
+
+    # Convert to integer coordinates + coefficients in
+    cv2.convertMaps(tmp_float_map, None, cv2.CV_16SC2,
+                    dstmap1=coords, dstmap2=coeffs)
+
+    return coords, coeffs
+
+
+
+def _radial_extrapolate(mask: np.ndarray, radius: NumPixels, dst:np.ndarray=None) -> np.ndarray:
+    coords, coeffs = _get_radial_map(mask.shape[0], mask.shape[1], radius)
+    return cv2.remap(mask, coords, coeffs, cv2.INTER_NEAREST, dst, cv2.BORDER_REPLICATE)
+
+
+
+def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
+                                 lookup_textures: list[np.ndarray] | SharedTextureList,
+                                 x: int, y: int,
+                                 config: CircularPatchingConfig,
+                                 rng: np.random.Generator):
+    """
+        Note: despite not updating seams, this function is prepared to handle non-empty image sources so
+        that it can be repurposed for other use cases besides selecting the 1st patch when generating a texture.
+    """
+    radius = config.patch_params.radius
+    center = config.patch_params.center
+    block_size = config.patch_params.block_size
+    y1, y2, x1, x2 = y - radius, y + radius + 1, x - radius, x + radius + 1
+
+    # Random patch selection
+    rnd_lookup = lookup_textures[rng.integers(len(lookup_textures))]
+    h, w = rnd_lookup.shape[:2]
+    rand_h = rng.integers(h - block_size)
+    rand_w = rng.integers(w - block_size)
+    start_block = rnd_lookup[rand_h:rand_h + block_size, rand_w:rand_w + block_size]
+
+    # Create circular mask
+    mask = np.ones((block_size, block_size), dtype=filled_mask.dtype)
+    cv2.circle(mask, (center, center), radius, (0,), -1)
+
+    # Update image & Filled mask
+    apply_mask(image[y1:y2, x1:x2], mask, True)
+    np.subtract(1, mask, out=mask)
+    np.maximum(mask, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
+    image[y1:y2, x1:x2] += apply_mask(start_block, mask)
+
 
 
 if __name__ == "__main__":
