@@ -377,7 +377,8 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     if config.blend_into_patch and config.blend_config.use_vignette:
         # due to blending, patched is not used as is; therefore, re-used patched array, no need to allocate a new one.
         vignette = patched.reshape(patched.shape[0], -1)
-        vignette = _setup_vignette(roi, config.patch_params, dst=vignette)
+        aux = vignette[:, vignette.shape[0]:]  # use patched second channels for auxiliary operations
+        vignette = _setup_vignette(roi, config.patch_params, dst=vignette, _tmp=aux)
         np.minimum(mask, vignette, out=mask)
         showInMovedWindow("vignette", vignette, 50 + radius * 2 * 5, 25)
 
@@ -666,7 +667,8 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
     return lookup_textures[best_texture_idx][best_y:best_y+block_size, best_x:best_x+block_size]
 
 
-def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst:np.ndarray=None) -> np.ndarray:
+def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst:np.ndarray=None,
+                    _tmp:np.ndarray=None) -> np.ndarray:
     center = (patch_params.center, patch_params.center)
     ks = patch_params.radius//3+1
 
@@ -674,7 +676,7 @@ def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst:np.n
     _radial_extrapolate(radial, patch_params.radius - 2, radial)
 
     # Patch the transition going from the overlapping area to the non overlapping area
-    patch_edge = cv2.distanceTransform(radial, cv2.DIST_L2, cv2.DIST_MASK_3, dstType=cv2.CV_32F)
+    patch_edge = cv2.distanceTransform(radial, cv2.DIST_L2, cv2.DIST_MASK_3, dst=_tmp, dstType=cv2.CV_32F)
     patch_edge[patch_edge > patch_params.overlap_radius] = patch_params.overlap_radius
     np.subtract(patch_params.overlap_radius, patch_edge, out=patch_edge)
     cv2.normalize(patch_edge, patch_edge, 0, 1, cv2.NORM_MINMAX, cv2.CV_32F)
