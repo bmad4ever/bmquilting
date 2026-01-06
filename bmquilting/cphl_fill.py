@@ -670,7 +670,8 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
 def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst:np.ndarray=None,
                     _tmp:np.ndarray=None) -> np.ndarray:
     center = (patch_params.center, patch_params.center)
-    ks = patch_params.radius//3+1
+    dilate_kernel_size = patch_params.radius // 8 + 1
+    blur_kernel_size = patch_params.radius//4+1
 
     radial = (roi>0).astype(np.uint8)  # copy & set dtype for dist. transf
     _radial_extrapolate(radial, patch_params.radius - 2, radial)
@@ -680,7 +681,6 @@ def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst:np.n
     patch_edge[patch_edge > patch_params.overlap_radius] = patch_params.overlap_radius
     np.subtract(patch_params.overlap_radius, patch_edge, out=patch_edge)
     cv2.normalize(patch_edge, patch_edge, 0, 1, cv2.NORM_MINMAX, cv2.CV_32F)
-    #cv2.dilate(patch_edge, np.ones((3, 3), dtype=np.float32), dst=patch_edge)
 
     # Create the vignette fading into the prior, already placed, texture
     np.subtract(1, radial, out=radial)
@@ -688,11 +688,13 @@ def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst:np.n
     vignette = cv2.distanceTransform(radial, cv2.DIST_L2, cv2.DIST_MASK_3, dst=dst, dstType=cv2.CV_32F)
     vignette[vignette > patch_params.overlap_radius] = patch_params.overlap_radius
     cv2.normalize(vignette, vignette, 0, 1, cv2.NORM_MINMAX, cv2.CV_32F)
-    cv2.blur(vignette, (ks, ks), dst=vignette)
+    cv2.blur(vignette, (blur_kernel_size, blur_kernel_size), dst=vignette)
 
     np.maximum(vignette, patch_edge, out=vignette)
 
-    vignette **= 1/7
+    cv2.dilate(vignette, np.ones((dilate_kernel_size, dilate_kernel_size), dtype=np.float32), dst=vignette)
+    np.clip(vignette, 0, 1, out=vignette)
+    vignette **= 1/5
     return vignette
 
 
@@ -718,7 +720,8 @@ def _get_radial_map(h: NumPixels, w: NumPixels, radius: NumPixels) -> tuple[np.n
     tmp_float_map[..., 0] = cx + radius * np.cos(theta)
     tmp_float_map[..., 1] = cy + radius * np.sin(theta)
 
-    # Convert to integer coordinates + coefficients in
+    # Convert to integer coordinates + coefficients
+    # noinspection PyTypeChecker
     cv2.convertMaps(tmp_float_map, None, cv2.CV_16SC2,
                     dstmap1=coords, dstmap2=coeffs)
 
