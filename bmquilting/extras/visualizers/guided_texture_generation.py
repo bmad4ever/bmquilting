@@ -206,7 +206,7 @@ class GuidedTextureApp:
             overlap = round(block_size / 3.0)
 
             # Blend config
-            blend_config = auto_blend_config_2(9, overlap, 1, False)
+            blend_config = auto_blend_config_2(9, overlap, False)
             blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
 
             gen_params = GenParams(

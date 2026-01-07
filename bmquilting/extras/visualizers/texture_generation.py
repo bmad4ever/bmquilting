@@ -35,7 +35,6 @@ class TextureGeneratorApp:
 
         # Auto blend config
         self.auto_sobel_kernel_var = tk.IntVar(value=7)
-        self.auto_min_blur_var = tk.IntVar(value=3)
         self.auto_use_vignette_var = tk.BooleanVar(value=False)
 
         # Manual blend config
@@ -277,11 +276,6 @@ class TextureGeneratorApp:
         tk.Label(auto_sobel_frame, text="Sobel Kernel Size:", width=20, anchor=tk.W).pack(side=tk.LEFT)
         tk.Entry(auto_sobel_frame, textvariable=self.auto_sobel_kernel_var, width=10).pack(side=tk.LEFT, padx=5)
 
-        auto_minblur_frame = tk.Frame(auto_frame)
-        auto_minblur_frame.pack(anchor=tk.W, pady=2)
-        tk.Label(auto_minblur_frame, text="Min Blur Diameter:", width=20, anchor=tk.W).pack(side=tk.LEFT)
-        tk.Entry(auto_minblur_frame, textvariable=self.auto_min_blur_var, width=10).pack(side=tk.LEFT, padx=5)
-
         auto_vig_frame = tk.Frame(auto_frame)
         auto_vig_frame.pack(anchor=tk.W, pady=2)
         tk.Checkbutton(auto_vig_frame, text="Use vignette", variable=self.auto_use_vignette_var).pack(side=tk.LEFT)
@@ -403,7 +397,6 @@ class TextureGeneratorApp:
                     blend_config = auto_blend_config_2(
                         self.auto_sobel_kernel_var.get(),
                         overlap,
-                        self.auto_min_blur_var.get(),
                         self.auto_use_vignette_var.get()
                     )
                 else:
@@ -431,7 +424,7 @@ class TextureGeneratorApp:
                         tex = np.flipud(np.fliplr(np.transpose(tex, (1, 0, 2))))
                     lookup_textures.append(tex)
 
-            gen_args = GenParams(
+            gen_params = GenParams(
                 block_size=block_size,
                 overlap=overlap,
                 tolerance=tolerance,
@@ -446,7 +439,7 @@ class TextureGeneratorApp:
             if nps < 0:
                 seamless_texture, seams_map = generate_texture_diagonal(
                     src_textures=lookup_textures,
-                    gen_args=gen_args,
+                    gen_params=gen_params,
                     out_h=self.out_height_var.get(),
                     out_w=self.out_width_var.get(),
                     rng=rand_gen,
@@ -455,7 +448,7 @@ class TextureGeneratorApp:
             elif nps == 0:
                 seamless_texture, seams_map = generate_texture(
                     src_textures=lookup_textures,
-                    gen_args=gen_args,
+                    gen_params=gen_params,
                     out_h=self.out_height_var.get(),
                     out_w=self.out_width_var.get(),
                     rng=rand_gen,
@@ -464,7 +457,7 @@ class TextureGeneratorApp:
             else:
                 seamless_texture, seams_map = generate_texture_parallel(
                     src_textures=lookup_textures,
-                    gen_args=gen_args,
+                    gen_params=gen_params,
                     out_h=self.out_height_var.get(),
                     out_w=self.out_width_var.get(),
                     nps=nps,

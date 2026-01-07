@@ -143,7 +143,7 @@ class SeamlessTextureApp:
         # Vignette on match template
         vignette_frame = tk.Frame(left_params)
         vignette_frame.pack(anchor=tk.W, pady=5)
-        self.vignette_match_var = tk.BooleanVar(value=True)
+        self.vignette_match_var = tk.BooleanVar(value=False)
         tk.Checkbutton(vignette_frame, text="Use vignette on match template",
                        variable=self.vignette_match_var).pack(side=tk.LEFT)
 
@@ -179,13 +179,6 @@ class SeamlessTextureApp:
         tk.Label(auto_sobel_frame, text="Sobel Kernel Size:", width=18, anchor=tk.W).pack(side=tk.LEFT)
         self.auto_sobel_kernel_var = tk.IntVar(value=5)
         tk.Entry(auto_sobel_frame, textvariable=self.auto_sobel_kernel_var, width=10).pack(side=tk.LEFT, padx=5)
-
-        # Min blur diameter (for auto config 2)
-        auto_minblur_frame = tk.Frame(self.auto_blend_frame)
-        auto_minblur_frame.pack(anchor=tk.W, pady=2)
-        tk.Label(auto_minblur_frame, text="Min Blur Diameter:", width=18, anchor=tk.W).pack(side=tk.LEFT)
-        self.auto_min_blur_var = tk.IntVar(value=1)
-        tk.Entry(auto_minblur_frame, textvariable=self.auto_min_blur_var, width=10).pack(side=tk.LEFT, padx=5)
 
         # Use vignette (for auto config 2)
         auto_vig_frame = tk.Frame(self.auto_blend_frame)
@@ -406,7 +399,7 @@ class SeamlessTextureApp:
             # Calculate or get overlap
             overlap_str = self.overlap_var.get().strip().lower()
             if overlap_str == "auto":
-                overlap = round(block_size / 2.5)
+                overlap = round(block_size / 2.8)
             else:
                 try:
                     overlap = int(overlap_str)
@@ -430,9 +423,8 @@ class SeamlessTextureApp:
                 blend_mode = self.blend_mode_var.get()
                 if blend_mode == "auto":
                     sobel_kernel = self.auto_sobel_kernel_var.get()
-                    min_blur = self.auto_min_blur_var.get()
                     use_vignette = self.auto_use_vignette_var.get()
-                    blend_config = auto_blend_config_2(sobel_kernel, overlap, min_blur, use_vignette)
+                    blend_config = auto_blend_config_2(sobel_kernel, overlap, use_vignette)
                 else:  # manual
                     use_vignette = self.use_vignette_var.get()
                     sobel_kernel = self.sobel_kernel_var.get()
@@ -477,7 +469,7 @@ class SeamlessTextureApp:
                     transposed = np.transpose(src_img_bgr, (1, 0, 2))
                     lookup_textures.append(np.flipud(np.fliplr(transposed)))
 
-            gen_args = GenParams(
+            gen_params = GenParams(
                 block_size=block_size,
                 overlap=overlap,
                 tolerance=tolerance,
@@ -496,7 +488,7 @@ class SeamlessTextureApp:
             direction = self.direction_var.get()
             seamless_texture, seams_map = seamless_multi_patch_functions[direction](
                 image=src_img_bgr,
-                gen_args=gen_args,
+                gen_params=gen_params,
                 rng=rand_gen,
                 lookup_textures=lookup_textures
             )

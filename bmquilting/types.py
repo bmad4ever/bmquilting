@@ -29,8 +29,6 @@ class BlendConfig:
 
     use_vignette: bool = True  # TODO? could add vignette params here, but might be overkill
 
-    blend_scale: float = 1  # TODO... likely to be removed
-
     blur_size_func: FuncWrapper = field(default_factory=LogScalingFunc)
     """
     Function used to remap the Normalized Gradient Differences (NGDs) computed around the seam.

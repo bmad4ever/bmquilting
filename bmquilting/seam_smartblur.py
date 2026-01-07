@@ -8,7 +8,6 @@ from .types import GenParams, BlendConfig, NumPixels
 
 
 DEFAULT_MAX_BLEND_RATIO = 0.95  # percentage of the overlap size that can be used for blending purposes
-DEFAULT_BLEND_SCALE = 1.0
 
 USE_SCHAAR_WHEN_KSIZE_EQUALS_3 = True
 
@@ -17,10 +16,8 @@ def debug_resize(arr, factor=2):
     return cv2.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
 
 
-def auto_blend_config_2(sobel_kernel_size: NumPixels, overlap: NumPixels,
-                        blend_scale: float = DEFAULT_BLEND_SCALE, use_vignette: bool = False) -> BlendConfig:
+def auto_blend_config_2(sobel_kernel_size: NumPixels, overlap: NumPixels, use_vignette: bool = False) -> BlendConfig:
     return BlendConfig(
-        blend_scale=blend_scale,
         use_vignette=use_vignette,
         sobel_kernel_size=sobel_kernel_size,
         min_blur_diameter=auto_min_blend_size(sobel_kernel_size),
@@ -28,10 +25,8 @@ def auto_blend_config_2(sobel_kernel_size: NumPixels, overlap: NumPixels,
     )
 
 
-def auto_blend_config_1(block_size: NumPixels, overlap: NumPixels,
-                        blend_scale: float = DEFAULT_BLEND_SCALE, use_vignette: bool = False) -> BlendConfig:
+def auto_blend_config_1(block_size: NumPixels, overlap: NumPixels, use_vignette: bool = False) -> BlendConfig:
     return auto_blend_config_2(
-        blend_scale=blend_scale,
         use_vignette=use_vignette,
         sobel_kernel_size=min(ceil(overlap / 2.0), ceil(block_size // 5 / 2.0)),
         overlap=overlap
@@ -179,7 +174,7 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     blend_config.blur_size_func.inplace_func(tdiff_norm)
 
     # Map tdiff values to blend widths
-    blend_diameters = min_blur_diameter + (max_blur_diameter - min_blur_diameter) * (tdiff_norm ** blend_config.blend_scale)
+    blend_diameters = min_blur_diameter + (max_blur_diameter - min_blur_diameter) * tdiff_norm
     max_blur_diameter_found = round(np.max(blend_diameters))
     blend_radii = np.divide(blend_diameters, 2, out=blend_diameters)
 
