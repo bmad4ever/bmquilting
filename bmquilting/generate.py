@@ -5,7 +5,7 @@ from .synthesis_subroutines import (
 from .types import GenParams, NumPixels, _2D_Slice
 from .misc.shmem_utils import SharedTextureList
 from .misc.texture_utils import quick_checksum
-from .misc.custom_decorators import clear_cache_post_exec
+from .misc.custom_decorators import clear_cache_post_exec, step_predictor
 from .misc.ui_coord import handle_ui_interrupts, UiCoordData, check_ui
 
 from multiprocessing.shared_memory import SharedMemory
@@ -276,7 +276,7 @@ def generate_texture_parallel(
         # might get 1 more row or column than needed here
 
         # Patch the central area containing the central block shared by in all the stripes
-        gen_res = generate_texture.__wrapped__(  # access wrapped to avoid clearing cache
+        gen_res = generate_texture.__wrapped__.__wrapped__ (  # access wrapped to avoid clearing cache
             src_textures,
             gen_params,
             block_size + 2 * (block_size - overlap),  # 2*overlap would suffice, but seams would have an offset
@@ -700,6 +700,15 @@ def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiC
 
 # region    non-parallel solutions
 
+def _generate_texture_step_predictor(gen_params: GenParams, out_h: NumPixels, out_w: NumPixels):
+    block_size = gen_params.block_size
+    overlap = gen_params.overlap
+    n_h = int(ceil((out_h - block_size) / (block_size - overlap)))
+    n_w = int(ceil((out_w - block_size) / (block_size - overlap)))
+    return n_h * (n_w+1) + 1
+
+
+@step_predictor(_generate_texture_step_predictor)
 @clear_cache_post_exec()
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_texture(src_textures: list[np.ndarray],
