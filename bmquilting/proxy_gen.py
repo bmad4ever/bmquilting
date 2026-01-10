@@ -2,8 +2,9 @@ from .synthesis_subroutines import (
     get_min_cut_patch_horizontal_method, get_min_cut_patch_vertical_method, get_min_cut_patch_both_method,
     update_seams_map_view, find_patch_vx_idx, apply_mask)
 from .types import GenParams, NumPixels, PatchIdx
-from .misc.custom_decorators import clear_cache_post_exec
 from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui
+from .misc.custom_decorators import clear_cache_post_exec, step_predictor
+from .generate import _generate_texture_step_predictor
 from math import ceil
 import numpy as np
 
@@ -36,8 +37,8 @@ def _compute_synthesis_map(
     image = proxy_textures[rand_tex_idx]
 
     texture_map = np.zeros(
-        ((b + n_h * (b - o)),
-         (b + n_w * (b - o)),
+        ((b + n_h * bmo),
+         (b + n_w * bmo),
          image.shape[2]), dtype=image.dtype)
 
     patch_indices: list[PatchIdx] = []  # text index, row, column
@@ -116,6 +117,7 @@ def _compute_synthesis_map(
         return texture_map, seams_map
 
     # --- Generate ---
+    check_ui(uicd, 1)  # from 1st patch
     fill_row_inplace_proxy()
     fill_quad_proxy()
 
@@ -185,6 +187,11 @@ def _reconstruct_texture(textures: list[np.ndarray],
     return texture_map[:out_h, :out_w]
 
 
+def _generate_guided_steps_predictor(gen_params: GenParams, out_h: NumPixels, out_w: NumPixels):
+    return 2 * _generate_texture_step_predictor(gen_params=gen_params, out_h=out_h, out_w=out_w)
+
+
+@step_predictor(_generate_guided_steps_predictor)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def generate_guided(
         proxy_textures: list[np.ndarray],

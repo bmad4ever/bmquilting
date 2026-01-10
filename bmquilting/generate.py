@@ -705,7 +705,7 @@ def _generate_texture_step_predictor(gen_params: GenParams, out_h: NumPixels, ou
     overlap = gen_params.overlap
     n_h = int(ceil((out_h - block_size) / (block_size - overlap)))
     n_w = int(ceil((out_w - block_size) / (block_size - overlap)))
-    return n_h * (n_w+1) + 1
+    return (n_h + 1) * (n_w + 1)
 
 
 @step_predictor(_generate_texture_step_predictor)
@@ -747,7 +747,7 @@ def generate_texture(src_textures: list[np.ndarray],
     del image  # access texture list instead after this point
 
     # --- "Purist" generation: fill only the 1st row and then the rest ---
-    _fill_row_inplace(texture_map[:block_size, :], seams_map[:block_size, :], src_textures, gen_params, rng)
+    _fill_row_inplace(texture_map[:block_size, :], seams_map[:block_size, :], src_textures, gen_params, rng, uicd)
     _fill_quad_purist(gen_params, texture_map, seams_map, src_textures, rng, uicd)
 
     # fix overvalues due to seams overlap
@@ -828,5 +828,6 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
             process_block(texture_map, seams_map, src_textures, block_idx, find_patch, find_cut, gen_params, rng)
 
     return texture_map[o:o + out_h, o:o + out_w], seams_map[o:o + out_h, o:o + out_w]
+
 
 # endregion
