@@ -209,6 +209,17 @@ def _fill_quad_purist(gen_params: GenParams, texture_map, seams_map,
 
 # region    parallel solution
 
+def _parallel_generate_texture_step_predictor(gen_params: GenParams, out_h: NumPixels, out_w: NumPixels):
+    quad_row_width = out_w / 2
+    quad_column_height = out_h / 2
+    block_size = gen_params.block_size
+    overlap = gen_params.overlap
+    cols_per_quad = int(ceil((quad_row_width - block_size) / (block_size - overlap)))  # w/o the last full block
+    rows_per_quad = int(ceil((quad_column_height - block_size) / (block_size - overlap)))
+    return 9 + cols_per_quad * rows_per_quad * 4 + (cols_per_quad-1)*2+(rows_per_quad-1)*2
+
+
+@step_predictor(_parallel_generate_texture_step_predictor)
 @clear_cache_post_exec()
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_texture_parallel(
