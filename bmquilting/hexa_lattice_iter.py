@@ -325,10 +325,18 @@ class HexagonalLatticeIterator:
             if mask.shape[1] <= self.max_x - self.min_x:
                 raise ValueError("mask must not be smaller than max_x - min_x")
 
-        for y in range(int(self.min_y), int(self.max_y + self.spacing), self.spacing):
-            for x in range(int(self.min_x), int(self.max_x + self.spacing), self.spacing):
+        _, _sy = self._snap_to_grid(0, self.min_y)
+        _sx, _ = self._snap_to_grid(self.min_x, 0)
+
+        for y in range(int(_sy), int(self.max_y + 1), self.spacing):
+            for x in range(int(_sx), int(self.max_x + 1), self.spacing):
                 if (y // self.spacing) % 2 != 0:  # offset every odd row to create a hexagonal pattern
                     x += self.spacing // 2
+
+                x, y = self._snap_to_grid(x, y)
+
+                if not self._is_valid_point((x, y)):
+                    continue
 
                 if has_mask and mask[y, x] > 0:
                     continue    # skip if non zero
