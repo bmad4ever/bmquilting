@@ -4,7 +4,7 @@ from .synthesis_subroutines import (
 from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui
 from .generate import RetOnInterrupt, ret_val_on_interrupt
 from .misc.custom_decorators import clear_cache_post_exec
-from .make_seamless import _patch_horizontal_seam
+from .seamless_multipatch import _patch_horizontal_seam
 from .types import GenParams
 import dataclasses
 import numpy as np

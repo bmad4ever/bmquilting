@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
-import bmquilting.make_seamless as ms_mp
+import bmquilting.seamless_multipatch as ms_mp
 from bmquilting.types import GenParams
 from bmquilting.seam_smartblur import auto_blend_config_2
 from bmquilting.types import BlendConfig, SquarePatchingBlendConfig
