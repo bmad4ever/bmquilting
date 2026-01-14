@@ -4,24 +4,23 @@ setup(
     name='bmquilting',
     author="Bruno Madeira",
     author_email="bmad.works@gmail.com",
-    version='1.0.0',
+    version='2.0.0a1',   # TODO remove suffix on release
     packages=find_packages(exclude=[
-        'bmquilting.bmq_comfyui_utils',
-        'bmquilting.bmq_comfyui_utils.*'
-        ]
+        'bmquilting.extras', 
+        'bmquilting.extras.*']
     ),
     install_requires=[
         'numpy>=1.23.5',
         'joblib>=1.3.2',
         'opencv-python>=4.0.1.24',
-        'scikit-learn>=1.3.1',
+        'pyastar2d==1.0.6',
+        'scikit-learn>=1.3.1',  # TODO only used by bse_desc_util.py, consider making it an extra.
     ],
     extras_require={
-        'astar': ['pyastar2d==1.0.6'],
         'fast': ['numba>=0.62.1'],
-        'comfy': [
-            'bmq-comfyui-utils @ git+https://github.com/bmad4ever/bmquilting.git#egg=bmq-comfyui-utils&subdirectory=bmquilting/bmq_comfyui_utils'
-        ]
+        'extras': [
+            'bmq-extras @ git+https://github.com/bmad4ever/bmquilting.git#egg=bmq-extras&subdirectory=bmquilting/extras'
+        ],
     }
 )
 
