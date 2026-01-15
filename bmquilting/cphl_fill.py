@@ -24,7 +24,7 @@ except:
     from bmquilting.seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_2
     from bmquilting.misc.shmem_utils import SharedTextureList
 
-TEMP_BLEND_CONFIG = auto_blend_config_2(9, 40, 1, True)
+TEMP_BLEND_CONFIG = auto_blend_config_2(9, 40,  True)
 # quilting using Circular Patches over a Hexagonal Lattice (CPHL)
 
 
@@ -670,8 +670,8 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
 def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst:np.ndarray=None,
                     _tmp:np.ndarray=None) -> np.ndarray:
     center = (patch_params.center, patch_params.center)
-    dilate_kernel_size = patch_params.radius // 8 + 1
-    blur_kernel_size = patch_params.radius//4+1
+    dilate_kernel_size = max(3, patch_params.radius//8 + 1)
+    blur_kernel_size = max(3, patch_params.radius//4 + 1)
 
     radial = (roi>0).astype(np.uint8)  # copy & set dtype for dist. transf
     _radial_extrapolate(radial, patch_params.radius - 2, radial)
