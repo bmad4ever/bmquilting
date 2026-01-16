@@ -1,13 +1,13 @@
 from functools import lru_cache
 import importlib.util
-from typing import Any
+import logging
 
 import numpy as np
 import cv2 as cv
-from numpy import dtype, ndarray
+from numpy import ndarray
 from numpy.random import Generator
 
-from .types import GenParams, NumPixels, SquarePatchingBlendConfig, PatchIdx, _2D_Slice
+from .types import GenParams, NumPixels, SquarePatchingBlendConfig, PatchIdx
 from .seam_smartblur import compute_adaptive_blend_mask
 from .misc.shmem_utils import SharedTextureList
 from .misc.dry import apply_mask
@@ -15,13 +15,6 @@ from .misc.dry import apply_mask
 from .jena2020.generate import inf, getMinCutPatchHorizontal, getMinCutPatchVertical, getMinCutPatchBoth
 
 epsilon = np.finfo(float).eps
-
-type FindPatchSlices = tuple[
-    tuple[_2D_Slice, _2D_Slice],
-    tuple[_2D_Slice, _2D_Slice],
-    tuple[_2D_Slice, _2D_Slice],
-    tuple[_2D_Slice, _2D_Slice]
-]
 
 
 def debug_resize(arr, factor=8):
@@ -79,34 +72,21 @@ def get_min_cut_patch_both_method(version: int):
     return get_min_cut_patch_both
 
 
-def compute_errors(diffs: list[np.ndarray], version: int) -> np.ndarray:
+def _adjust_errors(diffs: np.ndarray, version: int) -> np.ndarray:
+    # TODO just get rid of version and get 2 separate ARGs instead
     match version:
-        case 0:
-            # kept somewhat similar to jena2020 (mean is just the sum scaled down by the number of channels)
-            return np.add.reduce(diffs)
-        case 1:
-            return np.add.reduce(diffs)
-        case 2:
-            return np.maximum.reduce(diffs)
         case 3:
-            return 1 - np.minimum.reduce(diffs)  # values from 0 to 2
+            return 1 - diffs  # values from 0 to 2
         case _:
-            raise NotImplementedError("Specified patch search version is not implemented.")
+            return diffs
 
 
 def get_match_template_method(version: int) -> int:
     match version:
-        case 0:
-            # kept somewhat similar to jena2020 used in prior v0
-            return cv.TM_SQDIFF
-        case 1:
-            return cv.TM_SQDIFF
-        case 2:
-            return cv.TM_SQDIFF
         case 3:
             return cv.TM_CCOEFF_NORMED
         case _:
-            raise NotImplementedError("Specified patch search version is not implemented.")
+            return cv.TM_SQDIFF
 
 
 # endregion
@@ -138,19 +118,22 @@ def find_patch_vx(overlaps_left: bool,
     return winning_texture[best_y:best_y + block_size, best_x:best_x + block_size]
 
 
-@lru_cache(maxsize=2)
-def get_slice_metadata_for_find_patch(block_size, overlap) -> FindPatchSlices:
-    """
-    Auxiliary function for the template matching used in the find_patch_vx_idx function.
-    Computes and caches the slice objects for the texture and for the template & mask respectively.
-    """
-    bmo = block_size - overlap
-    return (
-        (np.s_[:, :-bmo], np.s_[:, :overlap] ),  # Left
-        (np.s_[:, bmo: ], np.s_[:, -overlap:]),  # Right
-        (np.s_[:-bmo, :], np.s_[:overlap, : ]),  # Top
-        (np.s_[bmo:, : ], np.s_[-overlap:, :])   # Bottom
-    )
+@lru_cache(maxsize=4)
+def _get_overlap_mask(block_size: NumPixels, overlap: NumPixels,
+                      overlaps_left: bool, overlaps_right: bool,
+                      overlaps_top: bool, overlaps_bottom: bool) -> np.ndarray:
+    mask = np.zeros((block_size, block_size), dtype=np.float32)
+
+    if overlaps_left:
+        mask[:, :overlap] = 1.0
+    if overlaps_right:
+        mask[:, -overlap:] = 1.0
+    if overlaps_top:
+            mask[:overlap, :] = 1.0
+    if overlaps_bottom:
+            mask[-overlap:, :] = 1.0
+
+    return mask
 
 
 def find_patch_vx_idx(overlaps_left: bool,
@@ -186,8 +169,8 @@ def find_patch_vx_idx(overlaps_left: bool,
     err_mats: list[np.ndarray | None] = []
     global_min_error = np.inf
 
-    # Get Vignette Mask depending on Generation Params
-    mask = None
+    # Get Overlap Mask & Vignette Mask (if set)
+    overlap_mask = _get_overlap_mask(block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
     if gen_params.vignette_on_match_template:
         mask = patch_blending_vignette(
             gen_params.block_size, gen_params.overlap,
@@ -197,11 +180,9 @@ def find_patch_vx_idx(overlaps_left: bool,
             overlaps_bottom
         )
         mask = 1 - mask  # invert mask, mind that vignette is cached (original shouldn't be edited)
-
-    # Define Conditions list and 'Bookmarks' (static metadata, very cheap)
-    #  done to avoid repeating if conditions for each overlapping area, making the code slightly more compact
-    conditions = [overlaps_left, overlaps_right, overlaps_top, overlaps_bottom]
-    slice_definitions = get_slice_metadata_for_find_patch(block_size, overlap)  # (texture, template & mask)
+        mask*= overlap_mask
+    else:
+        mask = overlap_mask
 
     # --- PASS 1: Compute errors for each texture & find the absolute global minimum error ---
     for texture in lookup_textures:
@@ -211,30 +192,20 @@ def find_patch_vx_idx(overlaps_left: bool,
             err_mats.append(None)  # Keep placeholder for alignment
             continue
 
-        blks_diffs: list[np.ndarray] = []
+        errs = cv.matchTemplate(image=texture, templ=ref_block, method=template_method, mask=mask)
 
-        # Iterate Lazily
-        for has_overlap, (tex_s, tmpl_s) in zip(conditions, slice_definitions):
-            if has_overlap:
-                blks_diffs.append(cv.matchTemplate(
-                    image=texture[tex_s],
-                    templ=ref_block[tmpl_s],
-                    method=template_method,
-                    mask=mask[tmpl_s] if mask is not None else None
-                ))
-
-        # Compute combined error matrix for this texture
-        err_mat = compute_errors(blks_diffs, gen_params.version)
-        err_mat = np.maximum(err_mat, 1e-8)  # clip floor to zero
-        err_mats.append(err_mat)
+        # Adjust errors
+        errs = _adjust_errors(errs, gen_params.version)
+        errs = np.maximum(errs, 1e-8)  # clip floor to zero
+        err_mats.append(errs)
 
         # Update global minimum
-        global_min_error = min(global_min_error, np.min(err_mat))
+        text_min, _, _, _ = cv.minMaxLoc(errs)
+        global_min_error = min(global_min_error, text_min)
 
     # --- Check for impossible match ---
-    print(f"gme = {global_min_error}")
-
     if global_min_error == np.inf:
+        logging.warning(f"Global minimum error is {global_min_error}")
         raise ValueError("Could not find a suitable patch in any lookup texture "
                          "(all textures were too small or had matching issues).")
 
@@ -307,21 +278,7 @@ def get_4way_min_cut_patch(
         if gen_params.blend_into_patch and gen_params.blend_config.use_vignette:
             vignette = patch_blending_vignette(
                 block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
-            mask *= vignette
-            # dev note:
-            #   Might seem strange to multiply these instead of choosing the maximum here;
-            #   the thing about the vignette is that, although initially devised as a workaround
-            #   to avoid having the seams' blur reaching the edges of the overlap which would
-            #   create potential "visual seam" artifacts at the edge of a new patch, this variant had an unforeseen
-            #   effect that I did not think of when implementing it:
-            #       It roughly aligns the generated patches' seams into a grid, which somewhat mitigates the
-            #   problem of having loose seam ends creating the occasional visual discontinuity.
-            #       The results seamed interesting, so I eventually settled on leaving this solution as it is.
-            #       Despite not preventing the seams' blur from reaching the edge in the current implementation,
-            #   the effect seemed better than the alternative. 
-            #       I've also noticed that using two vignettes,
-            #   one more steep for the maximum and the other for seam alignment, seems to create
-            #   more visual artifacts than it solves.
+            np.maximum(mask, vignette, out=mask)
         np.maximum(mask, masks_max, out=masks_max)
 
     if overlaps_left:
@@ -390,8 +347,8 @@ def get_4way_min_cut_patch(
 def patch_blending_vignette(block_size: NumPixels, overlap: NumPixels,
                             left: bool, right: bool, top: bool, bottom: bool) -> np.ndarray:
     margin = 1  # must be small !
-    power = 4.5  # controls drop-off
-    p = 6  # controls the shape
+    power = 2.5  # controls drop-off
+    p = 4  # controls the shape
 
     def corner_distance(y, x):
         distance = ((abs(x - overlap + margin / 2) ** p + abs(y - overlap + margin / 2) ** p) ** (1 / p)) / (
