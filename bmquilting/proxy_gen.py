@@ -1,5 +1,5 @@
 from .synthesis_subroutines import (
-    get_min_cut_patch_horizontal_method, get_min_cut_patch_vertical_method, get_min_cut_patch_both_method,
+    get_min_cut_patch_horizontal, get_min_cut_patch_vertical, get_min_cut_patch_both,
     update_seams_map_view, find_patch_vx_idx, apply_mask)
 from .types import GenParams, NumPixels, PatchIdx
 from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui
@@ -81,30 +81,26 @@ def _compute_synthesis_map(
         check_ui(uicd, 1)
 
     def fill_row_inplace_proxy():
-        get_min_cut_patch = get_min_cut_patch_horizontal_method(gen_params.version)
         for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
             blk_idx = np.s_[:b, blk_x:(blk_x + b)]
             ref_block = texture_map[blk_idx]
             patch_idx = find_patch_vx_idx(
                 True, False, False, False,
                 ref_block, proxy_textures, gen_params, rng)
-            process_block(blk_idx, get_min_cut_patch, ref_block, seams_map, patch_idx)
+            process_block(blk_idx, get_min_cut_patch_horizontal, ref_block, seams_map, patch_idx)
 
     def fill_quad_proxy():
         """
             Only requires the first Row already filled.
             A "purist" solution, where there is no apriori column generation.
         """
-        get_min_cut_v = get_min_cut_patch_vertical_method(gen_params.version)
-        get_min_cut_b = get_min_cut_patch_both_method(gen_params.version)
-
         for blk_y in range(bmo, texture_map.shape[0] - b + 1 , bmo):
             blk_idx = np.s_[blk_y:blk_y + b, :b]
             ref_block = texture_map[blk_idx]
             patch_idx = find_patch_vx_idx(
                 False, False, True, False,
                 ref_block, proxy_textures, gen_params, rng)
-            process_block(blk_idx, get_min_cut_v, ref_block, seams_map, patch_idx)
+            process_block(blk_idx, get_min_cut_patch_vertical, ref_block, seams_map, patch_idx)
 
             for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
                 blk_idx = np.s_[blk_y:blk_y + b, blk_x:blk_x + b]
@@ -112,7 +108,7 @@ def _compute_synthesis_map(
                 patch_idx = find_patch_vx_idx(
                     True, False, True, False,
                     ref_block, proxy_textures, gen_params, rng)
-                process_block(blk_idx, get_min_cut_b, ref_block, seams_map, patch_idx)
+                process_block(blk_idx, get_min_cut_patch_both, ref_block, seams_map, patch_idx)
 
         return texture_map, seams_map
 

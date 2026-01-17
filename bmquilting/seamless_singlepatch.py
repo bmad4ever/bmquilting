@@ -1,6 +1,5 @@
 # An alternative approach to making the texture seamless using a single large patch
-from .synthesis_subroutines import (
-    compute_errors, get_match_template_method, get_min_cut_patch_horizontal, update_seams_map_view)
+from .synthesis_subroutines import get_min_cut_patch_horizontal, update_seams_map_view
 from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui
 from .generate import RetOnInterrupt, ret_val_on_interrupt
 from .misc.custom_decorators import clear_cache_post_exec
@@ -22,7 +21,7 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, gen_para
         seams_map = np.zeros(image.shape[:2], dtype=np.float32)
 
     # left & right overlap errors
-    template_method = get_match_template_method(gen_params.version)
+    template_method = gen_params.match_template_method
     lo_errs = cv.matchTemplate(image=lookup_texture[:, :-block_size],
                                templ=image[:, :overlap], method=template_method)
     check_ui(uicd, 1)
@@ -31,7 +30,11 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, gen_para
                                templ=image[:, block_size - overlap:block_size], method=template_method)
     check_ui(uicd, 1)
 
-    err_mat = compute_errors([lo_errs, ro_errs], gen_params.version)
+    if template_method == cv.TM_CCOEFF_NORMED:
+        lo_errs = 1 - lo_errs
+        ro_errs = 1 - ro_errs
+
+    err_mat = np.maximum(lo_errs, ro_errs, out=lo_errs)  # could sum instead, this sol. minimizes the worst side
     min_val = np.min(err_mat)  # ignore tolerance in this solution
     y, x = np.nonzero(err_mat <= min_val)  # ignore tolerance here, choose only from the best values
     # still select randomly, it may be the case that there are more than one equally good matches

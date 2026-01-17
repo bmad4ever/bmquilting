@@ -1,5 +1,8 @@
 from dataclasses import dataclass, field
+from collections.abc import Callable
+from numpy import ndarray
 from enum import Enum
+import cv2
 
 from .misc.functions import FuncWrapper, LogScalingFunc, TwoNTS
 
@@ -13,6 +16,8 @@ type PatchIdx = tuple[int, int, int]
 """patches indexes (texture index, y coord, x coord), where coords are relative to the top-left corner."""
 
 type _2D_Slice = tuple[slice, slice]
+
+type MinCutMethod = Callable[[ndarray, ndarray, int, int, BlendConfig], ndarray]
 
 
 class Orientation(Enum):
@@ -131,20 +136,52 @@ class GenParams:
     blend_config: SquarePatchingBlendConfig | None
     vignette_on_match_template: bool
     """whether to use the blending vignette as a mask when searching for a matching patch"""
-    version: int
+
+    min_cut_search_method: MinCutMethod
+    """
+    From synthesis_subroutines, the following methods can be used:
+        - get_min_cut_patch_mask_horizontal_astar: A* grid based solution. Seams can backtrack.
+        - get_min_cut_patch_mask_horizontal_jena2020: purist solution, seams can not backtrack.
+    
+    The A* solution should be slightly faster due to the C backend; however, there is no direct way to customize the 
+    the errors computation, this can only be done indirectly via a proxy texture.    
+    
+    For a more performant solution --- faster or with a different error computation --- a custom function can be used. 
+    """
+
+    match_template_method: int = cv2.TM_SQDIFF
+    """
+    Match template method used when searching for a patch with a matching overlap section.
+    Only TM_SQDIFF and TM_CCOEFF_NORMED are supported.
+    """
+
 
     def __post_init__(self):
         if not (0.0 <= self.tolerance <= 1.0):
             raise ValueError(f"{self.tolerance = } tolerance should be in the [0,1] range.")
+
+        # Sets a method to adjust match template computed errors so that
+        #  the minimum selection behavior is kept unchanged independently of the selected method
+        if self.match_template_method == cv2.TM_SQDIFF:
+            self._mt_error_adjust = lambda e: e
+        elif self.match_template_method == cv2.TM_CCOEFF_NORMED:
+            self._mt_error_adjust = lambda e: 1 - e  # values from 0 to 2
+        else:
+            raise ValueError(f"{self.match_template_method = } is invalid.\n"
+                             f"Only TM_SQDIFF and TM_CCOEFF_NORMED are supported.")
+
+
+    def _compute_min_cut(self, source: ndarray, patch: ndarray) -> ndarray:
+        return self.min_cut_search_method(source, patch, self.block_size, self.overlap, self.blend_config)
 
     @property
     def blend_into_patch(self) -> bool:
         return self.blend_config is not None
 
     @property
-    def bo(self):
+    def bo(self) -> tuple[NumPixels, NumPixels]:
         return self.block_size, self.overlap
 
     @property
-    def bot(self):
+    def bot(self) -> tuple[NumPixels, NumPixels, Percentage]:
         return self.block_size, self.overlap, self.tolerance

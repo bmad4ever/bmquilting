@@ -1,6 +1,6 @@
 from .synthesis_subroutines import (
     get_find_patch_to_the_right_method, get_find_patch_below_method, get_find_patch_both_method,
-    get_min_cut_patch_horizontal_method, get_min_cut_patch_vertical_method, get_min_cut_patch_both_method,
+    get_min_cut_patch_horizontal, get_min_cut_patch_vertical, get_min_cut_patch_both,
     update_seams_map_view)
 from .types import GenParams, NumPixels, _2D_Slice
 from .misc.shmem_utils import SharedTextureList
@@ -115,13 +115,12 @@ def _fill_column_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarra
                          lookup_textures: list[np.ndarray] | SharedTextureList,
                          gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
     find_patch_below = get_find_patch_below_method()
-    get_min_cut_patch = get_min_cut_patch_vertical_method(gen_params.version)
     b, o = gen_params.block_size, gen_params.overlap
     bmo = b - o
     for blk_y in range(bmo, texture_map_view.shape[0] - b + 1, bmo):
         block_idx = np.s_[blk_y:blk_y + b, :b]
         process_block(texture_map_view, seams_map_view, lookup_textures, block_idx,
-                      find_patch_below, get_min_cut_patch, gen_params, rng, uicd)
+                      find_patch_below, get_min_cut_patch_vertical, gen_params, rng, uicd)
 
 
 @handle_ui_interrupts(auto_close=True, re_raise=True)
@@ -154,13 +153,12 @@ def _fill_row_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
                       lookup_textures: list[np.ndarray] | SharedTextureList,
                       gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
     find_patch_to_the_right = get_find_patch_to_the_right_method()
-    get_min_cut_patch = get_min_cut_patch_horizontal_method(gen_params.version)
     b, o = gen_params.block_size, gen_params.overlap
     bmo = b - o
     for blk_x in range(bmo, texture_map_view.shape[1] - b + 1, bmo):
         block_idx = np.s_[:b, blk_x:blk_x + b]
         process_block(texture_map_view, seams_map_view, lookup_textures, block_idx,
-                      find_patch_to_the_right, get_min_cut_patch, gen_params, rng, uicd)
+                      find_patch_to_the_right, get_min_cut_patch_horizontal, gen_params, rng, uicd)
 
 
 @handle_ui_interrupts(auto_close=True, re_raise=True)
@@ -169,14 +167,13 @@ def _pfill_quad(gen_params: GenParams, texture_map, seams_map,
                 rng: np.random.Generator, uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """note: requires the 1st row and column of blocks to be already filled"""
     find_patch_both = get_find_patch_both_method()
-    get_min_cut_patch = get_min_cut_patch_both_method(gen_params.version)
     b, o = gen_params.bo
     bmo = b - o
     for blk_y in range(bmo, texture_map.shape[0] - b + 1, bmo):
         for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
             block_idx = np.s_[blk_y:(blk_y + b), blk_x:(blk_x + b)]
             process_block(texture_map, seams_map, lookup_textures, block_idx,
-                          find_patch_both, get_min_cut_patch, gen_params, rng, uicd)
+                          find_patch_both, get_min_cut_patch_both, gen_params, rng, uicd)
     return texture_map, seams_map
 
 
@@ -188,20 +185,18 @@ def _fill_quad_purist(gen_params: GenParams, texture_map, seams_map,
         A "purist" solution, where there is no apriori column generation.
     """
     find_patch_below = get_find_patch_below_method()
-    get_min_cut_v = get_min_cut_patch_vertical_method(gen_params.version)
     find_patch_both = get_find_patch_both_method()
-    get_min_cut_b = get_min_cut_patch_both_method(gen_params.version)
     b, o = gen_params.bo
     bmo = b - o
     for blk_y in range(bmo, texture_map.shape[0] - b + 1, bmo):
         block_idx = np.s_[blk_y:blk_y + b, :b]
         process_block(texture_map, seams_map, lookup_textures, block_idx,
-                      find_patch_below, get_min_cut_v, gen_params, rng, uicd)
+                      find_patch_below, get_min_cut_patch_vertical, gen_params, rng, uicd)
 
         for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
             block_idx = np.s_[blk_y:blk_y + b, blk_x:blk_x + b]
             process_block(texture_map, seams_map, lookup_textures, block_idx,
-                          find_patch_both, get_min_cut_b, gen_params, rng, uicd)
+                          find_patch_both, get_min_cut_patch_both, gen_params, rng, uicd)
     return texture_map, seams_map
 
 
@@ -653,7 +648,6 @@ class _ParaRowsJobInfo:
 def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiCoordData | None):
     gen_params = job.gen_params
     find_patch_both = get_find_patch_both_method()
-    get_min_cut_patch = get_min_cut_patch_both_method(gen_params.version)
 
     # unwrap data
     block_size, overlap = gen_params.bo
@@ -693,7 +687,7 @@ def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiC
                 blk_index_j = j * bmo
 
                 block_idx = np.s_[blk_index_i:blk_index_i + block_size, blk_index_j:blk_index_j + block_size]
-                process_block(texture, seams_map, ltxts, block_idx, find_patch_both, get_min_cut_patch,
+                process_block(texture, seams_map, ltxts, block_idx, find_patch_both, get_min_cut_patch_both,
                               gen_params, rng, uicd)
 
                 coord_list[pid * 2 + 1] = j
@@ -821,7 +815,7 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
 
     # fill the rest iterating diagonally
     find_patch = get_find_patch_both_method()
-    find_cut = get_min_cut_patch_both_method(gen_params.version)
+    find_cut = get_min_cut_patch_both
     for d in range(1, n_d):
         d_ixd += bm2o
 

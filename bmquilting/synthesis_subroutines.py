@@ -1,8 +1,8 @@
 from functools import lru_cache
-import importlib.util
 import logging
 
 import numpy as np
+import pyastar2d
 import cv2 as cv
 from numpy import ndarray
 from numpy.random import Generator
@@ -11,8 +11,6 @@ from .types import GenParams, NumPixels, SquarePatchingBlendConfig, PatchIdx
 from .seam_smartblur import compute_adaptive_blend_mask
 from .misc.shmem_utils import SharedTextureList
 from .misc.dry import apply_mask
-
-from .jena2020.generate import inf, getMinCutPatchHorizontal, getMinCutPatchVertical, getMinCutPatchBoth
 
 epsilon = np.finfo(float).eps
 
@@ -43,51 +41,6 @@ def get_find_patch_both_method():
         return find_patch_vx(True, False, True, False, ref_block, image, gen_params, rng)
 
     return vx_both
-
-
-def get_min_cut_patch_horizontal_method(version: int):
-    if version == 0:
-        def jena_cut_h(ref_block, patch, gen_params: GenParams):
-            return getMinCutPatchHorizontal(ref_block, patch, gen_params.block_size, gen_params.overlap)
-
-        return jena_cut_h
-    return get_min_cut_patch_horizontal
-
-
-def get_min_cut_patch_vertical_method(version: int):
-    if version == 0:
-        def jena_cut_v(ref_block, patch, gen_params: GenParams):
-            return getMinCutPatchVertical(ref_block, patch, gen_params.block_size, gen_params.overlap)
-
-        return jena_cut_v
-    return get_min_cut_patch_vertical
-
-
-def get_min_cut_patch_both_method(version: int):
-    if version == 0:
-        def jena_cut_both(ref_block, patch, gen_params: GenParams):
-            return getMinCutPatchBoth(ref_block, patch, gen_params.block_size, gen_params.overlap)
-
-        return jena_cut_both
-    return get_min_cut_patch_both
-
-
-def _adjust_errors(diffs: np.ndarray, version: int) -> np.ndarray:
-    # TODO just get rid of version and get 2 separate ARGs instead
-    match version:
-        case 3:
-            return 1 - diffs  # values from 0 to 2
-        case _:
-            return diffs
-
-
-def get_match_template_method(version: int) -> int:
-    match version:
-        case 3:
-            return cv.TM_CCOEFF_NORMED
-        case _:
-            return cv.TM_SQDIFF
-
 
 # endregion
 
@@ -163,7 +116,6 @@ def find_patch_vx_idx(overlaps_left: bool,
     :return: best_texture_idx, best_y, best_x
     """
     block_size, overlap, tolerance = gen_params.bot
-    template_method = get_match_template_method(gen_params.version)
 
     # List to store error matrices (Pass 1) or final candidates (Pass 2)
     err_mats: list[np.ndarray | None] = []
@@ -192,10 +144,12 @@ def find_patch_vx_idx(overlaps_left: bool,
             err_mats.append(None)  # Keep placeholder for alignment
             continue
 
-        errs = cv.matchTemplate(image=texture, templ=ref_block, method=template_method, mask=mask)
+        errs = cv.matchTemplate(image=texture, templ=ref_block, method=gen_params.match_template_method, mask=mask)
 
         # Adjust errors
-        errs = _adjust_errors(errs, gen_params.version)
+        if gen_params.match_template_method == cv.TM_CCOEFF_NORMED:
+            errs = 1.0 - errs
+
         errs = np.maximum(errs, 1e-8)  # clip floor to zero
         err_mats.append(errs)
 
@@ -282,8 +236,7 @@ def get_4way_min_cut_patch(
         np.maximum(mask, masks_max, out=masks_max)
 
     if overlaps_left:
-        mask = get_min_cut_patch_mask_horizontal(ref_block, patch_block, block_size, overlap,
-                                                 gen_params.blend_config)
+        mask = gen_params._compute_min_cut(ref_block, patch_block)
 
         if gen_params.blend_into_patch:
             compute_adaptive_blend_mask(
@@ -297,7 +250,7 @@ def get_4way_min_cut_patch(
     if overlaps_right:
         adj_src = np.fliplr(ref_block)
         adj_ptc = np.fliplr(patch_block)
-        mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, gen_params.blend_config)
+        mask = gen_params._compute_min_cut(adj_src, adj_ptc)
         if gen_params.blend_into_patch:
             compute_adaptive_blend_mask(
                 adj_src,
@@ -312,7 +265,7 @@ def get_4way_min_cut_patch(
         # V , >  counterclockwise rotation
         adj_src = np.rot90(ref_block)
         adj_ptc = np.rot90(patch_block)
-        mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, gen_params.blend_config)
+        mask = gen_params._compute_min_cut(adj_src, adj_ptc)
         if gen_params.blend_into_patch:
             compute_adaptive_blend_mask(
                 adj_src,
@@ -326,7 +279,7 @@ def get_4way_min_cut_patch(
     if overlaps_bottom:
         adj_src = np.fliplr(np.rot90(ref_block))
         adj_ptc = np.fliplr(np.rot90(patch_block))
-        mask = get_min_cut_patch_mask_horizontal(adj_src, adj_ptc, block_size, overlap, gen_params.blend_config)
+        mask = gen_params._compute_min_cut(adj_src, adj_ptc)
         if gen_params.blend_into_patch:
             compute_adaptive_blend_mask(
                 adj_src,
@@ -410,31 +363,31 @@ def patch_blending_vignette(block_size: NumPixels, overlap: NumPixels,
     return mask
 
 
-def get_min_cut_patch_mask_horizontal_jena2020(block1, block2, block_size: NumPixels, overlap: NumPixels):
+def get_min_cut_patch_mask_horizontal_jena2020(ref_block, patch_block, block_size: NumPixels, overlap: NumPixels, _):
     """
-    :param block1: block to the left, with the overlap on its right edge
-    :param block2: block to the right, with the overlap on its left edge
+    Adapted from jena2020 solution.
     :return: ONLY the mask (not the patched overlap section)
     """
-    err = ((block1[:, -overlap:] - block2[:, :overlap]) ** 2).mean(2)
+    inf = float('inf')
+    err = ((ref_block[:, :overlap] - patch_block[:, :overlap]) ** 2).mean(2)
     # maintain minIndex for 2nd row onwards and
     min_index = []
-    E = [list(err[0])]
+    e = [list(err[0])]
     for i in range(1, err.shape[0]):
         # Get min values and args, -1 = left, 0 = middle, 1 = right
-        e = [inf] + E[-1] + [inf]
-        e = np.array([e[:-2], e[1:-1], e[2:]])
+        _e = [inf] + e[-1] + [inf]
+        _e = np.array([_e[:-2], _e[1:-1], _e[2:]])
         # Get minIndex
-        min_arr = e.min(0)
-        min_arg = e.argmin(0) - 1
+        min_arr = _e.min(0)
+        min_arg = _e.argmin(0) - 1
         min_index.append(min_arg)
         # Set Eij = e_ij + min_
-        Eij = err[i] + min_arr
-        E.append(list(Eij))
+        e_ij = err[i] + min_arr
+        e.append(list(e_ij))
 
     # Check the last element and backtrack to find path
     path = []
-    min_arg = np.argmin(E[-1])
+    min_arg = np.argmin(e[-1])
     path.append(min_arg)
 
     # Backtrack to min path
@@ -443,7 +396,7 @@ def get_min_cut_patch_mask_horizontal_jena2020(block1, block2, block_size: NumPi
         path.append(min_arg)
     # Reverse to find full path
     path = path[::-1]
-    mask = np.zeros((block_size, block_size), dtype=block1.dtype)
+    mask = np.zeros((block_size, block_size), dtype=ref_block.dtype)
     for i in range(len(path)):
         mask[i, :path[i] + 1] = 1
     return mask
@@ -456,89 +409,89 @@ def update_seams_map_view(seams_map_view: np.ndarray, patch_weights: np.ndarray,
     np.maximum(seams_map_view, seam_map_block, out=seams_map_view)
 
 
-if importlib.util.find_spec("pyastar2d") is not None:
-    import pyastar2d
+def get_min_cut_patch_mask_horizontal_astar(
+        ref_block, patch_block,
+        block_size: NumPixels, overlap: NumPixels,
+        blend_config: SquarePatchingBlendConfig = None
+) -> np.ndarray:
+    """
+    :param ref_block: block in the source texture being generated (should be normalized)
+    :param patch_block: patch that will be pasted over the ref_block
+
+    :return: ONLY the mask (not the patched overlap section)
+    """
+    # get min and max safety radii
+    safety_radius = 0  # suppose zero until computed
+    if blend_config is not None and blend_config.use_blur_radii_guess_pathfind_limiter:
+        min_safe_rad = blend_config.min_blur_diameter // 2
+        max_safe_rad = blend_config.max_blur_diameter // 2
+    else:
+        min_safe_rad = 0
+        max_safe_rad = 0
+
+    # compute error matrix
+    block1_safe_overlap_view = ref_block[:, :overlap]
+    block2_safe_overlap_view = patch_block[:, :overlap]
+    if min_safe_rad > 0:
+        # pre-trim to avoid unneeded computations
+        block1_safe_overlap_view = block1_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
+        block2_safe_overlap_view = block2_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
+
+    err = avg_squared_diff(block1_safe_overlap_view, block2_safe_overlap_view)
+
+    if max_safe_rad > 0:
+        # compute safety_radius & trim the remaining area
+        safety_radius = min(
+            # try to get more real estate if errors are small instead of defaulting to max possible radius
+            # mind that this guess is heuristic, err here does not translate directly to the seam diff map
+            # meaning that: without opting for the max blur radius
+            #   there is always the risk of getting a blur near the edges
+            (round(min_safe_rad + (max_safe_rad - min_safe_rad) * np.max(err)) + max_safe_rad) // 2,
+            # safeguard against big save_radius values
+            overlap // 3
+        )
+
+        # trim the err matrix so that values within the adjusted safety radius are not used
+        to_trim = safety_radius - min_safe_rad
+        if to_trim > 0:
+            err = err[:, to_trim:-to_trim]
+
+    adjust_errors_func_inplace(err)
+    adjust_errors_for_pystar2d_inplace(err, block_size)
+
+    # Create 'free-corridors' at both extremes, so that the X starting point is arbitrary
+    err = np.pad(err, ((1, 1), (0, 0)), 'constant', constant_values=(1, 1))
+
+    start = (0, err.shape[1] // 2)
+    end = (err.shape[0] - 1, err.shape[1] // 2)
+
+    path = pyastar2d.astar_path(err, start, end, allow_diagonal=True)
+    mask = np.ones((block_size, block_size), dtype=ref_block.dtype)
+    shape_m2 = err.shape[0] - 2
+
+    start_index = 0  # find start index to avoid checking 0 < i every iteration
+    for idx, (i, j) in enumerate(path):
+        if 0 < i:
+            start_index = idx
+            break
+
+    for i, j in path[start_index:]:  # draw path
+        mask[i - 1, j + 1 + safety_radius] = 0
+        if i >= shape_m2:
+            break
+
+    cv.floodFill(mask, None, (mask.shape[0] - 1, mask.shape[1] - 1), (0,))
+    return mask
 
 
-    def get_min_cut_patch_mask_horizontal_astar(
-            ref_block, patch_block,
-            block_size: NumPixels, overlap: NumPixels,
-            blend_config: SquarePatchingBlendConfig = None
-    ):
-        """
-        :param ref_block: block in the source texture being generated (should be normalized)
-        :param patch_block: patch that will be pasted over the ref_block
+    #get_min_cut_patch_mask_horizontal = get_min_cut_patch_mask_horizontal_astar
 
-        :return: ONLY the mask (not the patched overlap section)
-        """
-        # get min and max safety radii
-        safety_radius = 0  # suppose zero until computed
-        if blend_config is not None and blend_config.use_blur_radii_guess_pathfind_limiter:
-            min_safe_rad = blend_config.min_blur_diameter // 2
-            max_safe_rad = blend_config.max_blur_diameter // 2
-        else:
-            min_safe_rad = 0
-            max_safe_rad = 0
-
-        # compute error matrix
-        block1_safe_overlap_view = ref_block[:, :overlap]
-        block2_safe_overlap_view = patch_block[:, :overlap]
-        if min_safe_rad > 0:
-            # pre-trim to avoid unneeded computations
-            block1_safe_overlap_view = block1_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
-            block2_safe_overlap_view = block2_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
-
-        err = avg_squared_diff(block1_safe_overlap_view, block2_safe_overlap_view)
-
-        if max_safe_rad > 0:
-            # compute safety_radius & trim the remaining area
-            safety_radius = min(
-                # try to get more real estate if errors are small instead of defaulting to max possible radius
-                # mind that this guess is heuristic, err here does not translate directly to the seam diff map
-                # meaning that: without opting for the max blur radius
-                #   there is always the risk of getting a blur near the edges
-                (round(min_safe_rad + (max_safe_rad - min_safe_rad) * np.max(err)) + max_safe_rad) // 2,
-                # safeguard against big save_radius values
-                overlap // 3
-            )
-
-            # trim the err matrix so that values within the adjusted safety radius are not used
-            to_trim = safety_radius - min_safe_rad
-            if to_trim > 0:
-                err = err[:, to_trim:-to_trim]
-
-        adjust_errors_func_inplace(err)
-        adjust_errors_for_pystar2d_inplace(err, block_size)
-
-        # Create 'free-corridors' at both extremes, so that the X starting point is arbitrary
-        err = np.pad(err, ((1, 1), (0, 0)), 'constant', constant_values=(1, 1))
-
-        start = (0, err.shape[1] // 2)
-        end = (err.shape[0] - 1, err.shape[1] // 2)
-
-        path = pyastar2d.astar_path(err, start, end, allow_diagonal=True)
-        mask = np.ones((block_size, block_size), dtype=ref_block.dtype)
-        shape_m2 = err.shape[0] - 2
-
-        start_index = 0  # find start index to avoid checking 0 < i every iteration
-        for idx, (i, j) in enumerate(path):
-            if 0 < i:
-                start_index = idx
-                break
-
-        for i, j in path[start_index:]:  # draw path
-            mask[i - 1, j + 1 + safety_radius] = 0
-            if i >= shape_m2:
-                break
-
-        cv.floodFill(mask, None, (mask.shape[0] - 1, mask.shape[1] - 1), (0,))
-        return mask
-
-
-    get_min_cut_patch_mask_horizontal = get_min_cut_patch_mask_horizontal_astar
-else:
-    get_min_cut_patch_mask_horizontal = lambda b1, b2, bs, os, bc: (  # ignore blend config (last arg)
-        get_min_cut_patch_mask_horizontal_jena2020(b1, b2, bs, os))
+def ignore_min_cut_patch(
+        __, ___,
+        block_size: NumPixels, overlap: NumPixels,
+        ____
+) -> np.ndarray:
+    return np.zeros((block_size, block_size), dtype=np.float32)
 
 
 def avg_squared_diff(block1: np.ndarray, block2: np.ndarray) -> np.ndarray:
