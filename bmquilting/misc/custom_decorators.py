@@ -1,5 +1,5 @@
 from ..seam_smartblur import get_max_possible_gradient_diff, circular_kernel, get_radii_limiter
-from ..synthesis_subroutines import patch_blending_vignette, _get_overlap_mask
+from ..synthesis_subroutines import patch_blending_vignette, _get_overlap_mask, _get_vignetted_overlap_mask
 from functools import wraps
 import logging
 import inspect
@@ -13,6 +13,7 @@ DEFAULT_CACHED_FUNCTIONS = [
     get_max_possible_gradient_diff,
     get_radii_limiter,
     _get_overlap_mask,
+    _get_vignetted_overlap_mask,
     patch_blending_vignette,
 ]
 

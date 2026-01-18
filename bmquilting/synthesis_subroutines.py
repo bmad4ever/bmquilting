@@ -88,6 +88,26 @@ def _get_overlap_mask(block_size: NumPixels, overlap: NumPixels,
 
     return mask
 
+@lru_cache(maxsize=4)
+def _get_vignetted_overlap_mask(block_size: NumPixels, overlap: NumPixels,
+                                overlaps_left: bool, overlaps_right: bool,
+                                overlaps_top: bool, overlaps_bottom: bool) -> np.ndarray:
+    overlap_mask = _get_overlap_mask(block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
+    mask = patch_blending_vignette(
+        block_size, overlap,
+        overlaps_left,
+        overlaps_right,
+        overlaps_top,
+        overlaps_bottom
+    )
+
+    mask = .5 - mask  # mind that the above mask can't be edited directly because it is cached
+    mask *= 2.0
+    np.clip(mask, 0.0, 1.0, out=mask)
+    np.subtract(1.0, mask, out=mask)
+    mask *= overlap_mask
+    return mask
+
 
 def find_patch_vx_idx(overlaps_left: bool,
                       overlaps_right: bool,
@@ -121,20 +141,12 @@ def find_patch_vx_idx(overlaps_left: bool,
     err_mats: list[np.ndarray | None] = []
     global_min_error = np.inf
 
-    # Get Overlap Mask & Vignette Mask (if set)
-    overlap_mask = _get_overlap_mask(block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
-    if gen_params.vignette_on_match_template:
-        mask = patch_blending_vignette(
-            gen_params.block_size, gen_params.overlap,
-            overlaps_left,
-            overlaps_right,
-            overlaps_top,
-            overlaps_bottom
-        )
-        mask = 1 - mask  # invert mask, mind that vignette is cached (original shouldn't be edited)
-        mask*= overlap_mask
-    else:
-        mask = overlap_mask
+    # Get Overlap Mask
+    mask = (
+        _get_vignetted_overlap_mask(block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
+        if gen_params.vignette_on_match_template
+        else _get_overlap_mask(block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
+    )
 
     # --- PASS 1: Compute errors for each texture & find the absolute global minimum error ---
     for texture in lookup_textures:
