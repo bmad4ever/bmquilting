@@ -1,16 +1,17 @@
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from PIL import Image, ImageTk
 from bmquilting.generate import GenParams, generate_texture
 from bmquilting.proxy_gen import generate_guided
 from bmquilting.guess_block_size import guess_nice_block_size
-from bmquilting.seam_smartblur import auto_blend_config_2
 from bmquilting.misc.texture_utils import add_salt_and_pepper
 from bmquilting.types import SquarePatchingBlendConfig
-from dataclasses import asdict
+from bmquilting.synthesis_subroutines import ignore_min_cut_patch
+
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from PIL import Image, ImageTk
 import numpy as np
 import cv2
 import threading
+
 
 
 class GuidedTextureApp:
@@ -109,7 +110,7 @@ class GuidedTextureApp:
                      "2. Create proxy via median blur\n"
                      "3. Generate with guidance (proxy)\n"
                      "4. Generate without guidance\n\n"
-                     "Guided synthesis uses the proxy to help preserve structure while removing noise.")
+                     "Guided synthesis uses the proxy to help preserve structure, ignoring the noise in the source.")
         tk.Label(info_frame, text=info_text, justify=tk.LEFT, wraplength=300).pack()
 
         # === RIGHT SIDE IMAGE GRID ===
@@ -122,10 +123,8 @@ class GuidedTextureApp:
             ("noisy", "Noisy Source"),
             ("proxy", "Proxy (Blurred)"),
             ("out_proxy", "Output Proxy"),
-            ("guided", "Result: WITH Guidance"),
-            ("guided_seams", "Seams: WITH Guidance"),
             ("no_guided", "Result: WITHOUT Guidance"),
-            ("no_guided_seams", "Seams: WITHOUT Guidance")
+            ("guided", "Result: WITH Guidance"),
         ]
 
         for i, (key, label) in enumerate(grid_labels):
@@ -206,8 +205,11 @@ class GuidedTextureApp:
             overlap = round(block_size / 3.0)
 
             # Blend config
-            blend_config = auto_blend_config_2(9, overlap, False)
-            blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
+            #blend_config = auto_blend_config_2(9, overlap, False)
+            #**asdict(blend_config)
+            blend_config = SquarePatchingBlendConfig(
+                use_vignette=True
+            )
 
             gen_params = GenParams(
                 vignette_on_match_template=True,
@@ -215,7 +217,7 @@ class GuidedTextureApp:
                 overlap=overlap,
                 tolerance=self.tolerance_var.get(),
                 blend_config=blend_config,
-                version=1
+                min_cut_search_method=ignore_min_cut_patch
             )
 
             # Add noise
@@ -249,7 +251,6 @@ class GuidedTextureApp:
             )
             self.display_bgr_image("out_proxy", out_proxy)
             self.display_bgr_image("guided", out_tex)
-            self.display_bgr_image("guided_seams", out_cut)
 
             # Generate without guidance
             self.update_progress("Generating WITHOUT guidance...")
@@ -262,7 +263,6 @@ class GuidedTextureApp:
                 uicd=None
             )
             self.display_bgr_image("no_guided", no_guide_tex)
-            self.display_bgr_image("no_guided_seams", no_guide_cut)
 
             self.root.after(0, self.on_complete)
 
