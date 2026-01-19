@@ -12,6 +12,9 @@ from .seam_smartblur import compute_adaptive_blend_mask
 from .misc.shmem_utils import SharedTextureList
 from .misc.dry import apply_mask
 
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+
 epsilon = np.finfo(float).eps
 
 
@@ -171,7 +174,7 @@ def find_patch_vx_idx(overlaps_left: bool,
 
     # --- Check for impossible match ---
     if global_min_error == np.inf:
-        logging.warning(f"Global minimum error is {global_min_error}")
+        logger.warning(f"Global minimum error is {global_min_error}")
         raise ValueError("Could not find a suitable patch in any lookup texture "
                          "(all textures were too small or had matching issues).")
 
