@@ -180,9 +180,9 @@ def _pfill_quad(gen_params: GenParams, texture_map, seams_map,
     b, o = gen_params.bo
     bmo = b - o
     for blk_y in range(bmo, texture_map.shape[0] - b + 1, bmo):
+        rng: np.random.Generator = np.random.default_rng(child_seed(seed, blk_y))
         for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
             block_idx = np.s_[blk_y:(blk_y + b), blk_x:(blk_x + b)]
-            rng: np.random.Generator = np.random.default_rng(child_seed(seed, blk_y))
             process_block(texture_map, seams_map, lookup_textures, block_idx,
                           find_patch_both, get_min_cut_patch_both, gen_params, rng, uicd)
     return texture_map, seams_map
@@ -686,6 +686,10 @@ def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiC
         for i in range(1 + pid, rows + 1, total_procs):
             coord_list[pid * 2 + 1] = -b_o  # indicates no column yet processed on this row
             coord_list[pid * 2 + 0] = i
+
+            blk_index_i = i * bmo
+            rng = np.random.default_rng(child_seed(seed, blk_index_i))
+
             for j in range(1, columns + 1):
                 # if previous row hasn't processed the adjacent section yet wait for it to advance.
                 # -1 is used to shortcircuit this check when the job on the prior row has completed all rows.
@@ -695,11 +699,7 @@ def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiC
                     jobs_events[prior_pid].clear()
                     check_ui(uicd)
 
-                # The same as source implementation ( similar to fill_quad )
-                blk_index_i = i * bmo
                 blk_index_j = j * bmo
-
-                rng = np.random.default_rng(child_seed(seed, blk_index_i))
                 block_idx = np.s_[blk_index_i:blk_index_i + block_size, blk_index_j:blk_index_j + block_size]
                 process_block(texture, seams_map, ltxts, block_idx, find_patch_both, get_min_cut_patch_both,
                               gen_params, rng, uicd)
