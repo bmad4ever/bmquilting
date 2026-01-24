@@ -1,8 +1,3 @@
-import random
-
-import cv2
-from numpy.random.bit_generator import SeedSequence
-
 from .synthesis_subroutines import (
     get_find_patch_to_the_right_method, get_find_patch_below_method, get_find_patch_both_method,
     get_min_cut_patch_horizontal, get_min_cut_patch_vertical, get_min_cut_patch_both,
@@ -13,6 +8,7 @@ from .misc.texture_utils import quick_checksum
 from .misc.custom_decorators import clear_cache_post_exec, step_predictor
 from .misc.ui_coord import handle_ui_interrupts, UiCoordData, check_ui
 
+from numpy.random.bit_generator import SeedSequence
 from multiprocessing.shared_memory import SharedMemory
 from joblib.externals.loky import get_reusable_executor
 from joblib import Parallel, delayed
@@ -74,7 +70,13 @@ type MinCutFunc = Callable[[np.ndarray, np.ndarray, GenParams], np.ndarray]
 #   of the shared components belonging to the initially generated stripes.
 #
 
-# region     methods adapted from jena2020 for re-usability & node compliance
+# region     _____ AUXILIARY_METHODS _____
+
+def child_seed(root_seed: SeedSequence, spawn_key: int):
+    return SeedSequence(
+        entropy=root_seed.entropy,
+        spawn_key=(spawn_key,)
+    )
 
 def process_block(text_view: np.ndarray, seams_view: np.ndarray,
                   lookup_textures: list[np.ndarray] | SharedTextureList,
@@ -172,28 +174,17 @@ def _fill_row_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
 @handle_ui_interrupts(auto_close=True, re_raise=True)
 def _pfill_quad(gen_params: GenParams, texture_map, seams_map,
                 lookup_textures: list[np.ndarray] | SharedTextureList,
-                rng: np.random.PCG64,
-                uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    """
-    notes:
-     * requires the 1st row and column of blocks to be already filled
-     * PCG64 is set as arg type to explicitly enforce consistency with stripe variant implementation
-    """
+                seed: SeedSequence, uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """note: requires the 1st row and column of blocks to be already filled"""
     find_patch_both = get_find_patch_both_method()
     b, o = gen_params.bo
     bmo = b - o
-    _rng = rng
-    rng = np.random.Generator(rng)
-    dy, dx = 1, 1 # TODO DELETE FOR DEBUG ONLY
     for blk_y in range(bmo, texture_map.shape[0] - b + 1, bmo):
-        dx = 1
         for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
-            print(f"{dy, dx = }; {_rng.state}")
             block_idx = np.s_[blk_y:(blk_y + b), blk_x:(blk_x + b)]
+            rng: np.random.Generator = np.random.default_rng(child_seed(seed, blk_y))
             process_block(texture_map, seams_map, lookup_textures, block_idx,
                           find_patch_both, get_min_cut_patch_both, gen_params, rng, uicd)
-            dx += 1
-        dy += 1
     return texture_map, seams_map
 
 
@@ -220,9 +211,9 @@ def _fill_quad_purist(gen_params: GenParams, texture_map, seams_map,
     return texture_map, seams_map
 
 
-# endregion
+# endregion     _____ AUXILIARY_METHODS _____
 
-# region    parallel solution
+# region    _____ PARALLEL IMPLEMENTATION _____
 
 def _parallel_generate_texture_step_predictor(gen_params: GenParams, out_h: NumPixels, out_w: NumPixels):
     quad_row_width = out_w / 2
@@ -467,8 +458,7 @@ def _run_fill_quad(rows, columns, gen_params, texture, seams_map,
         return texture, seams_map
     else:  # if p_strips == 1
         # fill_quad returns (texture, seams_map)
-        rng = np.random.PCG64(seed) # needs to be the same generator as the one used in _pfill_quad_ps
-        return _pfill_quad(gen_params, texture, seams_map, ltxts, rng, uicd)
+        return _pfill_quad(gen_params, texture, seams_map, ltxts, seed, uicd)
 
 
 # endregion     sub-routines for quadX functions
@@ -674,8 +664,7 @@ def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiC
 
     # unwrap data
     block_size, overlap = gen_params.bo
-    _rng: np.random.PCG64 = np.random.PCG64(job.seed)
-    rng = np.random.Generator(_rng)
+    seed = job.seed
     total_procs, ltxts, rows, columns = job.total_procs, job.shm_lookup_textures, job.rows, job.columns
     bmo = block_size - overlap
     b_o = ceil(block_size / bmo)
@@ -694,50 +683,14 @@ def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiC
         seams_map = np.ndarray((block_size + rows * bmo, block_size + columns * bmo), dtype=np.float32,
                                buffer=shm_seams_map.buf)
 
-        _DEBUG_ID = 0  # TODO DELETE ME!
-        if uicd.job_id == _DEBUG_ID:
-            print(f"{pid=}")
-
-        # region ____RNG Tracking Setup____
-
-        global_idx = pid * columns   # set starting index
-
-        # offset rng with respect to starting index
-        _rng.advance(global_idx // 2)
-        if global_idx % 2 != 0:
-            rng.integers(100, dtype=np.uint32)  # fake extraction for odd number of items
-
-        number_of_patches_to_skip = (total_procs-1) * columns
-        may_land_on_odd_idx = columns % 2 == 1 #and (global_idx % 2 != 0 or number_of_patches_to_skip % 2 != 0)
-        number_of_patches_to_skip_intdiv2 = number_of_patches_to_skip // 2
-
-        def advance_rng():
-            """updates pcg64 with respect to not processed patches """
-            nonlocal global_idx, _rng, rng
-
-            for _ in range(number_of_patches_to_skip):
-                rng.integers(100, dtype=np.uint32)
-            return
-
-            # TODO  doesn't work as expected, need to investigate PCG64
-            _rng.advance(number_of_patches_to_skip_intdiv2)
-            global_idx += columns + number_of_patches_to_skip # the target idx after the jump
-            if may_land_on_odd_idx and global_idx % 2 != 0:
-                rng.integers(100, dtype=np.uint32)
-
-        # endregion ____RGN Tracking Setup____
-
         for i in range(1 + pid, rows + 1, total_procs):
             coord_list[pid * 2 + 1] = -b_o  # indicates no column yet processed on this row
             coord_list[pid * 2 + 0] = i
             for j in range(1, columns + 1):
-                if uicd.job_id == _DEBUG_ID:
-                    print(f"{i, j = } ;  {_rng.state =}")
-
                 # if previous row hasn't processed the adjacent section yet wait for it to advance.
                 # -1 is used to shortcircuit this check when the job on the prior row has completed all rows.
                 while -1 < coord_list[prior_pid * 2 + 0] < i and \
-                            coord_list[prior_pid * 2 + 1] - b_o - 2<= j:
+                        coord_list[prior_pid * 2 + 1] - b_o <= j:
                     jobs_events[prior_pid].wait()
                     jobs_events[prior_pid].clear()
                     check_ui(uicd)
@@ -746,14 +699,13 @@ def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiC
                 blk_index_i = i * bmo
                 blk_index_j = j * bmo
 
+                rng = np.random.default_rng(child_seed(seed, blk_index_i))
                 block_idx = np.s_[blk_index_i:blk_index_i + block_size, blk_index_j:blk_index_j + block_size]
                 process_block(texture, seams_map, ltxts, block_idx, find_patch_both, get_min_cut_patch_both,
                               gen_params, rng, uicd)
 
                 coord_list[pid * 2 + 1] = j
                 jobs_events[pid].set()
-
-            advance_rng()
     finally:
         # note: this finally block is not "redundant" with respect to "safety";
         #       the .wait() will get stuck if .set() is never called due to an interrupt (or some other) exception.
@@ -763,9 +715,9 @@ def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiC
 
 # endregion     parallel cascading stripes
 
-# endregion     parallel solution
+# endregion     _____ PARALLEL IMPLEMENTATION _____
 
-# region    non-parallel solutions
+# region    _____ NON-PARALLEL IMPLEMENTATION _____
 
 def _generate_texture_step_predictor(gen_params: GenParams, out_h: NumPixels, out_w: NumPixels):
     block_size = gen_params.block_size
@@ -897,4 +849,4 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
     return texture_map[o:o + out_h, o:o + out_w], seams_map[o:o + out_h, o:o + out_w]
 
 
-# endregion
+# endregion     _____ NON-PARALLEL IMPLEMENTATION _____
