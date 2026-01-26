@@ -248,7 +248,7 @@ def get_4way_min_cut_patch(
             vignette = patch_blending_vignette(
                 block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
             np.maximum(mask, vignette, out=mask)  # mind that the mask is a view that may be flipped or rotated
-        cv.max(mask, masks_max, dst=masks_max)
+        np.maximum(mask, masks_max, out=masks_max)
 
     if overlaps_left:
         mask = gen_params._compute_min_cut(ref_block, patch_block)
