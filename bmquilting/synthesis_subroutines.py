@@ -10,7 +10,7 @@ from numpy.random import Generator
 from .types import GenParams, NumPixels, SquarePatchingBlendConfig, PatchIdx
 from .seam_smartblur import compute_adaptive_blend_mask
 from .misc.shmem_utils import SharedTextureList
-from .misc.dry import apply_mask
+from .misc.dry import apply_mask, blend_with_mask
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -247,8 +247,8 @@ def get_4way_min_cut_patch(
         if gen_params.blend_into_patch and gen_params.blend_config.use_vignette:
             vignette = patch_blending_vignette(
                 block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
-            np.maximum(mask, vignette, out=mask)
-        np.maximum(mask, masks_max, out=masks_max)
+            np.maximum(mask, vignette, out=mask)  # mind that the mask is a view that may be flipped or rotated
+        cv.max(mask, masks_max, dst=masks_max)
 
     if overlaps_left:
         mask = gen_params._compute_min_cut(ref_block, patch_block)
@@ -305,10 +305,8 @@ def get_4way_min_cut_patch(
         mask = np.rot90(np.fliplr(mask), 3)
         process_block(mask)
 
-    # compute:   mask * patch + (1-mask) * ref_block
-    res = apply_mask(ref_block, masks_max)
-    res += apply_mask(patch_block, np.subtract(1, masks_max, out=masks_max))
-    return res, masks_max
+    res = blend_with_mask(patch_block, ref_block, masks_max)
+    return res, np.subtract(1, masks_max, out=masks_max)
 
 
 @lru_cache(maxsize=4)
@@ -374,8 +372,8 @@ def patch_blending_vignette(block_size: NumPixels, overlap: NumPixels,
     if right:
         mask[overlap:block_size - overlap, -overlap:] = (np.flip(curve_top_left_corner[-1, :])
                                                          .reshape(1, -1))  # Copy the last row flipped horizontally
-    mask = 1 - mask
-    return mask
+
+    return np.subtract(1, mask, out=mask)
 
 
 def get_min_cut_patch_mask_horizontal_jena2020(ref_block, patch_block, block_size: NumPixels, overlap: NumPixels, _):
@@ -498,8 +496,6 @@ def get_min_cut_patch_mask_horizontal_astar(
     cv.floodFill(mask, None, (mask.shape[0] - 1, mask.shape[1] - 1), (0,))
     return mask
 
-
-    #get_min_cut_patch_mask_horizontal = get_min_cut_patch_mask_horizontal_astar
 
 def ignore_min_cut_patch(
         __, ___,
