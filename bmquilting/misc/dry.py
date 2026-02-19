@@ -16,15 +16,18 @@ def apply_mask(src: np.ndarray, mask: np.ndarray, overwrite: bool = False):
 
 def blend_with_mask(bg: np.ndarray, fg: np.ndarray, mask: np.ndarray, out: np.ndarray | None = None):
     """
-    :param bg: background image
-    :param fg: foreground image
+    :param bg: "background" image  ( can NOT be used as out )
+    :param fg: "foreground" image  ( CAN BE used as out )
     :param mask: mask with shape of length 2 (height, width)
-    
+
     m * fg + (1 - m) * bg
 
     Blends two buffers using the 1-pass interpolation.
-    Here it is assumed that the data is in float format, hence the use apply mask.
+    Here it is assumed that the data is in float format, hence the use of apply_mask.
     This is not optimal for image processing, but will accommodate alternative data inputs such as latent images.
+
+    Note that "background" and "foreground" are merely suggestive names,
+    since zeroes are usually associated with the background.
     """
     diff = cv2.subtract(fg, bg, dst=out)
     apply_mask(diff, mask, overwrite=True)
