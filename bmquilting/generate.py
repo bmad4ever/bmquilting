@@ -229,9 +229,7 @@ def _parallel_generate_texture_step_predictor(gen_params: GenParams, out_h: NumP
 @clear_cache_post_exec()
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_texture_parallel(
-        src_textures: list[np.ndarray], gen_params: GenParams, out_h: NumPixels, out_w: NumPixels, nps: int,
-        #rng: np.random.Generator,
-        seed: int,
+        src_textures: list[np.ndarray], gen_params: GenParams, out_h: NumPixels, out_w: NumPixels, nps: int, seed: int,
         uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
     :param out_h: output's height in pixels

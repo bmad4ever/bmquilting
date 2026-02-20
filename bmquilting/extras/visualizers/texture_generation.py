@@ -92,13 +92,12 @@ class GenerateTextureApp(SquarePatchGenApp):
                     out_h=self.out_height_var.get(),
                     out_w=self.out_width_var.get(),
                     nps=nps,
-                    rng=rand_gen,
+                    seed=seed,
                     uicd=None
                 )
 
             # Convert to uint8
             self.result_img = (cv2.cvtColor(seamless_texture, cv2.COLOR_BGR2RGB) * 255).astype(np.uint8)
-            print(f"LE MAX = {np.min(seams_map), np.max(seams_map)}")
             self.seams_map = np.clip(seams_map * 255, 0, 255).astype(np.uint8)
 
             self.root.after(0, self.on_generation_complete)
