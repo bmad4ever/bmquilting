@@ -1,4 +1,4 @@
-import cachetools
+from collections.abc import Callable
 import cv2
 import numpy as np
 import math
@@ -10,7 +10,7 @@ from functools import lru_cache
 try:
     from .synthesis_subroutines import (
         apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace,
-        _filter_candidate_patches, _select_a_random_patch,
+        _filter_candidate_patches, _select_a_random_patch, blend_with_mask,
         get_seam_mask_from_patch_weights, clear_seam_overlapped_by_patch, update_seams_map_view)
     from .types import NumPixels, Percentage, BlendConfig
     from .seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_2
@@ -18,7 +18,7 @@ try:
 except:
     from bmquilting.synthesis_subroutines import (
         apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace,
-        _filter_candidate_patches, _select_a_random_patch,
+        _filter_candidate_patches, _select_a_random_patch, blend_with_mask,
         get_seam_mask_from_patch_weights, clear_seam_overlapped_by_patch, update_seams_map_view)
     from bmquilting.types import NumPixels, Percentage, BlendConfig
     from bmquilting.seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_2
@@ -34,6 +34,76 @@ TEMP_BLEND_CONFIG = auto_blend_config_2(9, 40,  True)
 # -> expose patch "hole" function
 # -> implement comfyui node
 # -> implement "radial" parallel texture generation using this quilting variant
+
+#region __________ TESTING PURPOSES __________
+
+kernelx3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+kernelx5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+kernelx15 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+
+def showInMovedWindow(winname, img, x, y):
+    cv2.namedWindow(winname)  # Create a named window
+    cv2.moveWindow(winname, x, y)  # Move it to (x,y)
+    cv2.imshow(winname, img)
+
+
+def create_mock_mask_with_polygon(width, height, polygon_points):
+    """
+    Create a white mask of given dimensions and draw a black polygon on it.
+
+    Args:
+    - width (int): The width of the mask.
+    - height (int): The height of the mask.
+    - polygon_points (list of tuples): List of (x, y) tuples representing the vertices of the polygon.
+
+    Returns:
+    - mask (numpy.ndarray): The mask with the black polygon drawn on it.
+    """
+    mask = np.ones((height, width), dtype=np.uint8)
+    polygon_points = np.array(polygon_points, dtype=np.int32)
+    cv2.fillPoly(mask, [polygon_points], (0, 0, 0))
+    return mask
+
+
+def create_mock_mask(shape):
+    # Define dimensions of the mask
+    height, width = shape[:2]  #500, 500
+
+    # Define points of the 5-sided polygon (pentagon)
+    polygon_points = [
+        (1 / 2, 1 / 5),  # Top
+        (4 / 5, 2 / 5),  # Bottom-right
+        (35 / 50, 35 / 50),  # Bottom
+        (15 / 50, 35 / 50),  # Bottom-left
+        (1 / 5, 2 / 5)  # Top-left
+    ]
+    polygon_points = [(x * width, y * height) for (x, y) in polygon_points]
+
+    # Create the mask
+    mask = create_mock_mask_with_polygon(width, height, polygon_points)
+    return mask
+
+
+def get_bounding_box(mask: np.ndarray) -> tuple[int, int, int, int]:
+    """
+    Get the bounding box of the black shape in the mask.
+    :param mask: The mask with the black shape.
+    :return: bounding_box (tuple): The bounding box of the black shape in the format (x, y, w, h).
+    """
+    mask = 1 - mask
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        largest_contour = max(contours, key=cv2.contourArea)
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        return x, y, w, h
+    else:
+        return 0, 0, 0, 0  # edge case: no contours
+
+
+
+
+#endregion __________ TESTING PURPOSES __________
+
 
 @dataclass(frozen=True, slots=True)
 class CircularPatchParams:
@@ -104,6 +174,9 @@ class CircularPatchingConfig:
     outer_corners_weighted_template_matching: bool
     spacing_factor: float
 
+    no_seams: bool
+    """computes no seams, use this with vignette directly blend the patch in"""
+
     def __post_init__(self):
         if 0.0 > self.tolerance:
             raise ValueError(f"{self.tolerance = } tolerance should be greater than 0.")
@@ -111,13 +184,6 @@ class CircularPatchingConfig:
     @property
     def blend_into_patch(self) -> bool:
         return self.blend_config is not None
-
-
-
-def showInMovedWindow(winname, img, x, y):
-    cv2.namedWindow(winname)  # Create a named window
-    cv2.moveWindow(winname, x, y)  # Move it to (x,y)
-    cv2.imshow(winname, img)
 
 
 # region Weight Template Matching Auxiliary Funcs ____START
@@ -173,63 +239,6 @@ def _distance_to_points(points_mask: np.ndarray) -> np.ndarray:
 
 # endregion Weight Template Matching Auxiliary Funcs ____END
 
-def create_mock_mask_with_polygon(width, height, polygon_points):
-    """
-    Create a white mask of given dimensions and draw a black polygon on it.
-
-    Args:
-    - width (int): The width of the mask.
-    - height (int): The height of the mask.
-    - polygon_points (list of tuples): List of (x, y) tuples representing the vertices of the polygon.
-
-    Returns:
-    - mask (numpy.ndarray): The mask with the black polygon drawn on it.
-    """
-    mask = np.ones((height, width), dtype=np.uint8)
-    polygon_points = np.array(polygon_points, dtype=np.int32)
-    cv2.fillPoly(mask, [polygon_points], (0, 0, 0))
-    return mask
-
-
-def create_mock_mask(shape):
-    # Define dimensions of the mask
-    height, width = shape[:2]  #500, 500
-
-    # Define points of the 5-sided polygon (pentagon)
-    polygon_points = [
-        (1 / 2, 1 / 5),  # Top
-        (4 / 5, 2 / 5),  # Bottom-right
-        (35 / 50, 35 / 50),  # Bottom
-        (15 / 50, 35 / 50),  # Bottom-left
-        (1 / 5, 2 / 5)  # Top-left
-    ]
-    polygon_points = [(x * width, y * height) for (x, y) in polygon_points]
-
-    # Create the mask
-    mask = create_mock_mask_with_polygon(width, height, polygon_points)
-    return mask
-
-
-def get_bounding_box(mask: np.ndarray) -> tuple[int, int, int, int]:
-    """
-    Get the bounding box of the black shape in the mask.
-    :param mask: The mask with the black shape.
-    :return: bounding_box (tuple): The bounding box of the black shape in the format (x, y, w, h).
-    """
-    mask = 1 - mask
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        largest_contour = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(largest_contour)
-        return x, y, w, h
-    else:
-        return 0, 0, 0, 0  # edge case: no contours
-
-
-kernelx3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-kernelx5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-kernelx15 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-
 
 def blur_annulus_mask(mask: np.ndarray, inner_radius: NumPixels) -> np.ndarray:
     """
@@ -272,14 +281,14 @@ def reverse_blured_circle_mask(mask: np.ndarray, overlap_radius):
     return blured_mask
 
 
-@lru_cache(maxsize=1)
-def _get_annular_mask(patch_params: CircularPatchParams) -> np.ndarray:
+@lru_cache(maxsize=2)
+def _get_annular_mask(patch_params: CircularPatchParams, dtype = np.float32) -> np.ndarray:
     """
-    :return: Float32 Binary annular mask for the circular patch overlapping region.
+    :return: Binary annular mask for the circular patch overlapping region.
     """
     block_size, center = patch_params.block_size, patch_params.center
     radius, non_overlap_radius = patch_params.radius, patch_params.non_overlap_radius
-    annulus_roi_block = np.zeros((block_size, block_size), dtype=np.float32, order='C')
+    annulus_roi_block = np.zeros((block_size, block_size), dtype=dtype, order='C')
     cv2.circle(annulus_roi_block, (center, center), radius, (1,), -1)
     cv2.circle(annulus_roi_block, (center, center), round(non_overlap_radius), (0,), -1)
     return annulus_roi_block
@@ -328,58 +337,66 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     # Find the best matching patch from the lookup texture
     patch: np.ndarray = _find_circular_patch(lookup_textures, block, tmpl_mask, config, rng)
 
-    # Compute Errors prior to warping
-    errors = avg_squared_diff(block, patch)
-    adjust_errors_func_inplace(errors)
+    if not config.no_seams:
+        # Compute Errors prior to warping
+        errors = avg_squared_diff(block, patch)
+        adjust_errors_func_inplace(errors)
 
-    # --- Find Seam using Polar Coordinates
-    center = config.patch_params.center_2d_f
-    warped_len = config.patch_params.warped_len
-    warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
+        # --- Find Seam using Polar Coordinates
+        center = config.patch_params.center_2d_f
+        warped_len = config.patch_params.warped_len
+        warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
 
-    # Warp errors and overlap ROI to polar coordinates & Find "optimal" seam
-    polar_errors, polar_roi = (
-        cv2.warpPolar(i, (radius, warped_len), center, f_radius, warp_flags)
-        for i in [errors, roi])
-    mask = min_cut_circ(polar_errors, polar_roi, non_overlap_radius)
+        # Warp errors and overlap ROI to polar coordinates & Find "optimal" seam
+        polar_errors, polar_roi = (
+            cv2.warpPolar(i, (radius, warped_len), center, f_radius, warp_flags)
+            for i in [errors, roi])
+        mask = min_cut_circ(polar_errors, polar_roi, non_overlap_radius)
 
-    # Warp mask back to cartesian coords & Compute patched result
-    mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius, cv2.WARP_INVERSE_MAP | warp_flags)
-    patched = patch.copy(order='C')
-    apply_mask(patched, mask, True)
-    patched += apply_mask(block, 1 - mask)  # patched <- mask*patch + (1-mask)*source
+        # Warp mask back to cartesian coords & Compute patched result
+        mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius, cv2.WARP_INVERSE_MAP | warp_flags)
+        patched = patch.copy(order='C')
+        apply_mask(patched, mask, True)
+        patched += apply_mask(block, 1 - mask)  # patched <- mask*patch + (1-mask)*source
 
-    # (optional) Blend mask with respect to gradients diff.
-    if config.blend_into_patch:
-        tdiff_map = gradients_differences_at_the_seam(config.blend_config.sobel_kernel_size, mask, block, patch, patched,
-                                                      _tmp=patched)
+        # (optional) Blend mask with respect to gradients diff.
+        if config.blend_into_patch:
+            tdiff_map = gradients_differences_at_the_seam(config.blend_config.sobel_kernel_size, mask, block, patch, patched,
+                                                          _tmp=patched)
 
-        if config.blend_config.use_blur_radii_limiter:
-            radii_limiter = cv2.distanceTransform(roi.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3, dstType=cv2.CV_32F)
-            cv2.GaussianBlur(radii_limiter, (5, 5), 5, dst=radii_limiter)
-            # note: alternatively, I could cache a limiter using annular mask, this would be way more efficient;
-            #       however, such solution may have a blur derived seam at the transition between the
-            #       "filled" and "unfilled" sections of the patch.
-        else:
-            # mask out external area while allowing blurring on the overlapping region
-            radii_limiter = roi * config.patch_params.diameter
+            if config.blend_config.use_blur_radii_limiter:
+                radii_limiter = cv2.distanceTransform(roi.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3, dstType=cv2.CV_32F)
+                cv2.GaussianBlur(radii_limiter, (5, 5), 5, dst=radii_limiter)
+                # note: alternatively, I could cache a limiter using annular mask, this would be way more efficient;
+                #       however, such solution may have a blur derived seam at the transition between the
+                #       "filled" and "unfilled" sections of the patch.
+            else:
+                # mask out external area while allowing blurring on the overlapping region
+                radii_limiter = roi * config.patch_params.diameter
 
-        showInMovedWindow("radii limiter", radii_limiter / max(np.max(radii_limiter), 1e-5) , 50 + radius * 2 * 4, 25)
-        mask = create_adaptive_blend_mask(
-            tdiff_map=tdiff_map,
-            mc_mask_overlap=mask,
-            blend_config=config.blend_config,
-            radii_limiter_mask=radii_limiter,
-            dtype=block.dtype
-        )
+            showInMovedWindow("radii limiter", radii_limiter / max(np.max(radii_limiter), 1e-5) , 50 + radius * 2 * 4, 25)
+            mask = create_adaptive_blend_mask(
+                tdiff_map=tdiff_map,
+                mc_mask_overlap=mask,
+                blend_config=config.blend_config,
+                radii_limiter_mask=radii_limiter,
+                dtype=block.dtype
+            )
+    else:
+        patched = patch.copy(order='C')
+        mask = np.zeros_like(annulus_roi_block)
+        cv2.circle(mask, (
+            config.patch_params.center, config.patch_params.center
+        ), config.patch_params.radius, (1.0, ), -1)
 
     # (optional) Apply Vignette
     if config.blend_into_patch and config.blend_config.use_vignette:
         # due to blending, patched is not used as is; therefore, re-used patched array, no need to allocate a new one.
         vignette = patched.reshape(patched.shape[0], -1)
-        aux = vignette[:, vignette.shape[0]:]  # use patched second channels for auxiliary operations
-        vignette = _setup_vignette(roi, config.patch_params, dst=vignette, _tmp=aux)
+        vignette = _setup_vignette(roi, config.patch_params, dst=vignette)
+        showInMovedWindow("i mask", mask, 50 + radius * 2 * 4, 25)
         np.minimum(mask, vignette, out=mask)
+
         showInMovedWindow("vignette", vignette, 50 + radius * 2 * 5, 25)
 
     showInMovedWindow("mask", mask, 50 + radius * 2 * 4, 25)
@@ -389,15 +406,8 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     np.maximum(mask, filled_mask[bbox_idx], out=filled_mask[bbox_idx])
 
     # Paste into the Source Image
-    if config.blend_into_patch:
-        #  patch * mask  +  source * (1 - mask)     # mind that patch is a view into the lookup texture
-        patched[:] = patch                          # re-used patched array, no need to allocate a new one
-        apply_mask(patched, mask, True)             # patched <- patch * mask
-        np.subtract(1, mask, out=mask)              # mask    <- (1 - mask)
-        apply_mask(image[bbox_idx], mask, True)     # source  <- source * (1 - mask)
-        image[bbox_idx] += patched                  # + patch * mask
-    else:
-        image[bbox_idx] = patched
+    np.subtract(1, mask, out=mask)  # mask <- (1 - mask) so that image[bbox_idx] is sent as fg
+    blend_with_mask(patch, image[bbox_idx], mask, out=image[bbox_idx])
 
     # TODO REMOVE DEBUG LATER
     showInMovedWindow("patched single", image, 1920 - image.shape[1], 25)
@@ -654,7 +664,8 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
         err_mat = np.maximum(err_mat, 1e-8)  # clip floor to zero
         err_mats.append(err_mat)
 
-        global_min_error = min(global_min_error, np.min(err_mat))  # update minimum
+        _min, _, _, _ = cv2.minMaxLoc(err_mat)
+        global_min_error = min(global_min_error, _min)  # update minimum
 
     # --- Check for impossible match ---
     if global_min_error == np.inf:
@@ -667,8 +678,10 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
     return lookup_textures[best_texture_idx][best_y:best_y+block_size, best_x:best_x+block_size]
 
 
-def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst:np.ndarray=None,
-                    _tmp:np.ndarray=None) -> np.ndarray:
+def _setup_vignette_radial(
+        roi: np.ndarray, patch_params: CircularPatchParams, dst:np.ndarray=None,
+        _tmp:np.ndarray=None) -> np.ndarray:
+    """DEPRECATED"""
     center = (patch_params.center, patch_params.center)
     dilate_kernel_size = max(3, patch_params.radius//8 + 1)
     blur_kernel_size = max(3, patch_params.radius//4 + 1)
@@ -696,6 +709,123 @@ def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst:np.n
     np.clip(vignette, 0, 1, out=vignette)
     vignette **= 1/5
     return vignette
+
+
+def _setup_vignette_(roi: np.ndarray, patch_params: CircularPatchParams, dst:np.ndarray=None,
+                    _tmp:np.ndarray=None) -> np.ndarray:
+    center = (patch_params.center, patch_params.center)
+    dilate_kernel_size = max(3, patch_params.radius//8 + 1)
+    blur_kernel_size = max(3, patch_params.radius//4 + 1)
+
+    # patch transition into non-overlapping section
+    aux = (roi>0).astype(np.uint8)  # copy & set dtype for dist. transf
+    np.subtract(1, aux, out=aux)
+    aux *= _get_annular_mask(patch_params).astype(np.uint8)
+    np.subtract(1, aux, out=aux)
+    cv2.circle(aux, center, patch_params.non_overlap_radius, (1,), -1)
+    cv2.imshow("CPT", aux*255)
+
+    patch_edge = cv2.distanceTransform(aux, cv2.DIST_L2, cv2.DIST_MASK_3, dst=_tmp, dstType=cv2.CV_32F)
+    patch_edge[patch_edge > patch_params.overlap_radius//2] = patch_params.overlap_radius//2
+    np.subtract(patch_params.overlap_radius, patch_edge, out=patch_edge)
+    cv2.normalize(patch_edge, patch_edge, 0, 1, cv2.NORM_MINMAX, cv2.CV_32F)
+    cv2.imshow("PE", patch_edge)
+
+    # Create the vignette fading into the prior, already placed, texture
+    #np.subtract(1, radial, out=radial)
+    bin_roi = np.zeros_like(aux, dtype=np.uint8)
+    cv2.circle(bin_roi, center, patch_params.radius, (1,), -1)
+    vignette = cv2.distanceTransform(bin_roi, cv2.DIST_L2, cv2.DIST_MASK_3, dst=dst, dstType=cv2.CV_32F)
+    vignette[vignette > patch_params.overlap_radius] = patch_params.overlap_radius
+    cv2.normalize(vignette, vignette, 0, 1, cv2.NORM_MINMAX, cv2.CV_32F)
+    cv2.imshow("grad", vignette)
+    cv2.blur(vignette, (blur_kernel_size, blur_kernel_size), dst=vignette)
+
+    np.maximum(vignette, patch_edge, out=vignette)
+
+    cv2.dilate(vignette, np.ones((dilate_kernel_size, dilate_kernel_size), dtype=np.float32), dst=vignette)
+    np.clip(vignette, 0, 1, out=vignette)
+
+    #vignette **= 1/2
+    vignette **= 2
+
+    cv2.imshow("VIG", vignette)
+    cv2.waitKey(0)
+    return vignette
+
+
+def _setup_vignette_2(roi: np.ndarray, patch_params: CircularPatchParams, dst: np.ndarray = None,
+                    _tmp: np.ndarray = None) -> np.ndarray:
+    center = (patch_params.center, patch_params.center)
+    # Kernels
+    blur_k = max(3, patch_params.radius // 4 + 1)
+
+    # 1. Complement to the overlapping region
+    aux = (roi>0).astype(np.uint8)  # copy & set dtype for dist. transf
+    aux = cv2.bitwise_xor(aux, _get_annular_mask(patch_params).astype(np.uint8), dst=aux)
+    # Invert back to get the 'background' for distanceTransform
+    cv2.bitwise_xor(aux, 1, dst=aux)
+    cv2.imshow("CPT", aux*255)
+    cv2.circle(aux, center, patch_params.non_overlap_radius, (1,), -1)
+
+
+    # 2. Optimized patch_edge calculation
+    patch_edge = cv2.distanceTransform(aux, cv2.DIST_L2, 3, dst=_tmp, dstType=cv2.CV_32F)
+    limit = patch_params.overlap_radius // 2
+    np.clip(patch_edge, 0, limit, out=patch_edge)
+    np.subtract(limit, patch_edge, out=patch_edge)
+    cv2.multiply(patch_edge, 1.0 / limit, dst=patch_edge)
+
+    # 3. Create the vignette
+    # Re-use aux to save allocation if possible, or use a zeros_like
+    bin_roi = np.zeros(roi.shape, dtype=np.uint8)
+    cv2.circle(bin_roi, center, patch_params.radius, (1,), -1)
+
+    vignette = cv2.distanceTransform(bin_roi, cv2.DIST_L2, 3, dst=dst, dstType=cv2.CV_32F)
+    v_limit = float(patch_params.overlap_radius)
+    np.clip(vignette, 0, v_limit, out=vignette)
+    np.multiply(vignette, 1.0 / v_limit, out=vignette)
+
+    cv2.blur(vignette, (blur_k, blur_k), dst=vignette)
+
+    # 4. Final Composition
+    np.maximum(vignette, patch_edge, out=vignette)
+
+    # Use a simple integer for anchor if possible, or pre-calculate kernel
+    dilate_sz = max(3, patch_params.radius // 8 + 1)
+    kernel = np.ones((dilate_sz, dilate_sz), dtype=np.uint8)
+    cv2.dilate(vignette, kernel, dst=vignette)
+
+    np.clip(vignette, 0, 1, out=vignette)
+    cv2.imshow("VIG", aux * 255)
+
+    return vignette
+
+
+def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst: np.ndarray = None) -> np.ndarray:
+    center = (patch_params.center, patch_params.center)
+    blur_k = max(3, patch_params.radius // 4 + 1)
+
+    # Patch only region ( roi complement + center )
+    aux = (roi>0).astype(np.uint8)      # set as uint8 for usage w/ distanceTransform
+    aux = cv2.bitwise_xor(aux, _get_annular_mask(patch_params, dtype=np.uint8), dst=aux)
+    cv2.circle(aux, center, patch_params.non_overlap_radius, (1,), -1)
+    np.bitwise_xor(aux, 1, out=aux)     # invert for usage w/ distanceTransform
+
+    # Apply radius sized blur
+    vignette = cv2.distanceTransform(aux, cv2.DIST_L2, 3, dst=dst, dstType=cv2.CV_32F)
+    limit = patch_params.overlap_radius
+    np.clip(vignette, 0, limit, out=vignette)
+    np.subtract(limit, vignette, out=vignette)
+    np.divide(vignette, limit, out=vignette)
+
+    # Blur vignette but keep patch only regions w/ values equal to 1
+    cv2.blur(vignette, (blur_k, blur_k), dst=vignette)
+    vignette *= aux ; aux -= 1 ; vignette += aux              # result should be the same as: vignette[aux<1] = 1
+    np.clip(vignette, 0, 1, out=vignette)
+
+    return vignette
+
 
 
 @lru_cache(maxsize=2)
@@ -784,11 +914,12 @@ if __name__ == "__main__":
 
     #TEMP_BLEND_CONFIG.use_vignette = False
     config = CircularPatchingConfig(
-        patch_params=CircularPatchParams(diameter=161, overlap_ratio=.5),
-        spacing_factor=0.9,
+        patch_params=CircularPatchParams(diameter=161, overlap_ratio=.7),
+        spacing_factor=.68,
         tolerance=0.0,
         outer_corners_weighted_template_matching=True,
         blend_config=TEMP_BLEND_CONFIG,
+        no_seams=True
     )
 
     rng = np.random.default_rng(seed=0)
