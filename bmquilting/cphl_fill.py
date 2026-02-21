@@ -294,6 +294,17 @@ def _get_annular_mask(patch_params: CircularPatchParams, dtype = np.float32) -> 
     return annulus_roi_block
 
 
+@lru_cache(maxsize=1)
+def _get_circle_mask(patch_params: CircularPatchParams) -> np.ndarray:
+    """
+    :return: float32 circle binary mask
+    """
+    block_size, center = patch_params.block_size, patch_params.center
+    circle_mask = np.zeros((block_size, block_size), dtype=np.float32, order='C')
+    cv2.circle(circle_mask, (center, center), config.patch_params.radius, (1.0,), -1)
+    return circle_mask
+
+
 def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_map: np.ndarray,
                               lookup_textures: list[np.ndarray] | SharedTextureList,
                               x: int, y: int,
@@ -367,7 +378,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
             if config.blend_config.use_blur_radii_limiter:
                 radii_limiter = cv2.distanceTransform(roi.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3, dstType=cv2.CV_32F)
                 cv2.GaussianBlur(radii_limiter, (5, 5), 5, dst=radii_limiter)
-                # note: alternatively, I could cache a limiter using annular mask, this would be way more efficient;
+                # note: alternatively, I could cache a limiter using annular mask, this would be more efficient;
                 #       however, such solution may have a blur derived seam at the transition between the
                 #       "filled" and "unfilled" sections of the patch.
             else:
@@ -384,10 +395,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
             )
     else:
         patched = patch.copy(order='C')
-        mask = np.zeros_like(annulus_roi_block)
-        cv2.circle(mask, (
-            config.patch_params.center, config.patch_params.center
-        ), config.patch_params.radius, (1.0, ), -1)
+        mask = _get_circle_mask(config.patch_params).copy()
 
     # (optional) Apply Vignette
     if config.blend_into_patch and config.blend_config.use_vignette:
