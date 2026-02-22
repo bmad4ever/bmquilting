@@ -348,12 +348,12 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     # Find the best matching patch from the lookup texture
     patch: np.ndarray = _find_circular_patch(lookup_textures, block, tmpl_mask, config, rng)
 
-    if not config.no_seams:
+    if not config.no_seams:  # Compute Seam Mask
         # Compute Errors prior to warping
         errors = avg_squared_diff(block, patch)
         adjust_errors_func_inplace(errors)
 
-        # --- Find Seam using Polar Coordinates
+        # Find Seam using Polar Coordinates
         center = config.patch_params.center_2d_f
         warped_len = config.patch_params.warped_len
         warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
@@ -366,9 +366,8 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
 
         # Warp mask back to cartesian coords & Compute patched result
         mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius, cv2.WARP_INVERSE_MAP | warp_flags)
-        patched = patch.copy(order='C')
-        apply_mask(patched, mask, True)
-        patched += apply_mask(block, 1 - mask)  # patched <- mask*patch + (1-mask)*source
+        patched = blend_with_mask(block, patch, mask)
+        # mind that even if blend into patch option is not set, patched variable is re-used for the vignette later
 
         # (optional) Blend mask with respect to gradients diff.
         if config.blend_into_patch:
@@ -393,8 +392,8 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
                 radii_limiter_mask=radii_limiter,
                 dtype=block.dtype
             )
-    else:
-        patched = patch.copy(order='C')
+    else:  # Skip Seam Computation
+        patched = np.empty_like(patch)  # used for the vignette, must exist despite in this variant not being computed
         mask = _get_circle_mask(config.patch_params).copy()
 
     # (optional) Apply Vignette
