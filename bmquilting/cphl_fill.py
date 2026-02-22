@@ -301,7 +301,7 @@ def _get_circle_mask(patch_params: CircularPatchParams) -> np.ndarray:
     """
     block_size, center = patch_params.block_size, patch_params.center
     circle_mask = np.zeros((block_size, block_size), dtype=np.float32, order='C')
-    cv2.circle(circle_mask, (center, center), config.patch_params.radius, (1.0,), -1)
+    cv2.circle(circle_mask, (center, center), patch_params.radius, (1.0,), -1)
     return circle_mask
 
 
