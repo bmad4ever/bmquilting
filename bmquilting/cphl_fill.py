@@ -1,9 +1,8 @@
-from collections.abc import Callable
 import cv2
 import numpy as np
 import math
 
-from numpy import random
+from numpy import random, ndarray
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -309,7 +308,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
                               lookup_textures: list[np.ndarray] | SharedTextureList,
                               x: int, y: int,
                               config: CircularPatchingConfig,
-                              rng: np.random.Generator):
+                              rng: np.random.Generator) -> None:
     """
     Finds and applies a single circular patch at location (x, y).
 
@@ -318,12 +317,11 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     :param filled_mask: Mask that keeps track of the area already filled.
         Should be of type float, with values in the interval [0, 1].
 
-    Updates image block and the blending mask.
+    Updates image block and the blending mask at the provided (x, y) position.
     """
     # --- Fetch Config Parameters ---
     radius = config.patch_params.radius
-    f_radius = float(radius)
-    non_overlap_radius = config.patch_params.non_overlap_radius
+    pp = config.patch_params
     bbox_idx = np.s_[y - radius:y + radius + 1, x - radius:x + radius + 1]  # bbox for the area being patched
 
     # Extract the current image block and the region of interest (ROI)
@@ -339,7 +337,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
 
     # (optional) Weighted Template Matching Setup
     if config.outer_corners_weighted_template_matching:
-        corners_mask = _find_annulus_outer_corners(roi, non_overlap_radius, radius)
+        corners_mask = _find_annulus_outer_corners(roi, pp.non_overlap_radius, radius)
         if corners_mask is not None:
             tmpl_mask = _distance_to_points(corners_mask)
             tmpl_mask *= roi
@@ -348,60 +346,18 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     # Find the best matching patch from the lookup texture
     patch: np.ndarray = _find_circular_patch(lookup_textures, block, tmpl_mask, config, rng)
 
-    if not config.no_seams:  # Compute Seam Mask
-        # Compute Errors prior to warping
-        errors = avg_squared_diff(block, patch)
-        adjust_errors_func_inplace(errors)
+    # AUX may be used for the patched block (w/ raw seam, no blending) and for the vignette
+    #   no seams + no vignette is not an expected option combination; it only makes sense for debug purposes
+    #   so the is no need prevent the allocation with a conditional here
+    aux = np.empty_like(patch)
 
-        # Find Seam using Polar Coordinates
-        center = config.patch_params.center_2d_f
-        warped_len = config.patch_params.warped_len
-        warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
-
-        # Warp errors and overlap ROI to polar coordinates & Find "optimal" seam
-        polar_errors, polar_roi = (
-            cv2.warpPolar(i, (radius, warped_len), center, f_radius, warp_flags)
-            for i in [errors, roi])
-        mask = min_cut_circ(polar_errors, polar_roi, non_overlap_radius)
-
-        # Warp mask back to cartesian coords & Compute patched result
-        mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius, cv2.WARP_INVERSE_MAP | warp_flags)
-        patched = blend_with_mask(block, patch, mask)
-        # mind that even if blend into patch option is not set, patched variable is re-used for the vignette later
-
-        # (optional) Blend mask with respect to gradients diff.
-        if config.blend_into_patch:
-            tdiff_map = gradients_differences_at_the_seam(config.blend_config.sobel_kernel_size, mask, block, patch, patched,
-                                                          _tmp=patched)
-
-            if config.blend_config.use_blur_radii_limiter:
-                radii_limiter = cv2.distanceTransform(roi.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3, dstType=cv2.CV_32F)
-                cv2.GaussianBlur(radii_limiter, (5, 5), 5, dst=radii_limiter)
-                # note: alternatively, I could cache a limiter using annular mask, this would be more efficient;
-                #       however, such solution may have a blur derived seam at the transition between the
-                #       "filled" and "unfilled" sections of the patch.
-            else:
-                # mask out external area while allowing blurring on the overlapping region
-                radii_limiter = roi * config.patch_params.diameter
-
-            showInMovedWindow("radii limiter", radii_limiter / max(np.max(radii_limiter), 1e-5) , 50 + radius * 2 * 4, 25)
-            mask = create_adaptive_blend_mask(
-                tdiff_map=tdiff_map,
-                mc_mask_overlap=mask,
-                blend_config=config.blend_config,
-                radii_limiter_mask=radii_limiter,
-                dtype=block.dtype
-            )
-    else:  # Skip Seam Computation
-        patched = np.empty_like(patch)  # used for the vignette, must exist despite in this variant not being computed
-        mask = _get_circle_mask(config.patch_params).copy()
+    # Get mask to blend source and patch (pre vignette)
+    mask = _get_circle_mask(config.patch_params).copy() if config.no_seams else \
+           _compute_radial_seam_mask(config, roi, block, patch, _tmp=aux)
 
     # (optional) Apply Vignette
     if config.blend_into_patch and config.blend_config.use_vignette:
-        # due to blending, patched is not used as is; therefore, re-used patched array, no need to allocate a new one.
-        vignette = patched.reshape(patched.shape[0], -1)
-        vignette = _setup_vignette(roi, config.patch_params, dst=vignette)
-        showInMovedWindow("i mask", mask, 50 + radius * 2 * 4, 25)
+        vignette = _setup_vignette(roi, config.patch_params, dst=aux.reshape(aux.shape[0], -1))
         np.minimum(mask, vignette, out=mask)
 
         showInMovedWindow("vignette", vignette, 50 + radius * 2 * 5, 25)
@@ -423,6 +379,58 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     # TODO REMOVE DEBUG LATER
     cv2.imshow("filled state", filled_mask)
     cv2.waitKey(0)
+
+
+def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
+                              roi: ndarray, block: ndarray, patch: ndarray, _tmp: ndarray) -> np.ndarray:
+    pp = circ_patching_config.patch_params
+    f_radius = float(pp.radius)
+
+    # Compute Errors prior to warping
+    errors = avg_squared_diff(block, patch)
+    adjust_errors_func_inplace(errors)
+
+    # Find Seam using Polar Coordinates
+    center = circ_patching_config.patch_params.center_2d_f
+    warped_len = circ_patching_config.patch_params.warped_len
+    warp_flags = cv2.WARP_POLAR_LINEAR | cv2.WARP_FILL_OUTLIERS | cv2.INTER_NEAREST
+
+    # Warp errors and overlap ROI to polar coordinates & Find "optimal" seam
+    polar_errors, polar_roi = (
+        cv2.warpPolar(i, (pp.radius, warped_len), center, f_radius, warp_flags)
+        for i in [errors, roi])
+    mask = min_cut_circ(polar_errors, polar_roi, pp.non_overlap_radius)
+
+    # Warp mask back to cartesian coords & Compute patched result
+    mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius, cv2.WARP_INVERSE_MAP | warp_flags)
+    patched = blend_with_mask(block, patch, mask, out=_tmp)
+    # mind that even if blend into patch option is not set, patched variable is re-used for the vignette later
+
+    # (optional) Blend mask with respect to gradients diff.
+    if circ_patching_config.blend_into_patch:
+        tdiff_map = gradients_differences_at_the_seam(circ_patching_config.blend_config.sobel_kernel_size, mask, block, patch,
+                                                      patched, _tmp=patched)
+
+        if circ_patching_config.blend_config.use_blur_radii_limiter:
+            radii_limiter = cv2.distanceTransform(roi.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3,
+                                                  dstType=cv2.CV_32F)
+            cv2.GaussianBlur(radii_limiter, (5, 5), 5, dst=radii_limiter)
+            # note: alternatively, I could cache a limiter using annular mask, this would be more efficient;
+            #       however, such solution may have a blur derived seam at the transition between the
+            #       "filled" and "unfilled" sections of the patch.
+        else:
+            # mask out external area while allowing blurring on the overlapping region
+            radii_limiter = roi * circ_patching_config.patch_params.diameter
+
+        showInMovedWindow("radii limiter", radii_limiter / max(np.max(radii_limiter), 1e-5), 50 + pp.radius * 2 * 4, 25)
+        mask = create_adaptive_blend_mask(
+            tdiff_map=tdiff_map,
+            mc_mask_overlap=mask,
+            blend_config=circ_patching_config.blend_config,
+            radii_limiter_mask=radii_limiter,
+            dtype=block.dtype
+        )
+    return mask
 
 
 def circle_quilt(image: np.ndarray, roi_mask: np.ndarray,
