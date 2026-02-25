@@ -4,16 +4,16 @@ from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui
 from .generate import RetOnInterrupt, ret_val_on_interrupt
 from .misc.custom_decorators import clear_cache_post_exec
 from .seamless_multipatch import _patch_horizontal_seam
-from .types import GenParams
+from .types import SquarePatchingConfig
 import dataclasses
 import numpy as np
 import cv2 as cv
 
 
-def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, gen_params: GenParams,
+def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, patching_config: SquarePatchingConfig,
                          rng: np.random.Generator, seams_map=None,
                          uicd: UiCoordData | None = None):
-    block_size, overlap = gen_params.bo
+    block_size, overlap = patching_config.bo
     lookup_texture = image if lookup_texture is None else lookup_texture
     image = np.roll(image, +block_size // 2, axis=1)  # move seam to addressable space
 
@@ -21,7 +21,7 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, gen_para
         seams_map = np.zeros(image.shape[:2], dtype=np.float32)
 
     # left & right overlap errors
-    template_method = gen_params.match_template_method
+    template_method = patching_config.match_template_method
     lo_errs = cv.matchTemplate(image=lookup_texture[:, :-block_size],
                                templ=image[:, :overlap], method=template_method)
     check_ui(uicd, 1)
@@ -50,13 +50,13 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, gen_para
     fake_block_sized_patch = np.zeros((image.shape[0], image.shape[0], image.shape[2]), dtype=image.dtype)
     fake_block_sized_patch[:, :overlap] = lookup_texture[y:y + image.shape[0], x:x + overlap]
     fake_block_sized_patch[:, -overlap:] = lookup_texture[y:y + image.shape[0], x + block_size - overlap:x + block_size]
-    fake_gen_params = dataclasses.replace(gen_params)
-    fake_gen_params.block_size = image.shape[0]
-    left_side_patch , left_weights = get_min_cut_patch_horizontal(fake_left_block, fake_block_sized_patch, fake_gen_params)
+    fake_patching_config = dataclasses.replace(patching_config)
+    fake_patching_config.block_size = image.shape[0]
+    left_side_patch , left_weights = get_min_cut_patch_horizontal(fake_left_block, fake_block_sized_patch, fake_patching_config)
     right_side_patch, right_weights = get_min_cut_patch_horizontal(
             np.fliplr(fake_right_block),
             np.fliplr(fake_block_sized_patch),
-            fake_gen_params
+            fake_patching_config
         )
     right_side_patch = np.fliplr(right_side_patch)
 
@@ -66,8 +66,8 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, gen_para
     image[:, :block_size] = lookup_texture[y:y + image.shape[0], x:x + block_size]
     image[:, :overlap] = left_side_patch[:, :overlap]
     image[:, block_size - overlap:block_size] = right_side_patch[:, -overlap:]
-    update_seams_map_view(seams_map[:, :overlap], left_weights[:, :overlap], gen_params.blend_into_patch)
-    update_seams_map_view(seams_map[:, block_size - overlap:block_size], right_weights[:, -overlap:], gen_params.blend_into_patch)
+    update_seams_map_view(seams_map[:, :overlap], left_weights[:, :overlap], patching_config.blend_into_patch)
+    update_seams_map_view(seams_map[:, block_size - overlap:block_size], right_weights[:, -overlap:], patching_config.blend_into_patch)
 
     # fix overvalues due to seams overlap
     np.clip(seams_map, 0, 1, out=seams_map)
@@ -76,8 +76,8 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, gen_para
 
 
 def _seamless_vertical(image: np.ndarray, lookup_texture: np.ndarray,
-                       gen_params: GenParams, rng: np.random.Generator, uicd: UiCoordData | None = None):
-    texture, seams = _seamless_horizontal(image=np.rot90(image), gen_params=gen_params, rng=rng, uicd=uicd,
+                       patching_config: SquarePatchingConfig, rng: np.random.Generator, uicd: UiCoordData | None = None):
+    texture, seams = _seamless_horizontal(image=np.rot90(image), patching_config=patching_config, rng=rng, uicd=uicd,
                                           lookup_texture=None if lookup_texture is None else np.rot90(lookup_texture))
     if texture is None:
         return ret_val_on_interrupt
@@ -88,42 +88,42 @@ def _seamless_vertical(image: np.ndarray, lookup_texture: np.ndarray,
 
 @clear_cache_post_exec()
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, gen_params: GenParams,
+def seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, patching_config: SquarePatchingConfig,
                         rng: np.random.Generator, seams_map=None,
                         uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    return _seamless_horizontal(image, lookup_texture, gen_params, rng, seams_map, uicd)
+    return _seamless_horizontal(image, lookup_texture, patching_config, rng, seams_map, uicd)
 
 
 @clear_cache_post_exec()
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_vertical(image: np.ndarray, lookup_texture: np.ndarray,
-                      gen_params: GenParams, rng: np.random.Generator,
+                      patching_config: SquarePatchingConfig, rng: np.random.Generator,
                       uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    return _seamless_vertical(image, lookup_texture, gen_params, rng, uicd)
+    return _seamless_vertical(image, lookup_texture, patching_config, rng, uicd)
 
 
 @clear_cache_post_exec()
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_both(image: np.ndarray, lookup_texture: np.ndarray,
-                  gen_params: GenParams, rng: np.random.Generator,
+                  patching_config: SquarePatchingConfig, rng: np.random.Generator,
                   uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
     :param image: source texture to be made seamless.
     :param lookup_texture: texture from where the patches will be extracted.
-    :param gen_params: generation parameters.
+    :param patching_config: generation parameters.
     :param rng: random number generator (RNG).
     :param uicd: optional element to keep track of the generation or interrupt it.
     :return: the tuple: (texture, seam map)
     """
     lookup_texture = image if lookup_texture is None else lookup_texture
-    block_size = gen_params.block_size
+    block_size = patching_config.block_size
 
-    texture, seams = _seamless_vertical(image, lookup_texture, gen_params, rng, uicd)
+    texture, seams = _seamless_vertical(image, lookup_texture, patching_config, rng, uicd)
     if texture is None:
         return ret_val_on_interrupt
     for m in [texture, seams]:
         m[:] = np.roll(m, -block_size // 2, axis=0)  # center future seam at stripes interception
-    texture, seams = _seamless_horizontal(texture, lookup_texture, gen_params, rng, seams, uicd)
+    texture, seams = _seamless_horizontal(texture, lookup_texture, patching_config, rng, seams, uicd)
     if texture is None:
         return ret_val_on_interrupt
 
@@ -131,7 +131,7 @@ def seamless_both(image: np.ndarray, lookup_texture: np.ndarray,
     for m in [texture, seams]:
         m[:] = np.roll(m, texture.shape[0] // 2, axis=0)
         m[:] = np.roll(m, texture.shape[1] // 2 - block_size // 2, axis=1)
-    texture, seams = _patch_horizontal_seam(texture, seams, [lookup_texture], gen_params, rng, uicd)
+    texture, seams = _patch_horizontal_seam(texture, seams, [lookup_texture], patching_config, rng, uicd)
 
     # fix overvalues due to seams overlap
     np.clip(seams, 0, 1, out=seams)

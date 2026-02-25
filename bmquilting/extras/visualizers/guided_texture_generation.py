@@ -1,4 +1,4 @@
-from bmquilting.generate import GenParams, generate_texture
+from bmquilting.generate import SquarePatchingConfig, generate_texture
 from bmquilting.proxy_gen import generate_guided
 from bmquilting.guess_block_size import guess_nice_block_size
 from bmquilting.misc.texture_utils import add_salt_and_pepper
@@ -211,7 +211,7 @@ class GuidedTextureApp:
                 use_vignette=True
             )
 
-            gen_params = GenParams(
+            patching_config = SquarePatchingConfig(
                 vignette_on_match_template=True,
                 block_size=block_size,
                 overlap=overlap,
@@ -243,7 +243,7 @@ class GuidedTextureApp:
             out_tex, out_cut, out_proxy = generate_guided(
                 proxy_textures=[proxy],
                 source_textures=[noisy_src],
-                gen_params=gen_params,
+                patching_config=patching_config,
                 out_h=out_size,
                 out_w=out_size,
                 rng=rand_gen,
@@ -256,7 +256,7 @@ class GuidedTextureApp:
             self.update_progress("Generating WITHOUT guidance...")
             no_guide_tex, no_guide_cut = generate_texture(
                 src_textures=[noisy_src],
-                gen_params=gen_params,
+                patching_config=patching_config,
                 out_h=out_size,
                 out_w=out_size,
                 rng=rand_gen,

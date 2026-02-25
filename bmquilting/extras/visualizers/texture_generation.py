@@ -70,7 +70,7 @@ class GenerateTextureApp(SquarePatchGenApp):
             if nps < 0:
                 seamless_texture, seams_map = generate_texture_diagonal(
                     src_textures=self.get_lookup_textures(src_img_bgr),
-                    gen_params=gen_params,
+                    patching_config=gen_params,
                     out_h=self.out_height_var.get(),
                     out_w=self.out_width_var.get(),
                     rng=rand_gen,
@@ -79,7 +79,7 @@ class GenerateTextureApp(SquarePatchGenApp):
             elif nps == 0:
                 seamless_texture, seams_map = generate_texture(
                     src_textures=self.get_lookup_textures(src_img_bgr),
-                    gen_params=gen_params,
+                    patching_config=gen_params,
                     out_h=self.out_height_var.get(),
                     out_w=self.out_width_var.get(),
                     rng=rand_gen,
@@ -88,7 +88,7 @@ class GenerateTextureApp(SquarePatchGenApp):
             else:
                 seamless_texture, seams_map = generate_texture_parallel(
                     src_textures=self.get_lookup_textures(src_img_bgr),
-                    gen_params=gen_params,
+                    patching_config=gen_params,
                     out_h=self.out_height_var.get(),
                     out_w=self.out_width_var.get(),
                     nps=nps,

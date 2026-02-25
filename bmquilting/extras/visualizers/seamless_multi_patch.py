@@ -47,7 +47,7 @@ class ConvertToSeamlessTextureApp(SquarePatchGenApp):
             # Fetch Gen Params
             block_size = self.get_block_size(src_img_float)
             overlap = self.get_overlap_size(block_size)
-            gen_params = self.get_blend_config(block_size, overlap)
+            patching_config = self.get_blend_config(block_size, overlap)
 
             # Select function based on direction
             seamless_multi_patch_functions = {
@@ -59,7 +59,7 @@ class ConvertToSeamlessTextureApp(SquarePatchGenApp):
             direction = self.direction_var.get()
             seamless_texture, seams_map = seamless_multi_patch_functions[direction](
                 image=src_img_bgr,
-                gen_params=gen_params,
+                patching_config=patching_config,
                 rng=rand_gen,
                 lookup_textures=self.get_lookup_textures(src_img_bgr)
             )

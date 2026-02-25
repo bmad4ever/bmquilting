@@ -1,7 +1,7 @@
 from .synthesis_subroutines import (
     get_min_cut_patch_horizontal, get_min_cut_patch_vertical, get_min_cut_patch_both,
     update_seams_map_view, find_patch_vx_idx, apply_mask)
-from .types import GenParams, NumPixels, PatchIdx
+from .types import SquarePatchingConfig, NumPixels, PatchIdx
 from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui
 from .misc.custom_decorators import clear_cache_post_exec, step_predictor
 from .generate import _generate_texture_step_predictor
@@ -12,7 +12,7 @@ import numpy as np
 @clear_cache_post_exec()
 def _compute_synthesis_map(
         proxy_textures: list[np.ndarray],
-        gen_params: GenParams,
+        patching_config: SquarePatchingConfig,
         out_h: NumPixels, out_w: NumPixels,
         rng: np.random.Generator,
         uicd: UiCoordData | None) -> tuple[list[PatchIdx], np.ndarray, np.ndarray, np.ndarray]:
@@ -26,7 +26,7 @@ def _compute_synthesis_map(
         3rd item: generated proxy texture
         4th item: proxy texture's seams map
     """
-    b, o = gen_params.block_size, gen_params.overlap
+    b, o = patching_config.block_size, patching_config.overlap
     bmo = b - o
 
     n_h = int(ceil((out_h - b) / (b - o)))
@@ -73,11 +73,11 @@ def _compute_synthesis_map(
     def process_block(blk_idx, get_min_cut_patch, ref_block, seams_map_view, patch_idx: PatchIdx):
         patch_indices.append(patch_idx)
         patch_block = get_block(*patch_idx)
-        min_cut_patch, patch_weights = get_min_cut_patch(ref_block, patch_block, gen_params)
+        min_cut_patch, patch_weights = get_min_cut_patch(ref_block, patch_block, patching_config)
         store_patch_mask(patch_weights)
         ref_block[:] = min_cut_patch
         seams_map_sub_view = seams_map_view[blk_idx]
-        update_seams_map_view(seams_map_sub_view, patch_weights, gen_params.blend_into_patch)
+        update_seams_map_view(seams_map_sub_view, patch_weights, patching_config.blend_into_patch)
         check_ui(uicd, 1)
 
     def fill_row_inplace_proxy():
@@ -86,7 +86,7 @@ def _compute_synthesis_map(
             ref_block = texture_map[blk_idx]
             patch_idx = find_patch_vx_idx(
                 True, False, False, False,
-                ref_block, proxy_textures, gen_params, rng)
+                ref_block, proxy_textures, patching_config, rng)
             process_block(blk_idx, get_min_cut_patch_horizontal, ref_block, seams_map, patch_idx)
 
     def fill_quad_proxy():
@@ -99,7 +99,7 @@ def _compute_synthesis_map(
             ref_block = texture_map[blk_idx]
             patch_idx = find_patch_vx_idx(
                 False, False, True, False,
-                ref_block, proxy_textures, gen_params, rng)
+                ref_block, proxy_textures, patching_config, rng)
             process_block(blk_idx, get_min_cut_patch_vertical, ref_block, seams_map, patch_idx)
 
             for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
@@ -107,7 +107,7 @@ def _compute_synthesis_map(
                 ref_block = texture_map[blk_idx]
                 patch_idx = find_patch_vx_idx(
                     True, False, True, False,
-                    ref_block, proxy_textures, gen_params, rng)
+                    ref_block, proxy_textures, patching_config, rng)
                 process_block(blk_idx, get_min_cut_patch_both, ref_block, seams_map, patch_idx)
 
         return texture_map, seams_map
@@ -125,10 +125,10 @@ def _reconstruct_texture(textures: list[np.ndarray],
                          patches_indices: list[PatchIdx],
                          patches_masks: np.ndarray,
                          out_h: NumPixels, out_w: NumPixels,
-                         gen_params: GenParams,
+                         patching_config: SquarePatchingConfig,
                          uicd: UiCoordData | None
                          ) -> np.ndarray:
-    b, o = gen_params.block_size, gen_params.overlap
+    b, o = patching_config.block_size, patching_config.overlap
     bmo = b - o
 
     n_h = int(ceil((out_h - b) / (b - o)))
@@ -183,8 +183,8 @@ def _reconstruct_texture(textures: list[np.ndarray],
     return texture_map[:out_h, :out_w]
 
 
-def _generate_guided_steps_predictor(gen_params: GenParams, out_h: NumPixels, out_w: NumPixels):
-    return 2 * _generate_texture_step_predictor(gen_params=gen_params, out_h=out_h, out_w=out_w)
+def _generate_guided_steps_predictor(patching_config: SquarePatchingConfig, out_h: NumPixels, out_w: NumPixels):
+    return 2 * _generate_texture_step_predictor(patching_config=patching_config, out_h=out_h, out_w=out_w)
 
 
 @step_predictor(_generate_guided_steps_predictor)
@@ -192,7 +192,7 @@ def _generate_guided_steps_predictor(gen_params: GenParams, out_h: NumPixels, ou
 def generate_guided(
         proxy_textures: list[np.ndarray],
         source_textures: list[np.ndarray],
-        gen_params: GenParams,
+        patching_config: SquarePatchingConfig,
         out_h: NumPixels, out_w: NumPixels,
         rng: np.random.Generator,
         uicd: UiCoordData | None
@@ -214,7 +214,7 @@ def generate_guided(
     # note: ui interrupt exceptions are not caught by _compute_synthesis_map or _reconstruct_texture.
     #       the handle_ui_interrupts wrapper catches the exception here instead, since this is the public method.
     patches_idxs, masks, proxy_out_tex, out_cut = _compute_synthesis_map(
-        proxy_textures, gen_params, out_h, out_w, rng, uicd)
+        proxy_textures, patching_config, out_h, out_w, rng, uicd)
     out_tex = _reconstruct_texture(
-        source_textures, patches_idxs, masks, out_h, out_w, gen_params, uicd)
+        source_textures, patches_idxs, masks, out_h, out_w, patching_config, uicd)
     return out_tex, out_cut, proxy_out_tex

@@ -2,7 +2,7 @@ from bmquilting.seam_smartblur import auto_blend_config_2
 from bmquilting.types import BlendConfig, SquarePatchingBlendConfig, NumPixels
 from bmquilting.synthesis_subroutines import (
     ignore_min_cut_patch, get_min_cut_patch_mask_horizontal_jena2020, get_min_cut_patch_mask_horizontal_astar)
-from bmquilting.generate import GenParams
+from bmquilting.generate import SquarePatchingConfig
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -547,7 +547,7 @@ class SquarePatchGenApp(TextureAppTemplate):
                 raise ValueError(f"Invalid block size: {block_size_str}. Use 'auto' or a positive integer.")
         return block_size
 
-    def get_blend_config(self, block_size, overlap) -> GenParams:
+    def get_blend_config(self, block_size, overlap) -> SquarePatchingConfig:
         blend_config = None
         if self.enable_blend_var.get():
             blend_mode = self.blend_mode_var.get()
@@ -569,7 +569,7 @@ class SquarePatchGenApp(TextureAppTemplate):
                 )
             blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
 
-        gen_params = GenParams(
+        patching_config = SquarePatchingConfig(
             block_size=block_size,
             overlap=overlap,
             tolerance=self.tolerance_var.get(),
@@ -577,7 +577,7 @@ class SquarePatchGenApp(TextureAppTemplate):
             blend_config=blend_config,
             min_cut_search_method=self.get_seam_method()
         )
-        return gen_params
+        return patching_config
 
     #endregion Fetch Inputs Aux Funcs END_______________
 

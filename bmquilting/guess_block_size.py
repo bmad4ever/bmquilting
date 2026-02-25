@@ -85,7 +85,7 @@ def filter_pairs_by_weight(pairs: SizeWeightPairs, weight_percentage_threshold):
     return filtered_pairs
 
 
-def guess_nice_block_size(src: np.ndarray, freq_analysis_only: bool = False,
+def guess_nice_block_size(src: np.ndarray, freq_analysis_only: bool = True,
                           max_block_size: NumPixels | None = None) -> NumPixels:
     """
     :param src: numpy image with normalized float32 values

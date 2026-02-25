@@ -4,7 +4,7 @@ from functools import lru_cache
 from math import ceil
 
 from .misc.dry import apply_mask
-from .types import GenParams, BlendConfig, NumPixels
+from .types import SquarePatchingConfig, BlendConfig, NumPixels
 
 
 DEFAULT_MAX_BLEND_RATIO = 0.95  # percentage of the overlap size that can be used for blending purposes
@@ -188,8 +188,8 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
         np.minimum(radii_limiter, blend_radii, out=blend_radii)
         blend_radii[blend_radii <= 0] = .001  # can't use zero here due to division later
 
-    print(f"min diam, max diam, overlap, max diam found = {
-        min_blur_diameter, max_blur_diameter, mc_mask_overlap.shape[1], max_blur_diameter_found}")
+    #print(f"min diam, max diam, overlap, max diam found = {
+    #    min_blur_diameter, max_blur_diameter, mc_mask_overlap.shape[1], max_blur_diameter_found}")
 
     if max_blur_diameter_found > min_blur_diameter:  # if they are equal then there is nothing to dilate
         sigma = (min_blur_diameter + 1)/6
@@ -247,7 +247,7 @@ def auto_min_blend_size(sobel_ksize):
 
 
 def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask: np.ndarray,
-                                gen_params: GenParams) -> None:
+                                patching_config: SquarePatchingConfig) -> None:
     """
     Compute adaptive blend mask based on gradient differences.
     The output is copied to cut_mask to avoid additional allocations.
@@ -257,11 +257,11 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     :param patch:  the patch to be placed over the source, where the overlap area is [:, :overlap].
                     (rotate/flip the block in order to process other orientations)
     :param cut_mask: the mask used to produce the final patched block.
-    :param gen_params: generation parameters, which should contain the blend_config.
+    :param patching_config: generation parameters, which should contain the blend_config.
     """
-    block_size = gen_params.block_size  # = source.shape[0]
-    overlap = gen_params.overlap
-    sobel_ksize = gen_params.blend_config.sobel_kernel_size
+    block_size = patching_config.block_size  # = source.shape[0]
+    overlap = patching_config.overlap
+    sobel_ksize = patching_config.blend_config.sobel_kernel_size
     if USE_SCHAAR_WHEN_KSIZE_EQUALS_3:
         sobel_ksize = cv2.FILTER_SCHARR
 
@@ -290,8 +290,8 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     blended = create_adaptive_blend_mask(
         tdiff_map=tdiff_map,
         mc_mask_overlap=cut_mask_overlap,
-        blend_config=gen_params.blend_config,
-        radii_limiter=get_radii_limiter(block_size, overlap) if gen_params.blend_config.use_blur_radii_limiter else None,
+        blend_config=patching_config.blend_config,
+        radii_limiter=get_radii_limiter(block_size, overlap) if patching_config.blend_config.use_blur_radii_limiter else None,
         dtype=source.dtype
     )
 

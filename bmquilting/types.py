@@ -26,7 +26,7 @@ class Orientation(Enum):
     H_AND_V = "H & V"
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class BlendConfig:
     sobel_kernel_size: NumPixels = 3
     min_blur_diameter: NumPixels = 3
@@ -111,7 +111,7 @@ class BlendConfig:
                              f" must be less or equal to {self.max_blur_diameter = }")
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class SquarePatchingBlendConfig(BlendConfig):
     use_blur_radii_guess_pathfind_limiter: bool = True
     """
@@ -124,8 +124,8 @@ class SquarePatchingBlendConfig(BlendConfig):
     """
 
 
-@dataclass
-class GenParams:
+@dataclass(frozen=True, slots=True)
+class SquarePatchingConfig:
     """
     Data used across multiple quilting subroutines.
     Used in quilting.py and make_seamless.py
@@ -155,21 +155,27 @@ class GenParams:
     Only TM_SQDIFF and TM_CCOEFF_NORMED are supported.
     """
 
+    _mt_error_adjust: Callable[[float], float] = field(init=False)
+    """
+    Function to adjust the errors with respect to the match_template_method selected.
+    Not meant to be set by the user; it is set automatically via __post_init__.
+    """
+
 
     def __post_init__(self):
         if not (0.0 <= self.tolerance <= 1.0):
             raise ValueError(f"{self.tolerance = } tolerance should be in the [0,1] range.")
 
-        # Sets a method to adjust match template computed errors so that
-        #  the minimum selection behavior is kept unchanged independently of the selected method
+        # Bypass the frozen restriction to setup errors adjust function with respect to template matching method
         if self.match_template_method == cv2.TM_SQDIFF:
-            self._mt_error_adjust = lambda e: e
-        elif self.match_template_method == cv2.TM_CCOEFF_NORMED:
-            self._mt_error_adjust = lambda e: 1 - e  # values from 0 to 2
+            adjuster = lambda e: e
+        elif self.match_template_method == cv2.TM_CCOEFF_NORMED:  # [-1, 1] , where 1 is the best possible match
+            adjuster = lambda e: 1 - e   # adjust to only positive values where smaller values mean a better match
         else:
             raise ValueError(f"{self.match_template_method = } is invalid.\n"
                              f"Only TM_SQDIFF and TM_CCOEFF_NORMED are supported.")
 
+        object.__setattr__(self, '_mt_error_adjust', adjuster)
 
     def _compute_min_cut(self, source: ndarray, patch: ndarray) -> ndarray:
         return self.min_cut_search_method(source, patch, self.block_size, self.overlap, self.blend_config)

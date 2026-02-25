@@ -1,6 +1,6 @@
 import numpy as np
 import inspect
-from ..types import GenParams, NumPixels, Orientation
+from ..types import SquarePatchingConfig, NumPixels, Orientation
 
 
 def validate_array_shape(array: np.ndarray, min_height: int = None, min_width: int = None, help_msg: str = ""):
@@ -37,7 +37,7 @@ def validate_array_shape(array: np.ndarray, min_height: int = None, min_width: i
                              f" but {array_name} only has {array.shape[1]}.\n{help_msg}")
 
 
-def validate_gen_args(source, gen_args: GenParams):
+def validate_gen_args(source, gen_args: SquarePatchingConfig):
     """
     Validates generation parameters for quilting generation.
 
