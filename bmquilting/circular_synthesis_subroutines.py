@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from functools import lru_cache
 import pyastar2d
 import numpy as np
