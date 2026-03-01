@@ -6,7 +6,7 @@ import cv2
 from .synthesis_subroutines import (
     apply_mask, avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace,
     _filter_candidate_patches, _select_a_random_patch, blend_with_mask, update_seams_map_view)
-from .types import NumPixels, CircularPatchingConfig, CircularPatchParams
+from .types import NumPixels, CircularPatchingConfig, CircularPatchParams, PatchIdx
 from .seam_smartblur import gradients_differences_at_the_seam, create_adaptive_blend_mask
 from .misc.shmem_utils import SharedTextureList
 
@@ -94,7 +94,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
                               lookup_textures: list[np.ndarray] | SharedTextureList,
                               x: int, y: int,
                               config: CircularPatchingConfig,
-                              rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+                              rng: np.random.Generator) -> tuple[PatchIdx, np.ndarray]:
     """
     Finds and applies a single circular patch at location (x, y).
     Updates image, filled_mask, and seams_map arrays.
@@ -135,7 +135,8 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
         del corners_mask
 
     # Find the best matching patch from the lookup texture
-    patch: np.ndarray = _find_circular_patch(lookup_textures, block, tmpl_mask, config, rng)
+    best_text_idx, best_x, best_y = _find_circular_patch(lookup_textures, block, tmpl_mask, config, rng)
+    patch: np.ndarray = lookup_textures[best_text_idx][best_y:best_y+pp.block_size, best_x:best_x+pp.block_size]
 
     # AUX may be used for the patched block (w/ raw seam, no blending) and for the vignette
     #   no seams + no vignette is not an expected option combination; it only makes sense for debug purposes
@@ -159,7 +160,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     np.subtract(1, mask, out=mask)  # mask <- (1 - mask) so that image[bbox_idx] is sent as fg
     blend_with_mask(patch, image[bbox_idx], mask, out=image[bbox_idx])
 
-    return patch, mask
+    return (best_text_idx, best_x, best_y), mask
 
 
 # region "Min Cut" Related Functions  ____START
@@ -273,7 +274,7 @@ def _find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[i
 
 def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
                          block: np.ndarray, mask: np.ndarray,
-                         params: CircularPatchingConfig, rng: np.random.Generator) -> np.ndarray:
+                         params: CircularPatchingConfig, rng: np.random.Generator) -> PatchIdx:
     """
 
     :param lookup_textures: textures used for patch searching.
@@ -282,7 +283,7 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
     :param mask: Mask of the overlapping region. It should be of type float, having values in the interval [0, 1].
         The mask can be weighted to prioritize or neglect certain spots within the overlapping region.
     :param rng: random generator for results reproducibility.
-    :return: block sized patch containing the overlapping region.
+    :return: texture index and x,y top-left coordinates of the block sized patch containing the overlapping region.
     """
     block_size, tolerance = params.patch_params.block_size, params.tolerance
     err_mats: list[np.ndarray | None] = []
@@ -312,7 +313,7 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
     # --- PASS 2: Collect all candidates within the final tolerance window ---
     final_candidates = _filter_candidate_patches(err_mats, global_min_error, tolerance)
     best_texture_idx, best_x, best_y = _select_a_random_patch(final_candidates, rng)
-    return lookup_textures[best_texture_idx][best_y:best_y+block_size, best_x:best_x+block_size]
+    return best_texture_idx, best_x, best_y
 
 # region Weight Template Matching Auxiliary Funcs ____START
 
@@ -369,12 +370,12 @@ def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
                                  lookup_textures: list[np.ndarray] | SharedTextureList,
                                  x: int, y: int,
                                  config: CircularPatchingConfig,
-                                 rng: np.random.Generator) -> np.ndarray:
+                                 rng: np.random.Generator) -> tuple[PatchIdx, np.ndarray]:
     """
         Note: despite not updating seams, this function is prepared to handle non-empty image sources so
         that it can be repurposed for other use cases besides selecting the 1st patch when generating a texture.
 
-        :return: patch, mask
+        :return: patch_idxs, mask
     """
     radius = config.patch_params.radius
     center = config.patch_params.center
@@ -382,7 +383,8 @@ def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     y1, y2, x1, x2 = y - radius, y + radius + 1, x - radius, x + radius + 1
 
     # Random patch selection
-    rnd_lookup = lookup_textures[rng.integers(len(lookup_textures))]
+    rnd_text_idx = int(rng.integers(len(lookup_textures)))
+    rnd_lookup = lookup_textures[rnd_text_idx]
     h, w = rnd_lookup.shape[:2]
     rand_h = rng.integers(h - block_size)
     rand_w = rng.integers(w - block_size)
@@ -398,7 +400,7 @@ def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     np.maximum(mask, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
     image[y1:y2, x1:x2] += apply_mask(start_block, mask)
 
-    return start_block, mask
+    return (rnd_text_idx, x1, y1), mask
 
 
 def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst: np.ndarray = None) -> np.ndarray:
