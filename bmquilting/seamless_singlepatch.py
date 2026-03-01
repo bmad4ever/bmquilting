@@ -50,8 +50,7 @@ def _seamless_horizontal(image: np.ndarray, lookup_texture: np.ndarray, patching
     fake_block_sized_patch = np.zeros((image.shape[0], image.shape[0], image.shape[2]), dtype=image.dtype)
     fake_block_sized_patch[:, :overlap] = lookup_texture[y:y + image.shape[0], x:x + overlap]
     fake_block_sized_patch[:, -overlap:] = lookup_texture[y:y + image.shape[0], x + block_size - overlap:x + block_size]
-    fake_patching_config = dataclasses.replace(patching_config)
-    fake_patching_config.block_size = image.shape[0]
+    fake_patching_config = dataclasses.replace(patching_config, block_size=image.shape[0])
     left_side_patch , left_weights = get_min_cut_patch_horizontal(fake_left_block, fake_block_sized_patch, fake_patching_config)
     right_side_patch, right_weights = get_min_cut_patch_horizontal(
             np.fliplr(fake_right_block),
