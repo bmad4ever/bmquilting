@@ -85,12 +85,16 @@ def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
         )
     return mask
 
+def get_bbox_idx(x: int, y: int, patch_params: CircularPatchParams) -> tuple[slice, slice]:
+    radius = patch_params.radius
+    return np.s_[y - radius:y + radius + 1, x - radius:x + radius + 1]
+
 
 def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_map: np.ndarray,
                               lookup_textures: list[np.ndarray] | SharedTextureList,
                               x: int, y: int,
                               config: CircularPatchingConfig,
-                              rng: np.random.Generator):
+                              rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
     """
     Finds and applies a single circular patch at location (x, y).
     Updates image, filled_mask, and seams_map arrays.
@@ -104,10 +108,12 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     :param y: y position on the image array (not the index in a lattice).
     :param lookup_textures: source images used for patch extraction.
         Should be of type float32, sharing the same type as the provided image.
+
+    :return: patch, mask
     """
     # --- Fetch Config Parameters ---
     pp = config.patch_params
-    bbox_idx = np.s_[y - pp.radius:y + pp.radius + 1, x - pp.radius:x + pp.radius + 1]  # bbox for the area being patched
+    bbox_idx = get_bbox_idx(x, y, pp)  # bbox for the area being patched
 
     # Extract the current image block and the region of interest (ROI)
     block = image[bbox_idx]
@@ -152,6 +158,8 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     # Paste into the Source Image
     np.subtract(1, mask, out=mask)  # mask <- (1 - mask) so that image[bbox_idx] is sent as fg
     blend_with_mask(patch, image[bbox_idx], mask, out=image[bbox_idx])
+
+    return patch, mask
 
 
 # region "Min Cut" Related Functions  ____START
@@ -361,10 +369,12 @@ def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
                                  lookup_textures: list[np.ndarray] | SharedTextureList,
                                  x: int, y: int,
                                  config: CircularPatchingConfig,
-                                 rng: np.random.Generator):
+                                 rng: np.random.Generator) -> np.ndarray:
     """
         Note: despite not updating seams, this function is prepared to handle non-empty image sources so
         that it can be repurposed for other use cases besides selecting the 1st patch when generating a texture.
+
+        :return: patch, mask
     """
     radius = config.patch_params.radius
     center = config.patch_params.center
@@ -387,6 +397,8 @@ def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     np.subtract(1, mask, out=mask)
     np.maximum(mask, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
     image[y1:y2, x1:x2] += apply_mask(start_block, mask)
+
+    return start_block, mask
 
 
 def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst: np.ndarray = None) -> np.ndarray:
