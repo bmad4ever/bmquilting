@@ -1,20 +1,21 @@
 from joblib.externals.loky import get_reusable_executor
 from multiprocessing.shared_memory import SharedMemory
+from numpy.random.bit_generator import SeedSequence
 from collections.abc import Iterable
 import numpy as np
 
-from bmquilting.circular_synthesis_subroutines import (
-    set_random_patch_at_location, process_patch_at_location,
-    CircularPatchingConfig, _get_annular_mask, _get_circle_mask)
-from bmquilting.misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
-from bmquilting.seam_smartblur import circular_kernel, get_max_possible_gradient_diff
-from bmquilting.misc.custom_decorators import clear_cache_post_exec, step_predictor
-from bmquilting.hexa_lattice_iter import HexagonalLatticeIterator, Vec2_int
-from bmquilting.misc.shmem_utils import SharedTextureList
-from numpy.random.bit_generator import SeedSequence
-from bmquilting.types import NumPixels
+from .circular_synthesis_subroutines import (
+    set_random_patch_at_location, process_patch_at_location, _get_annular_mask, _get_circle_mask)
+from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
+from .seam_smartblur import circular_kernel, get_max_possible_gradient_diff
+from .misc.custom_decorators import clear_cache_post_exec, step_predictor
+from .hexa_lattice_iter import HexagonalLatticeIterator, Vec2_int
+from .types import NumPixels, CircularPatchingConfig
+from .misc.shmem_utils import SharedTextureList
 
 import logging
+
+
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
@@ -52,6 +53,18 @@ def _generate_hex_step_predictor(patching_config: CircularPatchingConfig, out_h:
 
     return sum(1 for inner in hexa_iter.iterate_spiral() for _ in inner)
 
+def _validate_args(n_processes: int, patching_config: CircularPatchingConfig):
+    if n_processes <= 0 or n_processes > 6:
+        raise ValueError("n_processes must be in the interval [1, 6]")
+
+    critical_spacing_factor = 1.12
+    if patching_config.spacing_factor <= critical_spacing_factor:
+        logger.warning(
+            f"Spacing factor is less than or equal to {critical_spacing_factor}: "
+            "patches from different sections may overlap and changing the number of processes may change the output."
+        )
+    del critical_spacing_factor
+
 
 @step_predictor(_generate_hex_step_predictor)
 @clear_cache_post_exec(
@@ -82,16 +95,7 @@ def generate_cphl(
     :param uicd: (Optional) Keeps track of the generation step
     :return: (Texture, Seams)
     """
-    if n_processes <= 0 or n_processes > 6:
-        raise ValueError("n_processes must be in the interval [1, 6]")
-
-    critical_spacing_factor = 1.12
-    if patching_config.spacing_factor <= critical_spacing_factor:
-        logger.warning(
-            f"Spacing factor is less than or equal to {critical_spacing_factor}: "
-            "patches from different sections may overlap and changing the number of processes may change the output."
-        )
-    del critical_spacing_factor
+    _validate_args(n_processes, patching_config)
 
     pp = patching_config.patch_params
     extended_h, extended_w = _get_extended_size(pp.block_size, out_h), _get_extended_size(pp.block_size, out_w)
