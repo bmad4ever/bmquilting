@@ -64,7 +64,7 @@ def _generate_hex_step_predictor(patching_config: CircularPatchingConfig, out_h:
 def generate_cphl(
         source_textures: list[np.ndarray],
         out_h: NumPixels, out_w: NumPixels,
-        patching_config: CircularPatchingConfig, # TODO rename to params for consistency? or reverse the other one...
+        patching_config: CircularPatchingConfig,
         seed: int,
         n_processes: int = 1,
         uicd: UiCoordData = None
