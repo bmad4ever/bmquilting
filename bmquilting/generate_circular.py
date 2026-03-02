@@ -104,7 +104,9 @@ def generate_cphl(
     lookup_texts = SharedTextureList.from_list(source_textures)
     del source_textures  # ignore, from here & use lookup_texts
 
-    texture_shm, texture_meta = shm_mem_array((extended_h, extended_w, 3), lookup_texts.metadata.global_dtype)
+    texture_shm, texture_meta = shm_mem_array(
+        (extended_h, extended_w,  lookup_texts.metadata.global_number_of_channels),
+        lookup_texts.metadata.global_dtype)
     seams_shm, seams_meta = shm_mem_array((extended_h, extended_w), "float32")
     filled_shm, filled_meta = shm_mem_array((extended_h, extended_w), "float32")
     shm_metadata = {
@@ -172,7 +174,7 @@ def generate_cphl(
         texture = np.ndarray(texture_meta['shape'], dtype=texture_meta['dtype'], buffer=texture_shm.buf).copy()
         seams = np.ndarray(seams_meta['shape'], dtype=seams_meta['dtype'], buffer=seams_shm.buf).copy()
         np.clip(seams, 0, 1, out=seams)
-        ret_idx = np.s_[margin_x:out_w+margin_x, pp.block_size:out_h+margin_y]
+        ret_idx = np.s_[margin_x:out_w+margin_x, margin_y:out_h+margin_y]
         return texture[ret_idx], seams[ret_idx]
     finally:
         get_reusable_executor().shutdown(wait=True)
