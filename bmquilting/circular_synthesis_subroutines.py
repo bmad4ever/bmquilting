@@ -109,7 +109,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     :param lookup_textures: source images used for patch extraction.
         Should be of type float32, sharing the same type as the provided image.
 
-    :return: patch, mask
+    :return: (patch indices, mask)
     """
     # --- Fetch Config Parameters ---
     pp = config.patch_params
@@ -135,7 +135,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
         del corners_mask
 
     # Find the best matching patch from the lookup texture
-    best_text_idx, best_x, best_y = _find_circular_patch(lookup_textures, block, tmpl_mask, config, rng)
+    best_text_idx, best_y, best_x = _find_circular_patch(lookup_textures, block, tmpl_mask, config, rng)
     patch: np.ndarray = lookup_textures[best_text_idx][best_y:best_y+pp.block_size, best_x:best_x+pp.block_size]
 
     # AUX may be used for the patched block (w/ raw seam, no blending) and for the vignette
@@ -160,7 +160,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     np.subtract(1, mask, out=mask)  # mask <- (1 - mask) so that image[bbox_idx] is sent as fg
     blend_with_mask(patch, image[bbox_idx], mask, out=image[bbox_idx])
 
-    return (best_text_idx, best_x, best_y), mask
+    return (best_text_idx, best_y, best_x), mask
 
 
 # region "Min Cut" Related Functions  ____START
@@ -283,7 +283,7 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
     :param mask: Mask of the overlapping region. It should be of type float, having values in the interval [0, 1].
         The mask can be weighted to prioritize or neglect certain spots within the overlapping region.
     :param rng: random generator for results reproducibility.
-    :return: texture index and x,y top-left coordinates of the block sized patch containing the overlapping region.
+    :return: texture index and (y, x) top-left coordinates of the block sized patch containing the overlapping region.
     """
     block_size, tolerance = params.patch_params.block_size, params.tolerance
     err_mats: list[np.ndarray | None] = []
@@ -312,8 +312,7 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
 
     # --- PASS 2: Collect all candidates within the final tolerance window ---
     final_candidates = _filter_candidate_patches(err_mats, global_min_error, tolerance)
-    best_texture_idx, best_x, best_y = _select_a_random_patch(final_candidates, rng)
-    return best_texture_idx, best_x, best_y
+    return _select_a_random_patch(final_candidates, rng)
 
 # region Weight Template Matching Auxiliary Funcs ____START
 

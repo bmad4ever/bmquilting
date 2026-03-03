@@ -180,7 +180,7 @@ def find_patch_vx_idx(overlaps_left: bool,
 
     # --- PASS 2: Collect all candidates within the final tolerance window ---
     final_candidates = _filter_candidate_patches(err_mats, global_min_error, tolerance)
-    best_texture_idx, best_x, best_y = _select_a_random_patch(final_candidates, rng)
+    best_texture_idx, best_y, best_x = _select_a_random_patch(final_candidates, rng)
     return best_texture_idx, best_y, best_x
 
 
@@ -196,8 +196,7 @@ def _select_a_random_patch(final_candidates: list[tuple[int, int, int]], rng: Ge
         # true impossible cases.
         raise ValueError("No patches met the final tolerance criteria.")
     c = rng.integers(len(final_candidates))
-    best_texture_idx, best_y, best_x = final_candidates[c]
-    return best_texture_idx, best_x, best_y
+    return final_candidates[c]
 
 
 def _filter_candidate_patches(err_mats: list[ndarray | None],
