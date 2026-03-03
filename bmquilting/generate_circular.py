@@ -6,13 +6,14 @@ from multiprocessing import Manager
 import numpy as np
 
 from .circular_synthesis_subroutines import (
-    set_random_patch_at_location, process_patch_at_location, _get_annular_mask, _get_circle_mask)
+    set_random_patch_at_location, process_patch_at_location, _get_annular_mask, _get_circle_mask, get_bbox_idx)
 from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
+from .types import NumPixels, CircularPatchingConfig, PatchIdx, CircularPatchParams
 from .seam_smartblur import circular_kernel, get_max_possible_gradient_diff
 from .misc.custom_decorators import clear_cache_post_exec, step_predictor
 from .hexa_lattice_iter import HexagonalLatticeIterator, Vec2_int
-from .types import NumPixels, CircularPatchingConfig, PatchIdx
 from .misc.shmem_utils import SharedTextureList
+from .misc.dry import blend_with_mask
 
 import logging
 
@@ -144,7 +145,6 @@ def generate_cphl6p(
                          for i, key in enumerate(["texture", "filled"])]
             x, y = center
             result = set_random_patch_at_location(np_arrays[0], np_arrays[1], lookup_texts, x, y, patching_config, rng)
-            print(f"{result = }")
             shared_data["record"](job_id, result)
             check_ui(uicd, 1)
 
@@ -209,3 +209,163 @@ def generate_cphl6p(
             shm.close()
             shm.unlink()
         lookup_texts.release()
+
+
+def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
+                                proxy_data: ProxyData,
+                                out_h: NumPixels, out_w: NumPixels,
+                                patching_config: CircularPatchingConfig,
+                                n_processes: int,
+                                uicd: UiCoordData | None
+                                ) -> np.ndarray | RetOnInterrupt:
+    pp: CircularPatchParams = patching_config.patch_params
+    block_size = pp.block_size
+    extended_h, extended_w = _get_extended_size(pp.block_size, out_h), _get_extended_size(pp.block_size, out_w)
+
+    margin_x, margin_y = (extended_w - out_w) // 2, (extended_h - out_h) // 2
+    lookup_texts = SharedTextureList.from_list(source_textures)
+    del source_textures  # ignore, from here & use lookup_texts
+
+    texture_shm, texture_meta = shm_mem_array(
+        (extended_h, extended_w, lookup_texts.metadata.global_number_of_channels),
+        lookup_texts.metadata.global_dtype)
+
+    counts_shm, counts_meta = shm_mem_array((6,), "uint32")  # processed patches counts ( for 6 job_ids )
+
+    shm_metadata = {
+        "texture": texture_meta,
+        "counts": counts_meta,
+        "uicd": uicd.jobs_shm_name if uicd is not None else None,
+    }
+
+    def get_patch(idx: PatchIdx) -> np.ndarray:
+        texture_index = idx[0]
+        py, px = idx[1], idx[2]
+        block_coords = np.s_[py:py + block_size, px:px + block_size]
+        return lookup_texts[texture_index][block_coords]
+
+    def _consume(job_id: int, counts: np.ndarray) -> tuple[PatchIdx, np.ndarray]:
+        results_list, pos = proxy_data[job_id], counts[job_id]
+        counts[job_id] += 1
+        return results_list[pos]
+
+    def _apply_patch(shm_out_text: np.ndarray, patch_center: Vec2_int, job_id: int, counts: np.ndarray):
+        x, y = patch_center
+        patch_idx, mask = _consume(job_id, counts)
+        patch = get_patch(patch_idx)
+        region_idx = get_bbox_idx(x, y, pp)
+        region = shm_out_text[region_idx]
+        blend_with_mask(patch, region, mask, out=region)
+
+    def _open_shm(shared_data: dict, item_name: str) -> tuple[SharedMemory, np.ndarray]:
+        shm = SharedMemory(name=shared_data[item_name]['name'])
+        array = np.ndarray(shared_data[item_name]['shape'], dtype=shared_data[item_name]['dtype'], buffer=shm.buf)
+        return shm, array
+
+    def process_patches_batch(points_batch: Iterable[Vec2_int], shared_data: dict, job_id: int, _):
+        job_uicd = None
+        if shared_data["uicd"] is not None:
+            job_uicd = UiCoordData(shared_data["uicd"], job_id % n_processes)
+
+        txt_shm, texture = _open_shm(shared_data, "texture")
+        cnt_shm, counts = _open_shm(shared_data, "counts")
+        try:
+            for point in points_batch:
+                _apply_patch(texture, point, job_id, counts)
+                check_ui(job_uicd, 1)
+        except JobInterrupted:
+            raise JobInterrupted
+        finally:
+            txt_shm.close()
+            cnt_shm.close()
+            if job_uicd is not None:
+                job_uicd.close()
+
+    try:
+        # Setup lattice iterator & Synthesize
+        hexa_iter = HexagonalLatticeIterator(
+            min_x=margin_x // 2, min_y=margin_y // 2,
+            max_x=out_w + margin_x + margin_x // 2, max_y=out_h + margin_y + margin_y // 2,
+            spacing=patching_config.spacing,
+            process_func=process_patches_batch,
+            shared_data=shm_metadata
+        )
+        hexa_iter.process_spiral(n_processes)
+
+        # Fetch final texture and seams & Crop result
+        texture = np.ndarray(texture_meta['shape'], dtype=texture_meta['dtype'], buffer=texture_shm.buf).copy()
+        ret_idx = np.s_[margin_y:out_h + margin_y, margin_x:out_w + margin_x]
+        return texture[ret_idx]
+    finally:
+        get_reusable_executor().shutdown(wait=True)
+        for shm in [texture_shm]:
+            shm.close()
+            shm.unlink()
+        lookup_texts.release()
+
+
+def _generate_guided_chlp6p_step_predictor(patching_config: CircularPatchingConfig, out_h: int, out_w: int):
+    return _generate_chlp6p_step_predictor(patching_config, out_h, out_w) * 2
+
+
+@step_predictor(_generate_guided_chlp6p_step_predictor)
+@clear_cache_post_exec(
+    circular_kernel,
+    get_max_possible_gradient_diff,
+    _get_annular_mask,
+    _get_circle_mask
+)
+@handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
+def generate_guided_cphl6p(
+        proxy_textures: list[np.ndarray],
+        source_textures: list[np.ndarray],
+        patching_config: CircularPatchingConfig,
+        out_h: NumPixels, out_w: NumPixels,
+        seed: int,
+        n_processes: int = 1,
+        uicd: UiCoordData | None = None
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
+    """
+    Uses a variant of the source_textures to guide the texture synthesis algorithms and maps the result to the
+    source textures.
+    Can be used, for example, in noisy images, where a filter can be applied so that the
+    generation is not influenced by noise or some other visual artifacts or features.
+
+    proxy_textures and source_textures should match in length and in their elements dimensions.
+
+    :param proxy_textures: Textures used to guide the generation.
+    :param source_textures: Textures used for the final generation, guided by the proxy generation obtained with proxy_textures.
+
+    Check generate_cphl6p documentation for the remaining arguments.
+
+    :return:
+        item 1: reconstructed synthesis result using the source textures;
+        item 2: seams map;
+        item 3: synthesis result using the proxy textures.
+    """
+
+    # note: ui interrupt exceptions are not caught by _compute_synthesis_map or _reconstruct_texture.
+
+    critical_spacing_factor = 1.12
+    if patching_config.spacing_factor <= critical_spacing_factor and n_processes > 1:
+        logger.warning(
+            f"Spacing factor is less than or equal to {critical_spacing_factor} and number of processes is higher than 1."
+            "\nDue to potential overlaps, not only is the output not guaranteed to be deterministic, "
+            "the reconstruct procedure after the proxy generation may introduce artifacts due to different patch ordering."
+        )
+    del critical_spacing_factor
+
+    # remove ui interrup wrapping
+    proxy_data, proxy_out_tex, out_seams = generate_cphl6p.__wrapped__.__wrapped__(
+        proxy_textures, out_h, out_w, patching_config,
+        seed, n_processes, uicd,
+        _by_proxy=True
+    )
+
+    out_tex = _reconstruct_texture_cphl6p(
+        source_textures, proxy_data,
+        out_h, out_w, patching_config,
+        n_processes, uicd
+    )
+
+    return out_tex, out_seams, proxy_out_tex
