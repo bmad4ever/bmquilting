@@ -390,14 +390,14 @@ def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     start_block = rnd_lookup[rand_h:rand_h + block_size, rand_w:rand_w + block_size]
 
     # Create circular mask
-    mask = np.ones((block_size, block_size), dtype=filled_mask.dtype)
-    cv2.circle(mask, (center, center), radius, (0,), -1)
+    mask = np.zeros((block_size, block_size), dtype=filled_mask.dtype)
+    cv2.circle(mask, (center, center), radius, (1,), -1)
 
     # Update image & Filled mask
-    apply_mask(image[y1:y2, x1:x2], mask, True)
+    bbox_idx = np.s_[y1:y2, x1:x2]
+    np.maximum(mask, filled_mask[bbox_idx], out=filled_mask[bbox_idx])
     np.subtract(1, mask, out=mask)
-    np.maximum(mask, filled_mask[y1:y2, x1:x2], out=filled_mask[y1:y2, x1:x2])
-    image[y1:y2, x1:x2] += apply_mask(start_block, mask)
+    blend_with_mask(start_block, image[bbox_idx], mask, out=image[bbox_idx])
 
     return (rnd_text_idx, rand_h, rand_w), mask
 
