@@ -291,9 +291,8 @@ class HexagonalLatticeIterator:
 
         # Step 3: Process 6 directions in parallel with joblib
         directions = [self._get_direction_vector(center, n) for n in neighbors]
-        directional_points = []
 
-        print(f"Processing {len(directional_points)} directions in parallel")
+        print(f"Processing {len(directions)} directions in parallel")
         parallel = Parallel(n_jobs=n_processes, backend="loky", timeout=None, verbose=0)
         parallel(
             delayed(_wrap_generator_func)(

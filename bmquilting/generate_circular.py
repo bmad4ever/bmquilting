@@ -2,6 +2,7 @@ from joblib.externals.loky import get_reusable_executor
 from multiprocessing.shared_memory import SharedMemory
 from numpy.random.bit_generator import SeedSequence
 from collections.abc import Iterable
+from multiprocessing import Manager
 import numpy as np
 
 from .circular_synthesis_subroutines import (
@@ -10,7 +11,7 @@ from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInter
 from .seam_smartblur import circular_kernel, get_max_possible_gradient_diff
 from .misc.custom_decorators import clear_cache_post_exec, step_predictor
 from .hexa_lattice_iter import HexagonalLatticeIterator, Vec2_int
-from .types import NumPixels, CircularPatchingConfig
+from .types import NumPixels, CircularPatchingConfig, PatchIdx
 from .misc.shmem_utils import SharedTextureList
 
 import logging
@@ -21,6 +22,10 @@ logger.addHandler(logging.NullHandler())
 
 type RetOnInterrupt = tuple[None, None]
 ret_val_on_interrupt = (None, None)
+
+
+type ProxyData = dict[int, list[tuple[PatchIdx, np.ndarray]]]
+""" job id ->  lookup texture & patch top-left corner coordinates ;  masks """
 
 
 def shm_mem_array(shape, dtype:str) -> tuple[SharedMemory, dict]:
@@ -40,7 +45,7 @@ def _get_extended_size(block_size: NumPixels, size: NumPixels) -> NumPixels:
     """
     return (size // block_size + 3) * block_size
 
-def _generate_hex_step_predictor(patching_config: CircularPatchingConfig, out_h: NumPixels, out_w: NumPixels):
+def _generate_chlp6p_step_predictor(patching_config: CircularPatchingConfig, out_h: NumPixels, out_w: NumPixels):
     pp = patching_config.patch_params
     extended_h, extended_w = _get_extended_size(pp.block_size, out_h), _get_extended_size(pp.block_size, out_w)
     margin_x, margin_y = (extended_w - out_w) // 2, (extended_h - out_h) // 2
@@ -66,7 +71,7 @@ def _validate_args(n_processes: int, patching_config: CircularPatchingConfig):
     del critical_spacing_factor
 
 
-@step_predictor(_generate_hex_step_predictor)
+@step_predictor(_generate_chlp6p_step_predictor)
 @clear_cache_post_exec(
     circular_kernel,
     get_max_possible_gradient_diff,
@@ -74,16 +79,17 @@ def _validate_args(n_processes: int, patching_config: CircularPatchingConfig):
     _get_circle_mask
 )
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def generate_cphl(
+def generate_cphl6p(
         source_textures: list[np.ndarray],
         out_h: NumPixels, out_w: NumPixels,
         patching_config: CircularPatchingConfig,
         seed: int,
         n_processes: int = 1,
-        uicd: UiCoordData = None
-) -> tuple[np.ndarray, np.ndarray]:
+        uicd: UiCoordData = None,
+        _by_proxy: bool = False
+) -> tuple[np.ndarray, np.ndarray] | tuple[ProxyData, np.ndarray, np.ndarray]:
     """
-    Circular Patches on a Hexagonal Lattice (CPHL)
+    Circular Patches on a Hexagonal Lattice with 6 Partitions (CPHL6P)
 
     :param source_textures: Textures used for the generation
     :param out_h: Output texture height
@@ -93,9 +99,22 @@ def generate_cphl(
         sections do not overlap. If the spacing factor is not lower than 1.12, there is potential overlap.
     :param n_processes: Number of processes to run in parallel when filling the stripes and sections.
     :param uicd: (Optional) Keeps track of the generation step
-    :return: (Texture, Seams)
+    :param _by_proxy: If True, also returns patch indices and masks grouped by "job" (not a process).
+        A "job" contains one stripe and 1 section, independently of the number of processes used.
+        The center patch is stored as the first item in job of index zero.
+    :return: (Texture, Seams) normally, or (proxy_data, Texture, Seams) when _by_proxy=True,
     """
     _validate_args(n_processes, patching_config)
+
+    if _by_proxy:
+        _proxy_manager = Manager()
+        # One result slot per POTENTIAL process (job_id); set_1st_patch always writes to slot 0.
+        _proxy_results = _proxy_manager.list([_proxy_manager.list() for _ in range(6)])
+        def _record(job_id: int, result: tuple):
+            _proxy_results[job_id].append(result)
+    else:
+        _proxy_results = None
+        def _record(job_id, result): pass  # do not record anything for normal generation
 
     pp = patching_config.patch_params
     extended_h, extended_w = _get_extended_size(pp.block_size, out_h), _get_extended_size(pp.block_size, out_w)
@@ -114,6 +133,7 @@ def generate_cphl(
         "seams": seams_meta,
         "filled": filled_meta,
         "uicd": uicd.jobs_shm_name if uicd is not None else None,
+        "record": _record,
     }
 
     def set_1st_patch(center: Vec2_int, shared_data: dict, job_id, seed):
@@ -124,7 +144,9 @@ def generate_cphl(
             np_arrays = [np.ndarray(shared_data[key]['shape'], dtype=shared_data[key]['dtype'], buffer=shm_items[i].buf)
                          for i, key in enumerate(["texture", "filled"])]
             x, y = center
-            set_random_patch_at_location(np_arrays[0], np_arrays[1], lookup_texts, x, y, patching_config, rng)
+            result = set_random_patch_at_location(np_arrays[0], np_arrays[1], lookup_texts, x, y, patching_config, rng)
+            print(f"{result = }")
+            shared_data["record"](job_id, result)
             check_ui(uicd, 1)
 
         except JobInterrupted:
@@ -146,7 +168,8 @@ def generate_cphl(
             np_arrays = [np.ndarray(shared_data[key]['shape'], dtype=shared_data[key]['dtype'], buffer=shm_items[i].buf)
                          for i, key in enumerate(["texture", "filled", "seams"])]
             for x, y in points_batch:
-                process_patch_at_location(np_arrays[0], np_arrays[1], np_arrays[2], lookup_texts, x, y, patching_config, rng)
+                result = process_patch_at_location(np_arrays[0], np_arrays[1], np_arrays[2], lookup_texts, x, y, patching_config, rng)
+                shared_data["record"](job_id, result)
                 check_ui(job_uicd, 1)
 
         except JobInterrupted:
@@ -175,6 +198,11 @@ def generate_cphl(
         seams = np.ndarray(seams_meta['shape'], dtype=seams_meta['dtype'], buffer=seams_shm.buf).copy()
         np.clip(seams, 0, 1, out=seams)
         ret_idx = np.s_[margin_y:out_h+margin_y, margin_x:out_w+margin_x]
+
+        if _by_proxy:
+            results_dict = {i: list(inner_list) for i, inner_list in enumerate(_proxy_results)}
+            return results_dict, texture[ret_idx], seams[ret_idx]
+
         return texture[ret_idx], seams[ret_idx]
     finally:
         get_reusable_executor().shutdown(wait=True)
