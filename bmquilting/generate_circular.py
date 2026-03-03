@@ -68,7 +68,6 @@ def _validate_args(n_processes: int, patching_config: CircularPatchingConfig):
             f"Spacing factor is less than or equal to {critical_spacing_factor}: "
             "patches from different sections may overlap and changing the number of processes may change the output."
         )
-    del critical_spacing_factor
 
 
 @step_predictor(_generate_chlp6p_step_predictor)
