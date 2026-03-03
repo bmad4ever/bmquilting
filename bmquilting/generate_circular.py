@@ -174,7 +174,7 @@ def generate_cphl(
         texture = np.ndarray(texture_meta['shape'], dtype=texture_meta['dtype'], buffer=texture_shm.buf).copy()
         seams = np.ndarray(seams_meta['shape'], dtype=seams_meta['dtype'], buffer=seams_shm.buf).copy()
         np.clip(seams, 0, 1, out=seams)
-        ret_idx = np.s_[margin_x:out_w+margin_x, margin_y:out_h+margin_y]
+        ret_idx = np.s_[margin_y:out_h+margin_y, margin_x:out_w+margin_x]
         return texture[ret_idx], seams[ret_idx]
     finally:
         get_reusable_executor().shutdown(wait=True)
