@@ -4,6 +4,7 @@ from numpy.random.bit_generator import SeedSequence
 from collections.abc import Iterable
 from multiprocessing import Manager
 import numpy as np
+import cv2
 
 from .circular_synthesis_subroutines import (
     set_random_patch_at_location, process_patch_at_location, _get_annular_mask, _get_circle_mask, get_bbox_idx)
@@ -59,7 +60,7 @@ def _generate_chlp6p_step_predictor(patching_config: CircularPatchingConfig, out
 
     return sum(1 for inner in hexa_iter.iterate_spiral() for _ in inner)
 
-def _validate_args(n_processes: int, patching_config: CircularPatchingConfig):
+def _validate_cphl6p_args(n_processes: int, patching_config: CircularPatchingConfig):
     if n_processes <= 0 or n_processes > 6:
         raise ValueError("n_processes must be in the interval [1, 6]")
 
@@ -104,7 +105,7 @@ def generate_cphl6p(
         The center patch is stored as the first item in job of index zero.
     :return: (Texture, Seams) normally, or (proxy_data, Texture, Seams) when _by_proxy=True,
     """
-    _validate_args(n_processes, patching_config)
+    _validate_cphl6p_args(n_processes, patching_config)
 
     if _by_proxy:
         _proxy_manager = Manager()
@@ -369,3 +370,48 @@ def generate_guided_cphl6p(
     )
 
     return out_tex, out_seams, proxy_out_tex
+
+
+def fill_cphl(
+        target: np.ndarray,
+        mask: np.ndarray,
+        source_textures: list[np.ndarray],
+        patching_config: CircularPatchingConfig,
+        seed: int,
+        uicd: UiCoordData = None
+        # TODO _by_proxy
+):
+    if target.shape[0] != mask.shape[0] or target.shape[1] != mask.shape[1]:
+        raise ValueError("target and mask must have the same size")
+
+    pp = patching_config.patch_params
+    rng = np.random.default_rng(seed)
+
+    # setup extended target & mask in case the mask has holes near the edges
+    height, width = target.shape[:2]
+    extended_height = _get_extended_size(height, pp.block_size)
+    extended_width  = _get_extended_size(width, pp.block_size)
+    margin_y, margin_x = (extended_height - height) // 2, (extended_width - width) // 2
+
+    extended_target = cv2.copyMakeBorder(target, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
+    extended_holes_mask = cv2.copyMakeBorder(mask, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
+    extended_filled_mask = extended_holes_mask.copy()
+    extended_seams = np.zeros_like(extended_holes_mask)
+
+    # setup iterator
+    hexa_iter = HexagonalLatticeIterator(
+        min_x=margin_x // 2, min_y=margin_y // 2,
+        max_x=width + margin_x + margin_x // 2, max_y=height + margin_y + margin_y // 2,
+        spacing=patching_config.spacing,
+    )
+
+    # fill the holes
+    for x, y in hexa_iter.iterate_row_major(extended_holes_mask):
+        process_patch_at_location(
+            extended_target, extended_filled_mask, extended_seams,
+            source_textures, x, y, patching_config, rng
+        )
+        check_ui(uicd, 1)
+
+    ret_idx = np.s_[margin_y:height + margin_y, margin_x:width + margin_x]
+    return extended_target[ret_idx], extended_seams[ret_idx]
