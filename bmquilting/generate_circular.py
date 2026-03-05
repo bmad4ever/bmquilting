@@ -31,6 +31,12 @@ type ProxyDataCPHL6S = dict[int, list[ProxyPatch]]
 """ job id ->  lookup texture & patch top-left corner coordinates ;  masks """
 
 
+def get_patch(textures: list[np.ndarray]|SharedTextureList, idx: PatchIdx, block_size: NumPixels) -> np.ndarray:
+    texture_index = idx[0]
+    py, px = idx[1], idx[2]
+    block_coords = np.s_[py:py + block_size, px:px + block_size]
+    return textures[texture_index][block_coords]
+
 def shm_mem_array(shape, dtype:str) -> tuple[SharedMemory, dict]:
     """:return: (shared memory, metadata dictionary)"""
     shm_mem = SharedMemory(create=True, size=int(np.prod(shape) * np.dtype(dtype).itemsize))
@@ -226,12 +232,6 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
         "uicd": uicd.jobs_shm_name if uicd is not None else None,
     }
 
-    def get_patch(idx: PatchIdx) -> np.ndarray:
-        texture_index = idx[0]
-        py, px = idx[1], idx[2]
-        block_coords = np.s_[py:py + block_size, px:px + block_size]
-        return lookup_texts[texture_index][block_coords]
-
     def _consume(job_id: int, counts: np.ndarray) -> tuple[PatchIdx, np.ndarray]:
         results_list, pos = proxy_data[job_id], counts[job_id]
         counts[job_id] += 1
@@ -240,7 +240,7 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
     def _apply_patch(shm_out_text: np.ndarray, patch_center: Vec2_int, job_id: int, counts: np.ndarray):
         x, y = patch_center
         patch_idx, mask = _consume(job_id, counts)
-        patch = get_patch(patch_idx)
+        patch = get_patch(lookup_texts, patch_idx, block_size)
         region_idx = get_bbox_idx(x, y, pp)
         region = shm_out_text[region_idx]
         blend_with_mask(patch, region, mask, out=region)
@@ -372,9 +372,9 @@ def fill_cphl(
         source_textures: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         seed: int,
-        uicd: UiCoordData = None
-        # TODO _by_proxy
-):
+        uicd: UiCoordData = None,
+        _record: Callable[[ProxyPatch], None] = lambda _: None
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     if target.shape[0] != mask.shape[0] or target.shape[1] != mask.shape[1]:
         raise ValueError("target and mask must have the same size")
 
@@ -401,11 +401,76 @@ def fill_cphl(
 
     # fill the holes
     for x, y in hexa_iter.iterate_row_major(extended_holes_mask):
-        process_patch_at_location(
+        result = process_patch_at_location(
             extended_target, extended_filled_mask, extended_seams,
             source_textures, x, y, patching_config, rng
         )
         check_ui(uicd, 1)
+        _record(result)
 
     ret_idx = np.s_[margin_y:height + margin_y, margin_x:width + margin_x]
     return extended_target[ret_idx], extended_seams[ret_idx]
+
+
+def _reconstruct_fill_cphl(
+        target: np.ndarray,
+        mask: np.ndarray,
+        source_textures: list[np.ndarray],
+        proxy_data: list[ProxyPatch],
+        patching_config: CircularPatchingConfig,
+) -> np.ndarray:
+    pp = patching_config.patch_params
+
+    # setup extended target & mask
+    height, width = target.shape[:2]
+    extended_height = _get_extended_size(height, pp.block_size)
+    extended_width = _get_extended_size(width, pp.block_size)
+    margin_y, margin_x = (extended_height - height) // 2, (extended_width - width) // 2
+
+    extended_target = cv2.copyMakeBorder(target, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
+    extended_holes_mask = cv2.copyMakeBorder(mask, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
+
+    # setup iterator
+    hexa_iter = HexagonalLatticeIterator(
+        min_x=margin_x // 2, min_y=margin_y // 2,
+        max_x=width + margin_x + margin_x // 2, max_y=height + margin_y + margin_y // 2,
+        spacing=patching_config.spacing,
+    )
+
+    results_idx = 0
+    def get_proxy_patch_data():
+        nonlocal results_idx
+        result = proxy_data[results_idx]
+        results_idx += 1
+        return result
+
+    # fill the holes
+    for x, y in hexa_iter.iterate_row_major(extended_holes_mask):
+        patch_idx, mask = get_proxy_patch_data()
+        patch = get_patch(source_textures, patch_idx, pp.block_size)
+        target_idx = get_bbox_idx(x, y, pp)
+        region = extended_target[target_idx]
+        blend_with_mask(patch, region, mask, out=region)
+
+    return extended_target[margin_y:height + margin_y, margin_x:width + margin_x]
+
+
+def guided_fill_cphl(
+        proxy_target: np.ndarray,
+        target: np.ndarray,
+        mask: np.ndarray,
+        proxy_textures: list[np.ndarray],
+        source_textures: list[np.ndarray],
+        patching_config: CircularPatchingConfig,
+        seed: int,
+        uicd: UiCoordData = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
+    proxy_data = []
+    def record(idx_mask_tuple: ProxyPatch):
+        proxy_data.append(idx_mask_tuple)
+
+    proxy_result, seams = fill_cphl(target=proxy_target, mask=mask, source_textures=proxy_textures,
+                                    patching_config=patching_config, seed=seed, uicd=uicd, _record=record)
+    result = _reconstruct_fill_cphl(target=target, mask=mask, source_textures=source_textures, proxy_data=proxy_data,
+                                    patching_config=patching_config)
+    return result, seams, proxy_result
