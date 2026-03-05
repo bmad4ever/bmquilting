@@ -1,7 +1,7 @@
 from joblib.externals.loky import get_reusable_executor
 from multiprocessing.shared_memory import SharedMemory
 from numpy.random.bit_generator import SeedSequence
-from collections.abc import Iterable
+from collections.abc import Iterable, Callable
 from multiprocessing import Manager
 import numpy as np
 import cv2
@@ -25,8 +25,9 @@ logger.addHandler(logging.NullHandler())
 type RetOnInterrupt = tuple[None, None]
 ret_val_on_interrupt = (None, None)
 
-
-type ProxyData = dict[int, list[tuple[PatchIdx, np.ndarray]]]
+type JobID = int
+type ProxyPatch = tuple[PatchIdx, np.ndarray]
+type ProxyDataCPHL6S = dict[int, list[ProxyPatch]]
 """ job id ->  lookup texture & patch top-left corner coordinates ;  masks """
 
 
@@ -87,8 +88,8 @@ def generate_cphl6p(
         seed: int,
         n_processes: int = 1,
         uicd: UiCoordData = None,
-        _by_proxy: bool = False
-) -> tuple[np.ndarray, np.ndarray] | tuple[ProxyData, np.ndarray, np.ndarray]:
+        _record: Callable[[JobID, ProxyPatch], None] = lambda _: None
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt | tuple[ProxyDataCPHL6S, np.ndarray, np.ndarray]:
     """
     Circular Patches on a Hexagonal Lattice with 6 Partitions (CPHL6P)
 
@@ -100,22 +101,12 @@ def generate_cphl6p(
         sections do not overlap. If the spacing factor is not lower than 1.12, there is potential overlap.
     :param n_processes: Number of processes to run in parallel when filling the stripes and sections.
     :param uicd: (Optional) Keeps track of the generation step
-    :param _by_proxy: If True, also returns patch indices and masks grouped by "job" (not a process).
-        A "job" contains one stripe and 1 section, independently of the number of processes used.
-        The center patch is stored as the first item in job of index zero.
+    :param _record: Optional function to store or analyze the processed patches.
+        The first argument, JobID, is a number that relates to a stripe and a section in the generation
+        ( it is independent of the number of processes used ).
     :return: (Texture, Seams) normally, or (proxy_data, Texture, Seams) when _by_proxy=True,
     """
     _validate_cphl6p_args(n_processes, patching_config)
-
-    if _by_proxy:
-        _proxy_manager = Manager()
-        # One result slot per POTENTIAL process (job_id); set_1st_patch always writes to slot 0.
-        _proxy_results = _proxy_manager.list([_proxy_manager.list() for _ in range(6)])
-        def _record(job_id: int, result: tuple):
-            _proxy_results[job_id].append(result)
-    else:
-        _proxy_results = None
-        def _record(job_id, result): pass  # do not record anything for normal generation
 
     pp = patching_config.patch_params
     extended_h, extended_w = _get_extended_size(pp.block_size, out_h), _get_extended_size(pp.block_size, out_w)
@@ -199,10 +190,6 @@ def generate_cphl6p(
         np.clip(seams, 0, 1, out=seams)
         ret_idx = np.s_[margin_y:out_h+margin_y, margin_x:out_w+margin_x]
 
-        if _by_proxy:
-            results_dict = {i: list(inner_list) for i, inner_list in enumerate(_proxy_results)}
-            return results_dict, texture[ret_idx], seams[ret_idx]
-
         return texture[ret_idx], seams[ret_idx]
     finally:
         get_reusable_executor().shutdown(wait=True)
@@ -213,7 +200,7 @@ def generate_cphl6p(
 
 
 def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
-                                proxy_data: ProxyData,
+                                proxy_data: ProxyDataCPHL6S,
                                 out_h: NumPixels, out_w: NumPixels,
                                 patching_config: CircularPatchingConfig,
                                 n_processes: int,
@@ -356,12 +343,19 @@ def generate_guided_cphl6p(
         )
     del critical_spacing_factor
 
+    _proxy_manager = Manager()
+    # One result slot per POTENTIAL process (job_id); set_1st_patch always writes to slot 0.
+    _proxy_results = _proxy_manager.list([_proxy_manager.list() for _ in range(6)])
+    def _record(job_id: int, result: tuple):
+        _proxy_results[job_id].append(result)
+
     # remove ui interrup wrapping
-    proxy_data, proxy_out_tex, out_seams = generate_cphl6p.__wrapped__.__wrapped__(
+    proxy_out_tex, out_seams = generate_cphl6p.__wrapped__.__wrapped__(
         proxy_textures, out_h, out_w, patching_config,
         seed, n_processes, uicd,
-        _by_proxy=True
+        _record=_record
     )
+    proxy_data = {i: list(inner_list) for i, inner_list in enumerate(_proxy_results)}
 
     out_tex = _reconstruct_texture_cphl6p(
         source_textures, proxy_data,
