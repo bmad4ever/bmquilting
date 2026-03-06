@@ -295,7 +295,7 @@ def generate_texture_parallel(
         # might get 1 more row or column than needed here
 
         # Patch the central area containing the central block shared by in all the stripes
-        gen_res = generate_texture.__wrapped__.__wrapped__ (  # access wrapped to avoid clearing cache
+        gen_res = generate_texture.__wrapped__.__wrapped__.__wrapped__ (  # access wrapped to avoid clearing cache
             src_textures,
             patching_config,
             block_size + 2 * (block_size - overlap),  # 2*overlap would suffice, but seams would have an offset
