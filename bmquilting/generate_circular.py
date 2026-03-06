@@ -8,10 +8,10 @@ import cv2
 
 from .circular_synthesis_subroutines import (
     set_random_patch_at_location, process_patch_at_location, _get_annular_mask, _get_circle_mask, get_bbox_idx)
+from .misc.custom_decorators import clear_cache_post_exec, step_predictor, ndarray_identity_cache
 from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
 from .types import NumPixels, CircularPatchingConfig, PatchIdx, CircularPatchParams
 from .seam_smartblur import circular_kernel, get_max_possible_gradient_diff
-from .misc.custom_decorators import clear_cache_post_exec, step_predictor
 from .hexa_lattice_iter import HexagonalLatticeIterator, Vec2_int
 from .misc.shmem_utils import SharedTextureList
 from .misc.dry import blend_with_mask
@@ -31,13 +31,13 @@ type ProxyDataCPHL6S = dict[int, list[ProxyPatch]]
 """ job id ->  lookup texture & patch top-left corner coordinates ;  masks """
 
 
-def get_patch(textures: list[np.ndarray]|SharedTextureList, idx: PatchIdx, block_size: NumPixels) -> np.ndarray:
+def _get_patch(textures: list[np.ndarray] | SharedTextureList, idx: PatchIdx, block_size: NumPixels) -> np.ndarray:
     texture_index = idx[0]
     py, px = idx[1], idx[2]
     block_coords = np.s_[py:py + block_size, px:px + block_size]
     return textures[texture_index][block_coords]
 
-def shm_mem_array(shape, dtype:str) -> tuple[SharedMemory, dict]:
+def _shm_mem_array(shape, dtype:str) -> tuple[SharedMemory, dict]:
     """:return: (shared memory, metadata dictionary)"""
     shm_mem = SharedMemory(create=True, size=int(np.prod(shape) * np.dtype(dtype).itemsize))
     return shm_mem, {
@@ -93,7 +93,7 @@ def generate_cphl6p(
         patching_config: CircularPatchingConfig,
         seed: int,
         n_processes: int = 1,
-        uicd: UiCoordData = None,
+        uicd: UiCoordData | None = None,
         _record: Callable[[JobID, ProxyPatch], None] = lambda _: None
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt | tuple[ProxyDataCPHL6S, np.ndarray, np.ndarray]:
     """
@@ -121,11 +121,11 @@ def generate_cphl6p(
     lookup_texts = SharedTextureList.from_list(source_textures)
     del source_textures  # ignore, from here & use lookup_texts
 
-    texture_shm, texture_meta = shm_mem_array(
+    texture_shm, texture_meta = _shm_mem_array(
         (extended_h, extended_w,  lookup_texts.metadata.global_number_of_channels),
         lookup_texts.metadata.global_dtype)
-    seams_shm, seams_meta = shm_mem_array((extended_h, extended_w), "float32")
-    filled_shm, filled_meta = shm_mem_array((extended_h, extended_w), "float32")
+    seams_shm, seams_meta = _shm_mem_array((extended_h, extended_w), "float32")
+    filled_shm, filled_meta = _shm_mem_array((extended_h, extended_w), "float32")
     shm_metadata = {
         "texture": texture_meta,
         "seams": seams_meta,
@@ -220,11 +220,11 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
     lookup_texts = SharedTextureList.from_list(source_textures)
     del source_textures  # ignore, from here & use lookup_texts
 
-    texture_shm, texture_meta = shm_mem_array(
+    texture_shm, texture_meta = _shm_mem_array(
         (extended_h, extended_w, lookup_texts.metadata.global_number_of_channels),
         lookup_texts.metadata.global_dtype)
 
-    counts_shm, counts_meta = shm_mem_array((6,), "uint32")  # processed patches counts ( for 6 job_ids )
+    counts_shm, counts_meta = _shm_mem_array((6,), "uint32")  # processed patches counts ( for 6 job_ids )
 
     shm_metadata = {
         "texture": texture_meta,
@@ -240,7 +240,7 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
     def _apply_patch(shm_out_text: np.ndarray, patch_center: Vec2_int, job_id: int, counts: np.ndarray):
         x, y = patch_center
         patch_idx, mask = _consume(job_id, counts)
-        patch = get_patch(lookup_texts, patch_idx, block_size)
+        patch = _get_patch(lookup_texts, patch_idx, block_size)
         region_idx = get_bbox_idx(x, y, pp)
         region = shm_out_text[region_idx]
         blend_with_mask(patch, region, mask, out=region)
@@ -366,13 +366,46 @@ def generate_guided_cphl6p(
     return out_tex, out_seams, proxy_out_tex
 
 
+# region ===== FILL FUNCTIONS =====
+
+
+@ndarray_identity_cache(0)
+def _extend4filling(mask: np.ndarray, pp: CircularPatchParams) -> tuple[np.ndarray, NumPixels, NumPixels]:
+    """:return: extended_mask, margin_y, margin_x"""
+    height, width = mask.shape[:2]
+    extended_height = _get_extended_size(height, pp.block_size)
+    extended_width = _get_extended_size(width, pp.block_size)
+    margin_y, margin_x = (extended_height - height) // 2, (extended_width - width) // 2
+
+    # note that BORDER_REPLICATE is required here in order to fill holes near the edges
+    extended_mask = cv2.copyMakeBorder(mask, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
+    return extended_mask, margin_y, margin_x
+
+
+def _fill_cphl_step_predictor(mask: np.ndarray, patching_config: CircularPatchingConfig):
+    extended_mask, margin_y, margin_x = _extend4filling(mask, patching_config.patch_params)
+    height, width = mask.shape[:2]
+    hexa_iter = HexagonalLatticeIterator(
+        min_x=margin_x // 2, min_y=margin_y // 2,
+        max_x=width + margin_x + margin_x // 2, max_y=height + margin_y + margin_y // 2,
+        spacing=patching_config.spacing,
+    )
+    return sum(1 for _ in hexa_iter.iterate_row_major(extended_mask))
+
+
+@step_predictor(_fill_cphl_step_predictor)
+@clear_cache_post_exec(
+    _extend4filling,
+    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
+)
+@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def fill_cphl(
         target: np.ndarray,
         mask: np.ndarray,
         source_textures: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         seed: int,
-        uicd: UiCoordData = None,
+        uicd: UiCoordData | None = None,
         _record: Callable[[ProxyPatch], None] = lambda _: None
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     if target.shape[0] != mask.shape[0] or target.shape[1] != mask.shape[1]:
@@ -382,17 +415,14 @@ def fill_cphl(
     rng = np.random.default_rng(seed)
 
     # setup extended target & mask in case the mask has holes near the edges
-    height, width = target.shape[:2]
-    extended_height = _get_extended_size(height, pp.block_size)
-    extended_width  = _get_extended_size(width, pp.block_size)
-    margin_y, margin_x = (extended_height - height) // 2, (extended_width - width) // 2
+    extended_holes_mask, margin_y, margin_x = _extend4filling(mask, pp)
 
     extended_target = cv2.copyMakeBorder(target, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
-    extended_holes_mask = cv2.copyMakeBorder(mask, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
     extended_filled_mask = extended_holes_mask.copy()
     extended_seams = np.zeros_like(extended_holes_mask)
 
     # setup iterator
+    height, width = mask.shape[:2]
     hexa_iter = HexagonalLatticeIterator(
         min_x=margin_x // 2, min_y=margin_y // 2,
         max_x=width + margin_x + margin_x // 2, max_y=height + margin_y + margin_y // 2,
@@ -418,19 +448,16 @@ def _reconstruct_fill_cphl(
         source_textures: list[np.ndarray],
         proxy_data: list[ProxyPatch],
         patching_config: CircularPatchingConfig,
+        uicd: UiCoordData | None = None,
 ) -> np.ndarray:
     pp = patching_config.patch_params
 
     # setup extended target & mask
-    height, width = target.shape[:2]
-    extended_height = _get_extended_size(height, pp.block_size)
-    extended_width = _get_extended_size(width, pp.block_size)
-    margin_y, margin_x = (extended_height - height) // 2, (extended_width - width) // 2
-
+    extended_holes_mask, margin_y, margin_x = _extend4filling(mask, pp)
     extended_target = cv2.copyMakeBorder(target, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
-    extended_holes_mask = cv2.copyMakeBorder(mask, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
 
     # setup iterator
+    height, width = mask.shape[:2]
     hexa_iter = HexagonalLatticeIterator(
         min_x=margin_x // 2, min_y=margin_y // 2,
         max_x=width + margin_x + margin_x // 2, max_y=height + margin_y + margin_y // 2,
@@ -447,14 +474,25 @@ def _reconstruct_fill_cphl(
     # fill the holes
     for x, y in hexa_iter.iterate_row_major(extended_holes_mask):
         patch_idx, mask = get_proxy_patch_data()
-        patch = get_patch(source_textures, patch_idx, pp.block_size)
+        patch = _get_patch(source_textures, patch_idx, pp.block_size)
         target_idx = get_bbox_idx(x, y, pp)
         region = extended_target[target_idx]
         blend_with_mask(patch, region, mask, out=region)
+        check_ui(uicd, 1)
 
     return extended_target[margin_y:height + margin_y, margin_x:width + margin_x]
 
 
+def _guided_fill_cphl_step_predictor(mask, patching_config):
+    return _fill_cphl_step_predictor(mask, patching_config) * 2
+
+
+@step_predictor(_guided_fill_cphl_step_predictor)
+@clear_cache_post_exec(
+    _extend4filling,
+    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
+)
+@handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def guided_fill_cphl(
         proxy_target: np.ndarray,
         target: np.ndarray,
@@ -463,14 +501,18 @@ def guided_fill_cphl(
         source_textures: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         seed: int,
-        uicd: UiCoordData = None,
+        uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     proxy_data = []
     def record(idx_mask_tuple: ProxyPatch):
         proxy_data.append(idx_mask_tuple)
 
-    proxy_result, seams = fill_cphl(target=proxy_target, mask=mask, source_textures=proxy_textures,
-                                    patching_config=patching_config, seed=seed, uicd=uicd, _record=record)
-    result = _reconstruct_fill_cphl(target=target, mask=mask, source_textures=source_textures, proxy_data=proxy_data,
-                                    patching_config=patching_config)
+    proxy_result, seams = fill_cphl.__wrapped__.__wrapped__.__wrapped__(
+        target=proxy_target, mask=mask, source_textures=proxy_textures,
+        patching_config=patching_config, seed=seed, uicd=uicd, _record=record)
+    result = _reconstruct_fill_cphl(
+        target=target, mask=mask, source_textures=source_textures, proxy_data=proxy_data,
+        patching_config=patching_config, uicd=uicd)
     return result, seams, proxy_result
+
+# endregion ===== FILL FUNCTIONS =====
