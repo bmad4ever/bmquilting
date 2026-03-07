@@ -408,6 +408,7 @@ def fill_cphl(
         uicd: UiCoordData | None = None,
         _record: Callable[[ProxyPatch], None] = lambda _: None
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """:return: texture, seams"""
     if target.shape[0] != mask.shape[0] or target.shape[1] != mask.shape[1]:
         raise ValueError("target and mask must have the same size")
 
@@ -421,12 +422,19 @@ def fill_cphl(
     extended_filled_mask = extended_holes_mask.copy()
     extended_seams = np.zeros_like(extended_holes_mask)
 
+    # expand mask hole so that patches properly overlap with the fill mask
+    # otherwise the patch may fall near the edge of the filled section
+    # and barely blend from the generated to the existing section
+    spacing = patching_config.spacing
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (spacing, spacing))
+    extended_holes_mask = cv2.erode(extended_holes_mask, kernel, iterations=1)
+
     # setup iterator
     height, width = mask.shape[:2]
     hexa_iter = HexagonalLatticeIterator(
         min_x=margin_x // 2, min_y=margin_y // 2,
         max_x=width + margin_x + margin_x // 2, max_y=height + margin_y + margin_y // 2,
-        spacing=patching_config.spacing,
+        spacing=spacing,
     )
 
     # fill the holes
