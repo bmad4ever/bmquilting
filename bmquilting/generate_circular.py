@@ -524,3 +524,87 @@ def guided_fill_cphl(
     return result, seams, proxy_result
 
 # endregion ===== FILL FUNCTIONS =====
+
+
+# region ===== MAKE SEAMLESS FUNCTIONS =====
+
+# note: because fill_cphl is re-used here the patches iteration is not optimized; but,
+#       this shouldn't be critical. A 1024x1024 w/ 32px sized patches should have ~1k points.
+
+def _make_seamless_vertical_circular(
+        target: np.ndarray,
+        lookup_textures: list[np.ndarray] | None,
+        patching_config: CircularPatchingConfig,
+        seed: int,
+        uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """:return: (texture, seams)"""
+
+    target = target.copy()
+    if lookup_textures is None:
+        lookup_textures = [target]
+
+    mask = np.ones(target.shape[:2], dtype=np.float32)
+    mask[:1, :] = 0
+    # mask[-1:, :] = 0
+    mask = np.roll(mask, mask.shape[0] // 2, axis=0)
+    target = np.roll(target, target.shape[0] // 2, axis=0)
+    return fill_cphl(
+        target=target,
+        mask=mask,
+        source_textures=lookup_textures,
+        patching_config=patching_config,
+        seed=seed,
+        uicd=uicd
+    )
+
+
+def _make_seamless_horizontal_circular(
+        target: np.ndarray,
+        lookup_textures: list[np.ndarray] | None,
+        patching_config: CircularPatchingConfig,
+        seed: int,
+        uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    texture, seams = _make_seamless_vertical_circular(
+        target=np.rot90(target),
+        lookup_textures=None if lookup_textures is None else [np.rot90(t) for t in lookup_textures],
+        patching_config=patching_config,
+        seed=seed, uicd=uicd)
+
+    # if texture is None:
+    #    return ret_val_on_interrupt
+    # else:
+    # seams should have been already fixed by seamless_horizontal
+    return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
+
+
+def make_seamless_both_circular(
+        target: np.ndarray,
+        lookup_textures: list[np.ndarray] | None,
+        patching_config: CircularPatchingConfig,
+        seed: int,
+        uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    # TODO update seams
+
+    texture, _ = _make_seamless_vertical_circular(target, lookup_textures, patching_config, seed, uicd)
+    texture, _ = _make_seamless_horizontal_circular(texture, lookup_textures, patching_config, seed, uicd)
+    texture = np.roll(texture, texture.shape[0] // 2, axis=0)
+
+    mask = np.ones(target.shape[:2], dtype=np.float32)
+    nor = patching_config.patch_params.non_overlap_radius
+    x_center = texture.shape[1] // 2
+    x1, x2 = x_center - nor, x_center + nor
+    mask[texture.shape[0]//2, x1:x2] = 0
+
+    return fill_cphl(
+        target=target,
+        mask=mask,
+        source_textures=lookup_textures,
+        patching_config=patching_config,
+        seed=seed,
+        uicd=uicd
+    )
+
+# endregion ===== MAKE SEAMLESS FUNCTIONS =====
