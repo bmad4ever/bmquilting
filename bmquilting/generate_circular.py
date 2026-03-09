@@ -393,22 +393,16 @@ def _fill_cphl_step_predictor(mask: np.ndarray, patching_config: CircularPatchin
     return sum(1 for _ in hexa_iter.iterate_row_major(extended_mask))
 
 
-@step_predictor(_fill_cphl_step_predictor)
-@clear_cache_post_exec(
-    _extend4filling,
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
-@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
-def fill_cphl(
+def _fill_cphl(
         target: np.ndarray,
         mask: np.ndarray,
         source_textures: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         seed: int,
         uicd: UiCoordData | None = None,
-        _record: Callable[[ProxyPatch], None] = lambda _: None
-) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    """:return: texture, seams"""
+        _record: Callable[[ProxyPatch], None] = lambda _: None,
+        _seams: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     if target.shape[0] != mask.shape[0] or target.shape[1] != mask.shape[1]:
         raise ValueError("target and mask must have the same size")
 
@@ -420,7 +414,11 @@ def fill_cphl(
 
     extended_target = cv2.copyMakeBorder(target, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
     extended_filled_mask = extended_holes_mask.copy()
-    extended_seams = np.zeros_like(extended_holes_mask)
+    extended_seams = (
+        np.zeros_like(extended_holes_mask)
+        if _seams is None
+        else cv2.copyMakeBorder(_seams, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_CONSTANT)
+    )
 
     # expand mask hole so that patches properly overlap with the fill mask
     # otherwise the patch may fall near the edge of the filled section
@@ -495,6 +493,24 @@ def _guided_fill_cphl_step_predictor(mask, patching_config):
     return _fill_cphl_step_predictor(mask, patching_config) * 2
 
 
+@step_predictor(_fill_cphl_step_predictor)
+@clear_cache_post_exec(
+    _extend4filling,
+    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
+)
+@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
+def fill_cphl(
+        target: np.ndarray,
+        mask: np.ndarray,
+        source_textures: list[np.ndarray],
+        patching_config: CircularPatchingConfig,
+        seed: int,
+        uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """:return: texture, seams"""
+    return _fill_cphl(target, mask, source_textures, patching_config, seed, uicd)
+
+
 @step_predictor(_guided_fill_cphl_step_predictor)
 @clear_cache_post_exec(
     _extend4filling,
@@ -515,7 +531,7 @@ def guided_fill_cphl(
     def record(idx_mask_tuple: ProxyPatch):
         proxy_data.append(idx_mask_tuple)
 
-    proxy_result, seams = fill_cphl.__wrapped__.__wrapped__.__wrapped__(
+    proxy_result, seams = _fill_cphl(
         target=proxy_target, mask=mask, source_textures=proxy_textures,
         patching_config=patching_config, seed=seed, uicd=uicd, _record=record)
     result = _reconstruct_fill_cphl(
@@ -549,7 +565,7 @@ def _make_seamless_vertical_circular(
     # mask[-1:, :] = 0
     mask = np.roll(mask, mask.shape[0] // 2, axis=0)
     target = np.roll(target, target.shape[0] // 2, axis=0)
-    return fill_cphl(
+    return _fill_cphl(
         target=target,
         mask=mask,
         source_textures=lookup_textures,
@@ -598,7 +614,7 @@ def make_seamless_both_circular(
     x1, x2 = x_center - nor, x_center + nor
     mask[texture.shape[0]//2, x1:x2] = 0
 
-    return fill_cphl(
+    return _fill_cphl(
         target=target,
         mask=mask,
         source_textures=lookup_textures,
