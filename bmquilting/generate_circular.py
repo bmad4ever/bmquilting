@@ -1,5 +1,7 @@
 from joblib.externals.loky import get_reusable_executor
 from multiprocessing.shared_memory import SharedMemory
+
+from networkx.algorithms.distance_measures import radius
 from numpy.random.bit_generator import SeedSequence
 from collections.abc import Iterable, Callable
 from multiprocessing import Manager
@@ -370,16 +372,17 @@ def generate_guided_cphl6p(
 
 
 @ndarray_identity_cache(0)
-def _extend4filling(mask: np.ndarray, pp: CircularPatchParams) -> tuple[np.ndarray, NumPixels, NumPixels]:
+def _extend4filling(ndarray: np.ndarray, pp: CircularPatchParams, only_horizontally:bool = False) -> tuple[np.ndarray, NumPixels, NumPixels]:
     """:return: extended_mask, margin_y, margin_x"""
-    height, width = mask.shape[:2]
+    height, width = ndarray.shape[:2]
     extended_height = _get_extended_size(height, pp.block_size)
     extended_width = _get_extended_size(width, pp.block_size)
-    margin_y, margin_x = (extended_height - height) // 2, (extended_width - width) // 2
+    margin_y = (extended_height - height) // 2 if not only_horizontally else 0
+    margin_x = (extended_width - width) // 2
 
     # note that BORDER_REPLICATE is required here in order to fill holes near the edges
-    extended_mask = cv2.copyMakeBorder(mask, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
-    return extended_mask, margin_y, margin_x
+    extended_ndarray = cv2.copyMakeBorder(ndarray, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
+    return extended_ndarray, margin_y, margin_x
 
 
 def _fill_cphl_step_predictor(mask: np.ndarray, patching_config: CircularPatchingConfig):
@@ -544,8 +547,46 @@ def guided_fill_cphl(
 
 # region ===== MAKE SEAMLESS FUNCTIONS =====
 
-# note: because fill_cphl is re-used here the patches iteration is not optimized; but,
-#       this shouldn't be critical. A 1024x1024 w/ 32px sized patches should have ~1k points.
+
+def _fill_hline(
+        y: int,
+        x_bounds: tuple[int, int]|None,
+        target: np.ndarray,
+        source_textures: list[np.ndarray],
+        patching_config: CircularPatchingConfig,
+        seed: int,
+        uicd: UiCoordData | None = None,
+        _record: Callable[[ProxyPatch], None] = lambda _: None,
+        _seams: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    height, width = target.shape[:2]
+    pp = patching_config.patch_params
+    rng = np.random.default_rng(seed)
+    margin_x = pp.block_size if x_bounds is None else 0
+
+    extended_target = cv2.copyMakeBorder(target, 0, 0, margin_x, margin_x, cv2.BORDER_REPLICATE)
+    extended_fill_mask = np.ones(extended_target.shape[:2], dtype=np.float32)
+    extended_seams = (
+        np.zeros_like(extended_fill_mask)
+        if _seams is None
+        else cv2.copyMakeBorder(_seams, 0, 0, margin_x, margin_x, cv2.BORDER_CONSTANT)
+    )
+
+    if x_bounds is None:
+        x_bounds = (pp.radius, extended_target.shape[1]-pp.radius)
+
+    # fill line
+    for x in range(x_bounds[0], x_bounds[1], patching_config.spacing):
+        result = process_patch_at_location(
+            extended_target, extended_fill_mask, extended_seams,
+            source_textures, x, y, patching_config, rng
+        )
+        check_ui(uicd, 1)
+        _record(result)
+
+    ret_idx = np.s_[:, margin_x:width + margin_x]
+    return extended_target[ret_idx], extended_seams[ret_idx]
+
 
 def _make_seamless_vertical_circular(
         target: np.ndarray,
@@ -553,25 +594,18 @@ def _make_seamless_vertical_circular(
         patching_config: CircularPatchingConfig,
         seed: int,
         uicd: UiCoordData | None = None,
+        _seams: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """:return: (texture, seams)"""
 
-    target = target.copy()
     if lookup_textures is None:
         lookup_textures = [target]
-
-    mask = np.ones(target.shape[:2], dtype=np.float32)
-    mask[:1, :] = 0
-    # mask[-1:, :] = 0
-    mask = np.roll(mask, mask.shape[0] // 2, axis=0)
-    target = np.roll(target, target.shape[0] // 2, axis=0)
-    return _fill_cphl(
-        target=target,
-        mask=mask,
-        source_textures=lookup_textures,
+    target = np.roll(target, target.shape[0]//2, axis=0)
+    return _fill_hline(
+        y=target.shape[0]//2, x_bounds=None,
+        target=target, source_textures=lookup_textures,
         patching_config=patching_config,
-        seed=seed,
-        uicd=uicd
+        seed=seed, uicd=uicd, _seams=_seams
     )
 
 
@@ -581,9 +615,10 @@ def _make_seamless_horizontal_circular(
         patching_config: CircularPatchingConfig,
         seed: int,
         uicd: UiCoordData | None = None,
+        _seams: np.ndarray | None = None
 ) -> tuple[np.ndarray, np.ndarray]:
     texture, seams = _make_seamless_vertical_circular(
-        target=np.rot90(target),
+        target=np.rot90(target), _seams=np.rot90(_seams),
         lookup_textures=None if lookup_textures is None else [np.rot90(t) for t in lookup_textures],
         patching_config=patching_config,
         seed=seed, uicd=uicd)
@@ -602,25 +637,27 @@ def make_seamless_both_circular(
         seed: int,
         uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    # TODO update seams
-
-    texture, _ = _make_seamless_vertical_circular(target, lookup_textures, patching_config, seed, uicd)
-    texture, _ = _make_seamless_horizontal_circular(texture, lookup_textures, patching_config, seed, uicd)
+    texture, seams = _make_seamless_vertical_circular(target, lookup_textures, patching_config, seed, uicd)
+    texture, seams = _make_seamless_horizontal_circular(texture, lookup_textures, patching_config, seed, uicd, seams)
     texture = np.roll(texture, texture.shape[0] // 2, axis=0)
+    seams = np.roll(seams, seams.shape[0] // 2, axis=0)
 
-    mask = np.ones(target.shape[:2], dtype=np.float32)
-    nor = patching_config.patch_params.non_overlap_radius
+    space = patching_config.spacing // 2 + 1
     x_center = texture.shape[1] // 2
-    x1, x2 = x_center - nor, x_center + nor
-    mask[texture.shape[0]//2, x1:x2] = 0
+    x1, x2 = x_center - space, x_center + space*2
 
-    return _fill_cphl(
-        target=target,
-        mask=mask,
-        source_textures=lookup_textures,
+    texture, seams = _fill_hline(
+        y=texture.shape[0]//2, x_bounds=(x1, x2),
+        target=texture, source_textures=lookup_textures,
         patching_config=patching_config,
-        seed=seed,
-        uicd=uicd
+        seed=seed, uicd=uicd, _seams=seams
     )
+
+    # slightly move the texture up so that the seams from the vertical patching are not far apart in opposite edges.
+    # this is so that any potential following procedure has the seams in a "usable" layout
+    radius = patching_config.patch_params.radius
+    texture = np.roll(texture, round(-radius*1.1), axis=0)
+    seams = np.roll(seams, round(-radius*1.1), axis=0)
+    return texture, seams
 
 # endregion ===== MAKE SEAMLESS FUNCTIONS =====
