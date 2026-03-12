@@ -64,18 +64,8 @@ def _get_extended_size(block_size: NumPixels, size: NumPixels) -> NumPixels:
     """
     return (size // block_size + 3) * block_size
 
-def _generate_chlp6p_step_predictor(patching_config: CircularPatchingConfig, out_h: NumPixels, out_w: NumPixels):
-    pp = patching_config.patch_params
-    extended_h, extended_w = _get_extended_size(pp.block_size, out_h), _get_extended_size(pp.block_size, out_w)
-    margin_x, margin_y = (extended_w - out_w) // 2, (extended_h - out_h) // 2
 
-    hexa_iter = HexagonalLatticeIterator(
-        min_x=margin_x // 2, min_y=margin_y // 2,
-        max_x=out_w + margin_x + margin_x // 2, max_y=out_h + margin_y + margin_y // 2,
-        spacing=patching_config.spacing,
-    )
-
-    return sum(1 for inner in hexa_iter.iterate_spiral() for _ in inner)
+# region ===== GENERATE FUNCTIONS =====
 
 def _validate_cphl6p_args(n_processes: int, patching_config: CircularPatchingConfig):
     if n_processes <= 0 or n_processes > 6:
@@ -89,23 +79,15 @@ def _validate_cphl6p_args(n_processes: int, patching_config: CircularPatchingCon
         )
 
 
-@step_predictor(_generate_chlp6p_step_predictor)
-@clear_cache_post_exec(
-    circular_kernel,
-    get_max_possible_gradient_diff,
-    _get_annular_mask,
-    _get_circle_mask
-)
-@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def generate_cphl6p(
+def _generate_cphl6p(
         source_textures: list[np.ndarray],
         out_h: NumPixels, out_w: NumPixels,
         patching_config: CircularPatchingConfig,
         seed: int,
         n_processes: int = 1,
         uicd: UiCoordData | None = None,
-        _record: Callable[[JobID, ProxyPatch], None] = lambda _: None
-) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt | tuple[ProxyDataCPHL6S, np.ndarray, np.ndarray]:
+        _record: Callable[[JobID, ProxyPatch], None] = lambda jid, pp: None
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
     Circular Patches on a Hexagonal Lattice with 6 Partitions (CPHL6P)
 
@@ -302,8 +284,42 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
         lookup_texts.release()
 
 
+# region -- step predictor methods --
+
+def _generate_chlp6p_step_predictor(patching_config: CircularPatchingConfig, out_h: NumPixels, out_w: NumPixels):
+    pp = patching_config.patch_params
+    extended_h, extended_w = _get_extended_size(pp.block_size, out_h), _get_extended_size(pp.block_size, out_w)
+    margin_x, margin_y = (extended_w - out_w) // 2, (extended_h - out_h) // 2
+
+    hexa_iter = HexagonalLatticeIterator(
+        min_x=margin_x // 2, min_y=margin_y // 2,
+        max_x=out_w + margin_x + margin_x // 2, max_y=out_h + margin_y + margin_y // 2,
+        spacing=patching_config.spacing,
+    )
+
+    return sum(1 for inner in hexa_iter.iterate_spiral() for _ in inner)
+
 def _generate_guided_chlp6p_step_predictor(patching_config: CircularPatchingConfig, out_h: int, out_w: int):
     return _generate_chlp6p_step_predictor(patching_config, out_h, out_w) * 2
+
+# endregion -- step predictor methods --
+
+
+@step_predictor(_generate_chlp6p_step_predictor)
+@clear_cache_post_exec(
+    circular_kernel, get_max_possible_gradient_diff,
+    _get_annular_mask, _get_circle_mask
+)
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
+def generate_cphl6p(
+        source_textures: list[np.ndarray],
+        out_h: NumPixels, out_w: NumPixels,
+        patching_config: CircularPatchingConfig,
+        seed: int,
+        n_processes: int = 1,
+        uicd: UiCoordData | None = None
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    return _generate_cphl6p(source_textures, out_h, out_w, patching_config, seed, n_processes, uicd)
 
 
 @step_predictor(_generate_guided_chlp6p_step_predictor)
@@ -314,7 +330,7 @@ def _generate_guided_chlp6p_step_predictor(patching_config: CircularPatchingConf
     _get_circle_mask
 )
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
-def generate_guided_cphl6p(
+def guided_generate_cphl6p(
         proxy_textures: list[np.ndarray],
         source_textures: list[np.ndarray],
         patching_config: CircularPatchingConfig,
@@ -375,9 +391,10 @@ def generate_guided_cphl6p(
 
     return out_tex, out_seams, proxy_out_tex
 
+# endregion ===== GENERATE FUNCTIONS =====
+
 
 # region ===== FILL FUNCTIONS =====
-
 
 @ndarray_identity_cache(0)
 def _extend4filling(ndarray: np.ndarray, pp: CircularPatchParams, only_horizontally:bool = False) -> tuple[np.ndarray, NumPixels, NumPixels]:
@@ -548,7 +565,6 @@ def guided_fill_cphl(
 
 # region ===== MAKE SEAMLESS FUNCTIONS =====
 
-
 def _fill_hline(
         y: int, x_bounds: tuple[int, int]|None,
         target: np.ndarray, source_textures: list[np.ndarray],
@@ -606,7 +622,6 @@ def _make_seamless_vertical_circular(
         seed=seed, uicd=uicd, _seams=_seams, _record=_record
     )
 
-
 def _make_seamless_horizontal_circular(
         target: np.ndarray, lookup_textures: list[np.ndarray] | None,
         patching_config: CircularPatchingConfig,
@@ -620,50 +635,6 @@ def _make_seamless_horizontal_circular(
         patching_config=patching_config,
         seed=seed, uicd=uicd, _record=_record)
     return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
-
-
-@clear_cache_post_exec(
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
-@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
-def make_seamless_vertical_circular(
-        target: np.ndarray, lookup_textures: list[np.ndarray] | None,
-        patching_config: CircularPatchingConfig,
-        seed: int, uicd: UiCoordData | None = None,
-) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
-    return _make_seamless_vertical_circular(target, lookup_textures, patching_config, seed, uicd)
-
-
-@clear_cache_post_exec(
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
-@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
-def make_seamless_horizontal_circular(
-        target: np.ndarray, lookup_textures: list[np.ndarray] | None,
-        patching_config: CircularPatchingConfig,
-        seed: int, uicd: UiCoordData | None = None,
-) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
-    return _make_seamless_horizontal_circular(target, lookup_textures, patching_config, seed, uicd)
-
-
-@clear_cache_post_exec(
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
-@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
-def make_seamless_both_circular(
-        target: np.ndarray, lookup_textures: list[np.ndarray] | None,
-        patching_config: CircularPatchingConfig,
-        seed: int, uicd: UiCoordData | None = None,
-) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
-    seed_iterator = iter(SeedSequence(seed).spawn(3))
-
-    texture, seams = _make_seamless_vertical_circular(target, lookup_textures, patching_config, next(seed_iterator), uicd)
-    texture, seams = _make_seamless_horizontal_circular(texture, lookup_textures, patching_config, next(seed_iterator), uicd, seams)
-    texture, seams = _patch_hseam(texture, seams, lookup_textures, patching_config, next(seed_iterator), uicd)
-
-    texture, seams = _adjust_seamboth_seams([texture, seams], patching_config)
-    return texture.copy(), seams.copy()
-
 
 def _adjust_seamboth_seams(
         arrays2adjust: list[np.ndarray],
@@ -696,7 +667,6 @@ def _patch_hseam(
         seed=seed, uicd=uicd,
         _seams=seams, _record=_record
     )
-
 
 def _guided_make_seamless_vertical(
         proxy_target: np.ndarray, target: np.ndarray,
@@ -734,7 +704,6 @@ def _guided_make_seamless_vertical(
     ret_idx = np.s_[:, pp.block_size:target.shape[1] + pp.block_size]
     return extended_target[ret_idx], seams, proxy
 
-
 def _guided_make_seamless_horizontal(
         proxy_target: np.ndarray, target: np.ndarray,
         proxy_textures: list[np.ndarray] | None, source_textures: list[np.ndarray] | None,
@@ -754,12 +723,94 @@ def _guided_make_seamless_horizontal(
     return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy(), np.rot90(proxy, -1).copy()
 
 
+# region  -- step predictor methods --
+
+def _make_seamless_vertical_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
+    pp = patching_config.patch_params
+    margin = pp.block_size
+    extended_target_width = margin * 2 + target.shape[1]
+    x_bounds = (pp.radius, extended_target_width-pp.radius)
+    return sum(1 for _ in range(x_bounds[0], x_bounds[1], patching_config.spacing))
+
+def _make_seamless_horizontal_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
+    return _make_seamless_vertical_circular_steps(np.rot90(target), patching_config)
+
+def _make_seamless_both_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
+    return (
+        2
+        + _make_seamless_vertical_circular_steps(target, patching_config)
+        + _make_seamless_horizontal_circular_steps(target, patching_config)
+    )
+
+def _guided_make_seamless_vertical_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
+    return _make_seamless_vertical_circular_steps(target, patching_config) * 2
+
+def _guided_make_seamless_horizontal_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
+    return _make_seamless_horizontal_circular_steps(target, patching_config) * 2
+
+def _guided_make_seameless_both_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
+    return _make_seamless_both_circular_steps(target, patching_config) * 2
+
+# endregion  -- step predictor methods --
+
+
+@step_predictor(_make_seamless_vertical_circular_steps)
+@clear_cache_post_exec(
+    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
+)
+@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
+def make_seamless_vertical(
+        target: np.ndarray, lookup_textures: list[np.ndarray] | None,
+        patching_config: CircularPatchingConfig,
+        seed: int, uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    return _make_seamless_vertical_circular(target, lookup_textures, patching_config, seed, uicd)
+
+
+@step_predictor(_make_seamless_horizontal_circular_steps)
+@clear_cache_post_exec(
+    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
+)
+@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
+def make_seamless_horizontal(
+        target: np.ndarray, lookup_textures: list[np.ndarray] | None,
+        patching_config: CircularPatchingConfig,
+        seed: int, uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    return _make_seamless_horizontal_circular(target, lookup_textures, patching_config, seed, uicd)
+
+
+@step_predictor(_make_seamless_both_circular_steps)
+@clear_cache_post_exec(
+    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
+)
+@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
+def make_seamless_both(
+        target: np.ndarray, lookup_textures: list[np.ndarray] | None,
+        patching_config: CircularPatchingConfig,
+        seed: int, uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    seed_iterator = iter(SeedSequence(seed).spawn(3))
+
+    texture, seams = _make_seamless_vertical_circular(target, lookup_textures, patching_config, next(seed_iterator), uicd)
+    texture, seams = _make_seamless_horizontal_circular(texture, lookup_textures, patching_config, next(seed_iterator), uicd, seams)
+    texture, seams = _patch_hseam(texture, seams, lookup_textures, patching_config, next(seed_iterator), uicd)
+
+    texture, seams = _adjust_seamboth_seams([texture, seams], patching_config)
+    return texture.copy(), seams.copy()
+
+
+@step_predictor(_guided_make_seamless_horizontal_circular_steps)
+@clear_cache_post_exec(
+    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
+)
+@handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def guided_make_seamless_both(
         proxy_target: np.ndarray, target: np.ndarray,
         proxy_textures: list[np.ndarray] | None, source_textures: list[np.ndarray] | None,
         patching_config: CircularPatchingConfig,
         seed: int, uicd: UiCoordData | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     seed_iterator = iter(SeedSequence(seed).spawn(3))
 
     texture, seams, proxy = _guided_make_seamless_vertical(
@@ -782,5 +833,35 @@ def guided_make_seamless_both(
 
     texture, seams, proxy = _adjust_seamboth_seams([texture, seams, proxy], patching_config)
     return texture.copy(), seams.copy(), proxy.copy()
+
+
+@step_predictor(_guided_make_seamless_vertical_circular_steps)
+@clear_cache_post_exec(
+    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
+)
+@handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
+def guided_make_seamless_vertical(
+        proxy_target: np.ndarray, target: np.ndarray,
+        proxy_textures: list[np.ndarray], source_textures: list[np.ndarray],
+        patching_config: CircularPatchingConfig,
+        seed: int | SeedSequence, uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
+    return _guided_make_seamless_vertical(
+        proxy_target, target, proxy_textures, source_textures, patching_config, seed, uicd)
+
+
+@step_predictor(_guided_make_seamless_horizontal_circular_steps)
+@clear_cache_post_exec(
+    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
+)
+@handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
+def guided_make_seamless_horizontal(
+        proxy_target: np.ndarray, target: np.ndarray,
+        proxy_textures: list[np.ndarray], source_textures: list[np.ndarray],
+        patching_config: CircularPatchingConfig,
+        seed: int | SeedSequence, uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
+    return _guided_make_seamless_horizontal(
+        proxy_target, target, proxy_textures, source_textures, patching_config, seed, uicd)
 
 # endregion ===== MAKE SEAMLESS FUNCTIONS =====
