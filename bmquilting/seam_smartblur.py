@@ -1,10 +1,11 @@
-import numpy as np
-import cv2
+from collections.abc import Callable
 from functools import lru_cache
 from math import ceil
+import numpy as np
+import cv2
 
-from .misc.dry import apply_mask
 from .types import SquarePatchingConfig, BlendConfig, NumPixels
+from .misc.dry import apply_mask
 
 
 DEFAULT_MAX_BLEND_RATIO = 0.95  # percentage of the overlap size that can be used for blending purposes
@@ -188,9 +189,6 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
         np.minimum(radii_limiter, blend_radii, out=blend_radii)
         blend_radii[blend_radii <= 0] = .001  # can't use zero here due to division later
 
-    #print(f"min diam, max diam, overlap, max diam found = {
-    #    min_blur_diameter, max_blur_diameter, mc_mask_overlap.shape[1], max_blur_diameter_found}")
-
     if max_blur_diameter_found > min_blur_diameter:  # if they are equal then there is nothing to dilate
         sigma = (min_blur_diameter + 1)/6
         blend_radii = adaptive_maximum_filter(
@@ -286,6 +284,7 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     # Compute Gradients Difference & Create Adaptive Blend Mask for the overlap section
     tdiff_map = gradients_differences_at_the_seam(sobel_ksize, cut_mask_overlap,
                                                   source_overlap, patch_overlap, patched_overlap,
+                                                  patching_config.blend_config.grad_diff_func,
                                                   _tmp=patched_overlap)
     blended = create_adaptive_blend_mask(
         tdiff_map=tdiff_map,
@@ -302,6 +301,7 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
 def gradients_differences_at_the_seam(
         sobel_ksize: int, cut_mask_overlap: np.ndarray,
         source_overlap: np.ndarray, patch_overlap: np.ndarray, patched_overlap: np.ndarray,
+        grand_diff_func: Callable,
         _tmp: np.ndarray=None) -> np.ndarray:
     """
     This function does the following, albeit minimizing mem. allocations (thus being harder to read).
@@ -360,11 +360,10 @@ def gradients_differences_at_the_seam(
     gx -= gy  # (gy_patched - gy_patch)
     cv2.magnitude(diff_patch, gx, magnitude=diff_patch)
 
-    # TODO consider adding different methods here, such as the average
     # Take maximum across channels
     if diff_source.ndim == 3:
-        max_diffs_source = np.max(diff_source, axis=2)
-        max_diffs_patch = np.max(diff_patch, axis=2)
+        max_diffs_source = grand_diff_func(diff_source, axis=2, out=diff_source[:, :, 0])
+        max_diffs_patch = grand_diff_func(diff_patch, axis=2, out=diff_patch[:, :, 0])
     else:
         # suppose shape == 2
         max_diffs_source = diff_source

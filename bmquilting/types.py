@@ -1,10 +1,10 @@
 from dataclasses import dataclass, field
 from collections.abc import Callable
-from numpy import ndarray, pi
+from numpy import ndarray, pi, amax
 from enum import Enum
 import cv2
 
-from .misc.functions import FuncWrapper, LogScalingFunc, TwoNTS
+from .misc.functions import FuncWrapper, LogScalingFunc, TwoNTS, NormalizedTunableSigmoid
 
 type NumPixels = int
 """the number of pixels (integer)"""
@@ -93,6 +93,24 @@ class BlendConfig:
         The final quantization interval for the diameters is determined by the *min_blur_diameter* 
         and the *maximum diameter found* in the propagation process (it is **not** based on the 
         theoretical possible maximum defined by `max_blur_diameter`).
+    """
+
+    grad_diff_func: Callable = amax
+    """
+    Reduces multi-channel gradient differences into a single-channel intensity map.
+
+    When processing sources with multiple channels (e.g., RGB), this function 
+    aggregates the values across the channel dimension. The resulting 2D matrix 
+    represents the local gradient intensity; higher values indicate a more 
+    pronounced blur effect at that specific coordinate.
+
+    Default behavior:
+        Uses `numpy.max` to select the maximum gradient difference across channels for each pixel/element.
+
+    Notes:
+        `numpy.max` can be substituted with `numpy.mean` or other reduction functions depending on the desired sensitivity.
+        The output map is normalized against the theoretical maximum possible gradient difference. 
+        The selected function must have the `out` parameter.
     """
 
     use_blur_radii_limiter: bool = True

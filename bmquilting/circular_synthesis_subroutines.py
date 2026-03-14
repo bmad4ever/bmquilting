@@ -63,7 +63,9 @@ def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
     # (optional) Blend mask with respect to gradients diff.
     if circ_patching_config.blend_into_patch:
         tdiff_map = gradients_differences_at_the_seam(circ_patching_config.blend_config.sobel_kernel_size,
-                                                      mask, block, patch, patched, _tmp=patched)
+                                                      mask, block, patch, patched,
+                                                      circ_patching_config.blend_config.grad_diff_func,
+                                                      _tmp=patched)
 
         if circ_patching_config.blend_config.use_blur_radii_limiter:
             radii_limiter = cv2.distanceTransform(roi.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3,
