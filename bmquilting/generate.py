@@ -245,18 +245,6 @@ def generate_texture_parallel(
     seeds = iter(SeedSequence(seed).spawn(1 + 4*2)) # 1 + 1 per stripe & quad
     _rng = np.random.default_rng(seed=next(seeds))
 
-    # TODO this is a remnant from allowing to run multiple texture gens simultaneously in comfy when using a list
-    #   it makes no sense for a library in isolation UNLESS PROPERLY DOCUMENTED!
-    #   However such "utility" workaround would render the handle_ui_interrupts useless in this function, THUS:
-    #   it should be the process triggering the multiple generations setting up uicd prior to running the func !!!
-    #   I will leave the code commented out for now in case I need to check something later
-    #   IT MUST (eventually) BE REMOVED
-    #if uicd is not None:
-    #    uicd = UiCoordData(
-    #        uicd.jobs_shm_name,
-    #        uicd.job_id * 4 * nps  # offset job id according to the number of sub jobs
-    #    )
-
     # select random image for the starting block
     image = src_textures[_rng.integers(len(src_textures))]
     num_channels = image.shape[2]

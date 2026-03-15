@@ -167,7 +167,7 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     # Calculate theoretical maximum (cached)
     max_gradient_diff = get_max_possible_gradient_diff(dtype.name, blend_config.sobel_kernel_size)
 
-    # --- 2. Normalize & map to func ---
+    # Normalize & map to func
     tdiff_norm = tdiff_map / max_gradient_diff  # normalize
 
     # adjusts values instead of using a linear relationship
