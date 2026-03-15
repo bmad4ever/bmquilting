@@ -32,7 +32,15 @@ class BlendConfig:
     min_blur_diameter: NumPixels = 3
     max_blur_diameter: NumPixels = 11
 
-    use_vignette: bool = True  # TODO? could add vignette params here, but might be overkill
+    use_vignette: bool = True
+    """
+    Applies a fade to the patch as its content approaches its shape edges (not the seams).
+
+    This effect can be used alongside seams to soften transitions, or with seams disabled to achieve pure feathering 
+    between patches. While effective at masking color or value discrepancies, 
+    it introduces a blurring effect that make it unsuitable for textures containing 
+    fine, sharp details, such as text, where clarity is required.
+    """
 
     blur_size_func: FuncWrapper = field(default_factory=LogScalingFunc)
     """
