@@ -2,7 +2,7 @@ from bmquilting.seam_smartblur import auto_blend_config_2
 from bmquilting.types import BlendConfig, SquarePatchingBlendConfig, NumPixels
 from bmquilting.synthesis_subroutines import (
     ignore_min_cut_patch, get_min_cut_patch_mask_horizontal_jena2020, get_min_cut_patch_mask_horizontal_astar)
-from bmquilting.generate import SquarePatchingConfig
+from bmquilting.square import SquarePatchingConfig
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk

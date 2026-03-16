@@ -1,5 +1,4 @@
-from bmquilting.generate import SquarePatchingConfig, generate_texture
-from bmquilting.proxy_gen import generate_guided
+from bmquilting.square import SquarePatchingConfig, generate_texture, generate_guided
 from bmquilting.guess_block_size import guess_nice_block_size
 from bmquilting.misc.texture_utils import add_salt_and_pepper
 from bmquilting.types import SquarePatchingBlendConfig
