@@ -4,7 +4,7 @@ from numpy import ndarray, pi, amax
 from enum import Enum
 import cv2
 
-from .misc.functions import FuncWrapper, LogScalingFunc, TwoNTS, NormalizedTunableSigmoid
+from .utils.functions import FuncWrapper, LogScalingFunc, TwoNTS, NormalizedTunableSigmoid
 
 type NumPixels = int
 """the number of pixels (integer)"""

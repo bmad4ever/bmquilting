@@ -5,6 +5,11 @@ import tkinter as tk
 import numpy as np
 import cv2
 
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+
+
 class ConvertToSeamlessTextureApp(SquarePatchGenApp):
     def __init__(self, root: tk.Tk):
         self.src_img = None

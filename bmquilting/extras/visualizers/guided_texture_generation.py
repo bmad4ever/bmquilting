@@ -1,16 +1,19 @@
 from bmquilting.square import SquarePatchingConfig, generate_texture, generate_guided
-from bmquilting.guess_block_size import guess_nice_block_size
-from bmquilting.misc.texture_utils import add_salt_and_pepper
+from bmquilting._internal.square_subroutines import ignore_min_cut_patch
+from utils.guess_blocksize import guess_nice_block_size
+from bmquilting.utils.texture import add_salt_and_pepper
 from bmquilting.types import SquarePatchingBlendConfig
-from bmquilting.synthesis_subroutines import ignore_min_cut_patch
 
-import tkinter as tk
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
+import tkinter as tk
 import numpy as np
-import cv2
 import threading
+import cv2
 
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 class GuidedTextureApp:

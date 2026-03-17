@@ -1,12 +1,10 @@
-from .misc.bse_type_aliases import NumPixels, SizeWeightPairs
-from .misc.bse_desc_util import analyze_keypoint_scales
-from .misc.bse_ft_util import analyze_freq_spectrum
+from .._internal.blocksize_heuristics import analyze_freq_spectrum, analyze_keypoint_scales, NumPixels, SizeWeightPairs
 from math import ceil
 import numpy as np
 import heapq
 
 
-def find_sync_wavelens(pairs, lower, upper, n):
+def _find_sync_wavelens(pairs, lower, upper, n):
     best_values = []  # stores the top n values as (distance_sum, number) tuples
 
     for num in range(lower, upper + 1):
@@ -35,7 +33,7 @@ def find_sync_wavelens(pairs, lower, upper, n):
     return relevant
 
 
-def make_guess(pairs: SizeWeightPairs, min_dim: NumPixels, max_block_size: NumPixels | None = None) -> NumPixels:
+def _make_guess(pairs: SizeWeightPairs, min_dim: NumPixels, max_block_size: NumPixels | None = None) -> NumPixels:
     """
     :param min_dim: shortest edge length in the source image/latent
     """
@@ -69,8 +67,8 @@ def make_guess(pairs: SizeWeightPairs, min_dim: NumPixels, max_block_size: NumPi
     if max_block_size is not None and max_block_size < block_size_upper_bound:
         block_size_upper_bound = max_block_size
 
-    rel = find_sync_wavelens(pairs, block_size_lower_bound, block_size_upper_bound,
-                             ceil((block_size_upper_bound - block_size_lower_bound) / 10))
+    rel = _find_sync_wavelens(pairs, block_size_lower_bound, block_size_upper_bound,
+                              ceil((block_size_upper_bound - block_size_lower_bound) / 10))
 
     if len(rel) == 0:  # edge case
         return default_value
@@ -78,15 +76,17 @@ def make_guess(pairs: SizeWeightPairs, min_dim: NumPixels, max_block_size: NumPi
     return max(rel)  # can afford to go for the max since it won't go over more than half of min_dim
 
 
-def filter_pairs_by_weight(pairs: SizeWeightPairs, weight_percentage_threshold):
+def _filter_pairs_by_weight(pairs: SizeWeightPairs, weight_percentage_threshold):
     total_weight = sum(weight for _, weight in pairs)
     threshold = total_weight * (weight_percentage_threshold / 100)
     filtered_pairs = [(divisor, weight) for divisor, weight in pairs if weight >= threshold]
     return filtered_pairs
 
 
-def guess_nice_block_size(src: np.ndarray, freq_analysis_only: bool = True,
-                          max_block_size: NumPixels | None = None) -> NumPixels:
+def guess_nice_block_size(
+        src: np.ndarray, freq_analysis_only: bool = True,
+        max_block_size: NumPixels | None = None
+) -> NumPixels:
     """
     :param src: numpy image with normalized float32 values
     :param max_block_size: further restricts the upper bound for the guess.
@@ -113,22 +113,23 @@ def guess_nice_block_size(src: np.ndarray, freq_analysis_only: bool = True,
 
     # all pairs should come already sorted in descending order w/ respect to weight
 
-    # filter very small distances, with respect to the src size
+
+    # filter out 'very' small or 'very' big block sizes ( with respect to the image dimensions )
     min_dim = min(src.shape[:2])
-    thresh_distance = ceil(min_dim ** (1 / 4))
+    block_size_lower_bound = ceil(min_dim ** (1 / 4))
     block_size_upper_bound = round(min_dim / 1.2) if max_block_size is None else max_block_size
     freq_analysis_pairs = [(dst, w) for dst, w in freq_analysis_pairs if
-                           thresh_distance <= dst < block_size_upper_bound]
+                           block_size_lower_bound <= dst < block_size_upper_bound]
     desc_analysis_pairs = [(dst, w) for dst, w in desc_analysis_pairs if
-                           thresh_distance <= dst < block_size_upper_bound]
+                           block_size_lower_bound <= dst < block_size_upper_bound]
 
     # filter distances whose weight is comparatively low
-    freq_analysis_pairs = filter_pairs_by_weight(freq_analysis_pairs[:6], 12 if freq_analysis_only else 20)
-    desc_analysis_pairs = filter_pairs_by_weight(desc_analysis_pairs[:6], 20)
+    freq_analysis_pairs = _filter_pairs_by_weight(freq_analysis_pairs[:6], 12 if freq_analysis_only else 20)
+    desc_analysis_pairs = _filter_pairs_by_weight(desc_analysis_pairs[:6], 20)
 
     final_pairs = [
         *normalize_weights(freq_analysis_pairs),
         *normalize_weights(desc_analysis_pairs)
     ]  # may contain duplicates or multiples, that is expected
 
-    return make_guess(final_pairs, min_dim, max_block_size)
+    return _make_guess(final_pairs, min_dim, max_block_size)

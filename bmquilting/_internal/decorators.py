@@ -1,21 +1,10 @@
-from ..seam_smartblur import get_max_possible_gradient_diff, circular_kernel, get_radii_limiter
-from ..synthesis_subroutines import patch_blending_vignette, _get_overlap_mask, _get_vignetted_overlap_mask
 from functools import wraps
-import logging
+import weakref
 import inspect
 
+import logging
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
-
-
-DEFAULT_CACHED_FUNCTIONS = [
-    circular_kernel,
-    get_max_possible_gradient_diff,
-    get_radii_limiter,
-    _get_overlap_mask,
-    _get_vignetted_overlap_mask,
-    patch_blending_vignette,
-]
 
 
 def clear_cache_post_exec(*functions_to_clear):
@@ -28,8 +17,7 @@ def clear_cache_post_exec(*functions_to_clear):
     :param functions_to_clear: A list of functions (with @lru_cache) whose caches should be cleared.
     """
     if not functions_to_clear:
-        # If the tuple is empty, use the default list
-        functions_to_clear = DEFAULT_CACHED_FUNCTIONS
+        raise ValueError("No functions to clear were provided.")
 
     def decorator(func):
 
@@ -84,6 +72,64 @@ def step_predictor(calc_func):
             return calc_func(**filtered_args)
 
         wrapper.predict_steps = predict
+        return wrapper
+
+    return decorator
+
+
+def ndarray_identity_cache(array_arg_index: int = 0):
+    """
+    Cache results based on identity of a numpy ndarray argument.
+    """
+
+    def decorator(func):
+        cache = {}
+        finalizers = {}
+
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            arr = args[array_arg_index]
+            key_id = id(arr)
+
+            per_array = cache.get(key_id)
+            if per_array is None:
+                per_array = {}
+                cache[key_id] = per_array
+
+                # remove cache entry when array dies
+                # likely not really needed, but better have some redundant cleanup procedure just in case
+                finalizers[key_id] = weakref.ref(
+                    arr,
+                    lambda _,
+                    k=key_id: (
+                        cache.pop(k, None),
+                        finalizers.pop(k, None)
+                    )
+                )
+
+            key = (
+                args[:array_arg_index] +
+                args[array_arg_index + 1:],
+                tuple(sorted(kwargs.items()))
+            )
+
+            if key in per_array:
+                return per_array[key]
+
+            result = func(*args, **kwargs)
+            per_array[key] = result
+            return result
+
+        # === exposed functions/data ====
+        # naming must be the same as the one used in clear_cache_post_exec
+
+        def cache_clear():
+            cache.clear()
+            finalizers.clear()
+
+        wrapper.cache_clear = cache_clear
+        wrapper._cache = cache
+
         return wrapper
 
     return decorator

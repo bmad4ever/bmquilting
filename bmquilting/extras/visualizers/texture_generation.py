@@ -1,10 +1,14 @@
 from bmquilting.square import generate_texture_parallel, generate_texture, generate_texture_diagonal
-from bmquilting.guess_block_size import guess_nice_block_size
 from bmquilting.extras.tkinter_ui_templates import SquarePatchGenApp
+from bmquilting.utils.guess_blocksize import guess_nice_block_size
 
 import tkinter as tk
 import numpy as np
 import cv2
+
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
 
 
 class GenerateTextureApp(SquarePatchGenApp):

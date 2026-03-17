@@ -4,8 +4,8 @@ from math import ceil
 import numpy as np
 import cv2
 
-from .types import SquarePatchingConfig, BlendConfig, NumPixels
-from .misc.dry import apply_mask
+from ..types import SquarePatchingConfig, BlendConfig, NumPixels
+from .mask_utils import apply_mask
 
 
 DEFAULT_MAX_BLEND_RATIO = 0.95  # percentage of the overlap size that can be used for blending purposes
@@ -35,7 +35,7 @@ def auto_blend_config_1(block_size: NumPixels, overlap: NumPixels, use_vignette:
 
 
 @lru_cache(maxsize=1)
-def get_max_possible_gradient_diff(dtype_str: str, sobel_ksize: int) -> float:
+def _get_max_possible_gradient_diff(dtype_str: str, sobel_ksize: int) -> float:
     """
     Calculate maximum possible gradient difference using actual OpenCV kernel.
     Cached to avoid recomputing for the same dtype and kernel size.
@@ -77,7 +77,7 @@ def get_max_possible_gradient_diff(dtype_str: str, sobel_ksize: int) -> float:
 
 
 @lru_cache(maxsize=None)
-def circular_kernel(radius: int) -> np.ndarray:
+def _circular_kernel(radius: int) -> np.ndarray:
     """Cached circular structuring element."""
     return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*radius + 1, 2*radius + 1))
 
@@ -131,7 +131,7 @@ def adaptive_maximum_filter(
         layer = np.where(active_mask, radius_map, 0).astype(np.float32)
 
         # Perform dilation (local maximum) with circular kernel
-        kernel = circular_kernel(r + overreach)
+        kernel = _circular_kernel(r + overreach)
         cv2.dilate(layer, kernel, dst=layer)
 
         # Merge results
@@ -165,7 +165,7 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     min_blur_diameter, max_blur_diameter = blend_config.min_blur_diameter, blend_config.max_blur_diameter
 
     # Calculate theoretical maximum (cached)
-    max_gradient_diff = get_max_possible_gradient_diff(dtype.name, blend_config.sobel_kernel_size)
+    max_gradient_diff = _get_max_possible_gradient_diff(dtype.name, blend_config.sobel_kernel_size)
 
     # Normalize & map to func
     tdiff_norm = tdiff_map / max_gradient_diff  # normalize
@@ -280,6 +280,7 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     patched_overlap = patch_overlap.copy(order='C')
     apply_mask(patched_overlap, cut_mask_overlap, True)
     patched_overlap += apply_mask(source_overlap, 1 - cut_mask_overlap)
+    print("hey")
 
     # Compute Gradients Difference & Create Adaptive Blend Mask for the overlap section
     tdiff_map = gradients_differences_at_the_seam(sobel_ksize, cut_mask_overlap,
@@ -290,7 +291,7 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
         tdiff_map=tdiff_map,
         mc_mask_overlap=cut_mask_overlap,
         blend_config=patching_config.blend_config,
-        radii_limiter=get_radii_limiter(block_size, overlap) if patching_config.blend_config.use_blur_radii_limiter else None,
+        radii_limiter=_get_radii_limiter(block_size, overlap) if patching_config.blend_config.use_blur_radii_limiter else None,
         dtype=source.dtype
     )
 
@@ -381,7 +382,7 @@ def gradients_differences_at_the_seam(
 
 
 @lru_cache(maxsize=1)
-def get_radii_limiter(block_size: NumPixels, overlap: NumPixels) -> np.ndarray:
+def _get_radii_limiter(block_size: NumPixels, overlap: NumPixels) -> np.ndarray:
     """Blur radii limiter for standard square patches -> [[1, 2, ..., 2, 1], ...]"""
     x = np.linspace(1, overlap, overlap).reshape((1, overlap))
     x[:, -(overlap // 2):] -= overlap + 1

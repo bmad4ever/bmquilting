@@ -1,17 +1,26 @@
-from .synthesis_subroutines import (
+from ._internal.square_subroutines import (
     get_find_patch_to_the_right_method, get_find_patch_below_method, get_find_patch_both_method,
     get_min_cut_patch_horizontal, get_min_cut_patch_vertical, get_min_cut_patch_both,
-    update_seams_map_view, find_patch_vx_idx, find_patch_vx, get_4way_min_cut_patch)
-from .types import SquarePatchingConfig, NumPixels, _2D_Slice, PatchIdx
-from .misc.shmem_utils import SharedTextureList
-from .misc.texture_utils import quick_checksum
-from .misc.custom_decorators import clear_cache_post_exec, step_predictor
-from .misc.ui_coord import handle_ui_interrupts, UiCoordData, check_ui
-from .misc.dry import apply_mask
+    update_seams_map_view, find_patch_vx_idx, find_patch_vx, get_4way_min_cut_patch,
 
-from numpy.random.bit_generator import SeedSequence
-from multiprocessing.shared_memory import SharedMemory
+    # methods w/ cache
+    _get_overlap_mask, _get_vignetted_overlap_mask, _patch_blending_vignette
+)
+from ._internal.seams_blur import (
+    # methods w/ cache
+    _circular_kernel, _get_max_possible_gradient_diff, _get_radii_limiter
+)
+
+from .types import SquarePatchingConfig, NumPixels, _2D_Slice, PatchIdx
+from ._internal.shmem_utils import SharedTextureList
+from .utils.texture import quick_checksum
+from ._internal.decorators import clear_cache_post_exec, step_predictor
+from .utils.ui_coord import handle_ui_interrupts, UiCoordData, check_ui
+from ._internal.mask_utils import apply_mask
+
 from joblib.externals.loky import get_reusable_executor
+from multiprocessing.shared_memory import SharedMemory
+from numpy.random.bit_generator import SeedSequence
 from joblib import Parallel, delayed
 
 from contextlib import contextmanager
@@ -22,11 +31,25 @@ import numpy as np
 import dataclasses
 import cv2 as cv
 
+import logging
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
+
+
 type RetOnInterrupt = tuple[None, None]
 ret_val_on_interrupt = (None, None)
 
 type FindPatchFunc = Callable[[np.ndarray, list[np.ndarray] | SharedTextureList, SquarePatchingConfig, np.random.Generator], np.ndarray]
 type MinCutFunc = Callable[[np.ndarray, np.ndarray, SquarePatchingConfig], np.ndarray]
+
+_CACHED_FUNCS = [
+    _get_max_possible_gradient_diff,
+    _get_vignetted_overlap_mask,
+    _patch_blending_vignette,
+    _get_radii_limiter,
+    _get_overlap_mask,
+    _circular_kernel,
+]
 
 
 # region     _____ AUXILIARY_METHODS _____
@@ -186,10 +209,12 @@ def _parallel_generate_texture_step_predictor(patching_config: SquarePatchingCon
 
 
 @step_predictor(_parallel_generate_texture_step_predictor)
-@clear_cache_post_exec()
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_texture_parallel(
-        src_textures: list[np.ndarray], patching_config: SquarePatchingConfig, out_h: NumPixels, out_w: NumPixels, nps: int, seed: int,
+        src_textures: list[np.ndarray], patching_config: SquarePatchingConfig,
+        out_h: NumPixels, out_w: NumPixels,
+        nps: int, seed: int,
         uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
     :param out_h: output's height in pixels
@@ -432,10 +457,10 @@ def _quad1(vis, his,
     sm_vi_hi_s = np.ascontiguousarray(np.flipud(sm_his))
     sm_hi_vi_s = np.ascontiguousarray(np.fliplr(sm_vis))
 
-    H, W = vis.shape[0], his.shape[1]
+    h, w = vis.shape[0], his.shape[1]
     use_shm = (p_strips > 1)
 
-    with _shm_pair(H, W, vis.shape[2], vis.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
+    with _shm_pair(h, w, vis.shape[2], vis.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
         # place stripes & seams
         texture[:vi_hi_s.shape[0], :vi_hi_s.shape[1]] = vi_hi_s[:, :]
         texture[vi_hi_s.shape[0]:hi_vi_s.shape[0], :hi_vi_s.shape[1]] = hi_vi_s[vi_hi_s.shape[0]:, :]
@@ -465,10 +490,10 @@ def _quad2(vis, hs,
     vi_hs = np.ascontiguousarray(np.flipud(hs))  # flip the stripe
     sm_vi_hs = np.ascontiguousarray(np.flipud(sm_hs))
 
-    H, W = vis.shape[0], hs.shape[1]
+    h, w = vis.shape[0], hs.shape[1]
     use_shm = (p_strips > 1)
 
-    with _shm_pair(H, W, vis.shape[2], vis.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
+    with _shm_pair(h, w, vis.shape[2], vis.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
         texture[:hs.shape[0], :hs.shape[1]] = vi_hs
         texture[hs.shape[0]:vis.shape[0], :vis.shape[1]] = vis[hs.shape[0]:]
         seams_map[:hs.shape[0], :hs.shape[1]] = sm_vi_hs
@@ -496,10 +521,10 @@ def _quad4(vs, his,
     hi_vs = np.ascontiguousarray(np.fliplr(vs))
     sm_hi_vs = np.ascontiguousarray(np.fliplr(sm_vs))
 
-    H, W = vs.shape[0], his.shape[1]
+    h, w = vs.shape[0], his.shape[1]
     use_shm = (p_strips > 1)
 
-    with _shm_pair(H, W, hi_vs.shape[2], hi_vs.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
+    with _shm_pair(h, w, hi_vs.shape[2], hi_vs.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
         texture[:his.shape[0], :his.shape[1]] = his
         texture[his.shape[0]:vs.shape[0], :vs.shape[1]] = hi_vs[his.shape[0]:]
 
@@ -525,10 +550,10 @@ def _quad3(vs, hs,
            rows: int, columns: int, patching_config: SquarePatchingConfig, p_strips, seed: SeedSequence,
            sm_vs: np.ndarray, sm_hs: np.ndarray,
            uicd: UiCoordData | None):
-    H, W = vs.shape[0], hs.shape[1]
+    h, w = vs.shape[0], hs.shape[1]
     use_shm = (p_strips > 1)
 
-    with _shm_pair(H, W, vs.shape[2], vs.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
+    with _shm_pair(h, w, vs.shape[2], vs.dtype, use_shm) as (texture, seams_map, shm_text, shm_smap):
         texture[:hs.shape[0], :hs.shape[1]] = hs
         texture[hs.shape[0]:vs.shape[0], :vs.shape[1]] = vs[hs.shape[0]:]
         seams_map[:hs.shape[0], :hs.shape[1]] = sm_hs
@@ -674,7 +699,7 @@ def _generate_texture_step_predictor(patching_config: SquarePatchingConfig, out_
 
 
 @step_predictor(_generate_texture_step_predictor)
-@clear_cache_post_exec()
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_texture(src_textures: list[np.ndarray],
                      patching_config: SquarePatchingConfig,
@@ -722,7 +747,7 @@ def generate_texture(src_textures: list[np.ndarray],
     return texture_map[:out_h, :out_w], seams_map[:out_h, :out_w]
 
 
-@clear_cache_post_exec()
+@clear_cache_post_exec(*_CACHED_FUNCS)
 def generate_texture_diagonal(src_textures: list[np.ndarray],
                               patching_config: SquarePatchingConfig,
                               out_h: NumPixels, out_w: NumPixels,
@@ -800,7 +825,7 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
 
 # region    _____ PROXY (GUIDED) IMPLEMENTATION _____
 
-@clear_cache_post_exec()
+@clear_cache_post_exec(*_CACHED_FUNCS)
 def _compute_synthesis_map(
         proxy_textures: list[np.ndarray],
         patching_config: SquarePatchingConfig,
@@ -1084,7 +1109,7 @@ def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchin
     return texture_map, seams_map
 
 
-@clear_cache_post_exec()
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchingConfig, rng: np.random.Generator,
                               lookup_textures: list[np.ndarray] = None, seams_map: np.ndarray | None = None,
@@ -1109,7 +1134,7 @@ def _seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingC
         return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
 
 
-@clear_cache_post_exec()
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingConfig, rng: np.random.Generator,
                             lookup_textures: list[np.ndarray] = None,
@@ -1117,7 +1142,7 @@ def seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingCo
     return _seamless_vertical_multi(image, patching_config, rng, lookup_textures, uicd)
 
 
-@clear_cache_post_exec()
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_both_multi(image, patching_config: SquarePatchingConfig, rng: np.random.Generator,
                         lookup_textures: list[np.ndarray] = None,
@@ -1259,7 +1284,7 @@ def _seamless_vertical_single(image: np.ndarray, lookup_texture: np.ndarray,
         return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
 
 
-@clear_cache_post_exec()
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_horizontal_single(image: np.ndarray, lookup_texture: np.ndarray, patching_config: SquarePatchingConfig,
                                rng: np.random.Generator, seams_map=None,
@@ -1267,7 +1292,7 @@ def seamless_horizontal_single(image: np.ndarray, lookup_texture: np.ndarray, pa
     return _seamless_horizontal_single(image, lookup_texture, patching_config, rng, seams_map, uicd)
 
 
-@clear_cache_post_exec()
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_vertical_single(image: np.ndarray, lookup_texture: np.ndarray,
                              patching_config: SquarePatchingConfig, rng: np.random.Generator,
@@ -1275,7 +1300,7 @@ def seamless_vertical_single(image: np.ndarray, lookup_texture: np.ndarray,
     return _seamless_vertical_single(image, lookup_texture, patching_config, rng, uicd)
 
 
-@clear_cache_post_exec()
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_both_single(image: np.ndarray, lookup_texture: np.ndarray,
                          patching_config: SquarePatchingConfig, rng: np.random.Generator,

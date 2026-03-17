@@ -1,7 +1,7 @@
 import numpy as np
 import cv2
 
-from bmquilting.hexa_lattice_iter import HexagonalLatticeIterator
+from bmquilting._internal.hexagonal_lattice import HexagonalLatticeIterator
 
 
 if __name__ == "__main__":

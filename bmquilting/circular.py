@@ -1,27 +1,34 @@
+from ._internal.circular_subroutines import (
+    set_random_patch_at_location, process_patch_at_location, get_bbox_idx,
+
+    # methods w/ cache
+    _get_annular_mask, _get_circle_mask
+)
+from ._internal.seams_blur import (
+    # methods w/ cache
+    _circular_kernel, _get_max_possible_gradient_diff
+)
+
+from ._internal.decorators import clear_cache_post_exec, step_predictor, ndarray_identity_cache
+from .utils.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
+from .types import NumPixels, CircularPatchingConfig, PatchIdx, CircularPatchParams
+from ._internal.hexagonal_lattice import HexagonalLatticeIterator, Vec2_int
+from ._internal.shmem_utils import SharedTextureList
+from ._internal.mask_utils import blend_with_mask
+
 from joblib.externals.loky import get_reusable_executor
 from multiprocessing.shared_memory import SharedMemory
-
 from numpy.random.bit_generator import SeedSequence
-from collections.abc import Iterable, Callable
 from multiprocessing import Manager
+
+from collections.abc import Iterable, Callable
 import numpy as np
 import cv2
 
-from .circular_synthesis_subroutines import (
-    set_random_patch_at_location, process_patch_at_location, _get_annular_mask, _get_circle_mask, get_bbox_idx)
-from .misc.custom_decorators import clear_cache_post_exec, step_predictor, ndarray_identity_cache
-from .misc.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
-from .types import NumPixels, CircularPatchingConfig, PatchIdx, CircularPatchParams
-from .seam_smartblur import circular_kernel, get_max_possible_gradient_diff
-from .hexa_lattice_iter import HexagonalLatticeIterator, Vec2_int
-from .misc.shmem_utils import SharedTextureList
-from .misc.dry import blend_with_mask
-
 import logging
-
-
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
+
 
 type RetOnInterrupt = tuple[None, None]
 ret_val_on_interrupt = (None, None)
@@ -30,6 +37,14 @@ type JobID = int
 type ProxyPatch = tuple[PatchIdx, np.ndarray]
 type ProxyDataCPHL6S = dict[int, list[ProxyPatch]]
 """ job id ->  lookup texture & patch top-left corner coordinates ;  masks """
+
+_CACHED_FUNCS = [
+    _get_max_possible_gradient_diff,
+    _get_annular_mask,
+    _circular_kernel,
+    _get_circle_mask
+]
+
 
 
 def _get_patch(textures: list[np.ndarray] | SharedTextureList, idx: PatchIdx, block_size: NumPixels) -> np.ndarray:
@@ -306,10 +321,7 @@ def _generate_guided_chlp6p_step_predictor(patching_config: CircularPatchingConf
 
 
 @step_predictor(_generate_chlp6p_step_predictor)
-@clear_cache_post_exec(
-    circular_kernel, get_max_possible_gradient_diff,
-    _get_annular_mask, _get_circle_mask
-)
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_cphl6p(
         source_textures: list[np.ndarray],
@@ -323,12 +335,7 @@ def generate_cphl6p(
 
 
 @step_predictor(_generate_guided_chlp6p_step_predictor)
-@clear_cache_post_exec(
-    circular_kernel,
-    get_max_possible_gradient_diff,
-    _get_annular_mask,
-    _get_circle_mask
-)
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def guided_generate_cphl6p(
         proxy_textures: list[np.ndarray],
@@ -519,10 +526,7 @@ def _guided_fill_cphl_step_predictor(mask, patching_config):
 
 
 @step_predictor(_fill_cphl_step_predictor)
-@clear_cache_post_exec(
-    _extend4filling,
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
+@clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def fill_cphl(
         target: np.ndarray,
@@ -537,10 +541,7 @@ def fill_cphl(
 
 
 @step_predictor(_guided_fill_cphl_step_predictor)
-@clear_cache_post_exec(
-    _extend4filling,
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
+@clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def guided_fill_cphl(
         proxy_target: np.ndarray, target: np.ndarray, mask: np.ndarray,
@@ -755,9 +756,7 @@ def _guided_make_seameless_both_circular_steps(target: np.ndarray, patching_conf
 
 
 @step_predictor(_make_seamless_vertical_circular_steps)
-@clear_cache_post_exec(
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def make_seamless_vertical(
         target: np.ndarray, lookup_textures: list[np.ndarray] | None,
@@ -768,9 +767,7 @@ def make_seamless_vertical(
 
 
 @step_predictor(_make_seamless_horizontal_circular_steps)
-@clear_cache_post_exec(
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def make_seamless_horizontal(
         target: np.ndarray, lookup_textures: list[np.ndarray] | None,
@@ -781,9 +778,7 @@ def make_seamless_horizontal(
 
 
 @step_predictor(_make_seamless_both_circular_steps)
-@clear_cache_post_exec(
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def make_seamless_both(
         target: np.ndarray, lookup_textures: list[np.ndarray] | None,
@@ -801,9 +796,7 @@ def make_seamless_both(
 
 
 @step_predictor(_guided_make_seamless_horizontal_circular_steps)
-@clear_cache_post_exec(
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def guided_make_seamless_both(
         proxy_target: np.ndarray, target: np.ndarray,
@@ -836,9 +829,7 @@ def guided_make_seamless_both(
 
 
 @step_predictor(_guided_make_seamless_vertical_circular_steps)
-@clear_cache_post_exec(
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def guided_make_seamless_vertical(
         proxy_target: np.ndarray, target: np.ndarray,
@@ -851,9 +842,7 @@ def guided_make_seamless_vertical(
 
 
 @step_predictor(_guided_make_seamless_horizontal_circular_steps)
-@clear_cache_post_exec(
-    circular_kernel, get_max_possible_gradient_diff, _get_annular_mask, _get_circle_mask
-)
+@clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def guided_make_seamless_horizontal(
         proxy_target: np.ndarray, target: np.ndarray,

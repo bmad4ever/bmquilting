@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider, Button
 from abc import ABC, abstractmethod
-from bmquilting.misc.functions import NormalizedTunableSigmoid, TwoNTS
+from bmquilting.utils.functions import NormalizedTunableSigmoid, TwoNTS
 
 
 # ----------------------------------------------------------------------

@@ -1,7 +1,7 @@
 import numpy as np
 import time
 
-from bmquilting.misc.functions import (
+from bmquilting.utils.functions import (
     _nts_no_deadzone_numpy,
     _nts_with_deadzone_numpy,
     _nts_no_deadzone_numba_flat,

@@ -7,10 +7,10 @@ import cv2 as cv
 from numpy import ndarray
 from numpy.random import Generator
 
-from .types import SquarePatchingConfig, NumPixels, SquarePatchingBlendConfig, PatchIdx
-from .seam_smartblur import compute_adaptive_blend_mask
-from .misc.shmem_utils import SharedTextureList
-from .misc.dry import apply_mask, blend_with_mask
+from ..types import SquarePatchingConfig, NumPixels, SquarePatchingBlendConfig, PatchIdx
+from .seams_blur import compute_adaptive_blend_mask
+from .shmem_utils import SharedTextureList
+from .mask_utils import blend_with_mask
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -96,7 +96,7 @@ def _get_vignetted_overlap_mask(block_size: NumPixels, overlap: NumPixels,
                                 overlaps_left: bool, overlaps_right: bool,
                                 overlaps_top: bool, overlaps_bottom: bool) -> np.ndarray:
     overlap_mask = _get_overlap_mask(block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
-    mask = patch_blending_vignette(
+    mask = _patch_blending_vignette(
         block_size, overlap,
         overlaps_left,
         overlaps_right,
@@ -244,7 +244,7 @@ def get_4way_min_cut_patch(
 
     def process_block(mask):
         if patching_config.blend_into_patch and patching_config.blend_config.use_vignette:
-            vignette = patch_blending_vignette(
+            vignette = _patch_blending_vignette(
                 block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
             np.maximum(mask, vignette, out=mask)  # mind that the mask is a view that may be flipped or rotated
         np.maximum(mask, masks_max, out=masks_max)
@@ -309,8 +309,8 @@ def get_4way_min_cut_patch(
 
 
 @lru_cache(maxsize=4)
-def patch_blending_vignette(block_size: NumPixels, overlap: NumPixels,
-                            left: bool, right: bool, top: bool, bottom: bool) -> np.ndarray:
+def _patch_blending_vignette(block_size: NumPixels, overlap: NumPixels,
+                             left: bool, right: bool, top: bool, bottom: bool) -> np.ndarray:
     margin = 1  # must be small !
     power = 2.5  # controls drop-off
     p = 4  # controls the shape
