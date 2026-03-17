@@ -5,7 +5,7 @@ import numpy as np
 import cv2
 
 from ..types import SquarePatchingConfig, BlendConfig, NumPixels
-from .mask_utils import apply_mask
+from .mask_utils import blend_with_mask
 
 
 DEFAULT_MAX_BLEND_RATIO = 0.95  # percentage of the overlap size that can be used for blending purposes
@@ -275,12 +275,7 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     cut_mask_overlap = cut_mask[:block_size, :overlap]
     source_overlap = source[:block_size, :overlap]
     patch_overlap = patch[:block_size, :overlap]
-
-    # Get patched overlap region -> mask*patch + (1-mask)*source
-    patched_overlap = patch_overlap.copy(order='C')
-    apply_mask(patched_overlap, cut_mask_overlap, True)
-    patched_overlap += apply_mask(source_overlap, 1 - cut_mask_overlap)
-    print("hey")
+    patched_overlap = blend_with_mask(patch_overlap, source_overlap, cut_mask_overlap)
 
     # Compute Gradients Difference & Create Adaptive Blend Mask for the overlap section
     tdiff_map = gradients_differences_at_the_seam(sobel_ksize, cut_mask_overlap,
