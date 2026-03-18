@@ -1,17 +1,24 @@
-from functools import lru_cache
-import logging
-
-import numpy as np
-import pyastar2d
-import cv2 as cv
-from numpy import ndarray
-from numpy.random import Generator
-
-from ..types import SquarePatchingConfig, NumPixels, SquarePatchingBlendConfig, PatchIdx
-from .seams_blur import compute_adaptive_blend_mask
+from .seams_blur import (
+    auto_blend_config_1, auto_blend_config_2,
+    gradients_differences_at_the_seam, create_adaptive_blend_mask, _get_radii_limiter,
+)
+from ..common_types import NumPixels, PatchIdx, Percentage, BlendConfig, SeamsAlgorithm
 from .shmem_utils import SharedTextureList
 from .mask_utils import blend_with_mask
 
+
+from dataclasses import dataclass, field, asdict
+from collections.abc import Callable
+from functools import lru_cache
+from numpy.random import Generator
+import numpy as np
+import pyastar2d
+import cv2 as cv
+
+
+
+
+import logging
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
@@ -22,33 +29,173 @@ def debug_resize(arr, factor=8):
     return cv.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
 
 
-# region   get methods by version
+# region ==== CONFIG DATACLASSES ====
+
+type CallableSeamsAlgorithm = Callable[[np.ndarray, np.ndarray, int, int, BlendConfig], np.ndarray]
+"""Algorithm that computes the seam mask. Its arguments are: ref. block, patch block, block_size, overlap, and blend config."""
 
 
-def get_find_patch_to_the_right_method():
-    def vx_right(ref_block, image, patching_config, rng):
-        return find_patch_vx(True, False, False, False, ref_block, image, patching_config, rng)
+@dataclass(frozen=True, slots=True)
+class SquarePatchingBlendConfig(BlendConfig):
+    use_blur_radii_guess_pathfind_limiter: bool = True
+    """
+    Attempts to mitigate seam blurring artifacts BEFORE seam computation.
+    Prior to computing the seam, make an educated guess of the potential max blur radius.
+    When computing the seam the overlapping area is further constrained with respect to this guess to avoid having 
+    the seam go near the edges of the overlapping area.
 
-    return vx_right
-
-
-def get_find_patch_below_method():
-    def vx_below(ref_block, image, patching_config, rng):
-        return find_patch_vx(False, False, True, False, ref_block, image, patching_config, rng)
-
-    return vx_below
-
-
-def get_find_patch_both_method():
-    def vx_both(ref_block, image, patching_config, rng):
-        return find_patch_vx(True, False, True, False, ref_block, image, patching_config, rng)
-
-    return vx_both
-
-# endregion
+    Only applicable when using pyastar2d to compute the seam.
+    """
 
 
-# region  custom implementation of: patch search & min cut + auxiliary methods
+@dataclass(frozen=True, slots=True)
+class SquarePatchingConfig:
+    """
+    Data used across multiple quilting subroutines.
+    Used in quilting.py and make_seamless.py
+    """
+    block_size: NumPixels
+    overlap: NumPixels
+    tolerance: Percentage
+    blend_config: SquarePatchingBlendConfig | None
+    vignette_on_match_template: bool
+    """whether to use the blending vignette as a mask when searching for a matching patch"""
+
+    _compute_seam_callable: Callable = field(init=True, repr=False)
+    """
+    Internal callable with the algorithm that computes a seam.
+
+    Available options via the **advanced** class method:
+      - `ASTAR`: A* grid based solution. Seams can backtrack. (C backend)
+      - `JENA2020`: Purist solution; seams cannot backtrack.
+      - `NONE`: No seams are computed.
+
+    A custom method may be provided via the **custom** class method.
+    """
+
+    _mt_error_adjust: Callable[[float], float] = field(init=False)
+    """
+    Function to adjust the errors with respect to the match_template_method selected.
+    Not meant to be set by the user; it is set automatically via __post_init__.
+    """
+
+    match_template_method: int = cv.TM_SQDIFF
+    """
+    Match template method used when searching for a patch with a matching overlap section.
+    Only TM_SQDIFF and TM_CCOEFF_NORMED are supported.
+    """
+
+    @classmethod
+    def with_seams(cls, block_size, overlap, tolerance) -> "SquarePatchingConfig":
+        """
+        Uses seams whose blur size bounds are heuristically determined by the provided argument;
+        they are complemented with a vignette-like mask.
+
+        Uses A* to compute the seams, where the error is the channels' averaged squared difference squared
+        (^4; you read that correctly, it is not a typo).
+        """
+        blend_config = auto_blend_config_1(block_size, overlap, True)
+        blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
+
+        return cls(
+            block_size=block_size,
+            overlap=overlap,
+            tolerance=tolerance,
+            blend_config=blend_config,
+            vignette_on_match_template=False,
+            match_template_method=cv.TM_SQDIFF,
+            _compute_seam_callable=get_seam_mask_horizontal_astar,
+        )
+
+    @classmethod
+    def with_feathering(cls, block_size, overlap, tolerance) -> "SquarePatchingConfig":
+        """Does not compute seams, the patch is blended using a vignette-like mask."""
+        blend_config = auto_blend_config_1(block_size, overlap, True)
+        blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
+
+        return cls(
+            block_size=block_size,
+            overlap=overlap,
+            tolerance=tolerance,
+            blend_config=blend_config,
+            vignette_on_match_template=False,
+            match_template_method=cv.TM_SQDIFF,
+            _compute_seam_callable=get_seam_mask_none,
+        )
+
+    @classmethod
+    def advanced(cls, block_size, overlap, tolerance, blend_config,
+                 seam_algorithm: SeamsAlgorithm = SeamsAlgorithm.ASTAR,
+                 vignette_on_match_template: bool = False,
+                 match_template_method=cv.TM_SQDIFF
+                 ) -> "SquarePatchingConfig":
+        method_map = {
+            SeamsAlgorithm.ASTAR: get_seam_mask_horizontal_astar,
+            SeamsAlgorithm.MIN_CUT: get_seam_mask_horizontal_min_cut,
+            SeamsAlgorithm.NONE: get_seam_mask_none,
+        }
+        return cls(
+            block_size=block_size,
+            overlap=overlap,
+            tolerance=tolerance,
+            blend_config=blend_config,
+            vignette_on_match_template=vignette_on_match_template,
+            match_template_method=match_template_method,
+            _compute_seam_callable=method_map[seam_algorithm],
+        )
+
+    @classmethod
+    def custom(cls, block_size, overlap, tolerance, blend_config,
+               custom_func: CallableSeamsAlgorithm,
+               vignette_on_match_template: bool = False,
+               match_template_method=cv.TM_SQDIFF
+               ) -> "SquarePatchingConfig":
+        """Create a config using a user‑supplied min‑cut function."""
+        return cls(
+            block_size=block_size,
+            overlap=overlap,
+            tolerance=tolerance,
+            blend_config=blend_config,
+            vignette_on_match_template=vignette_on_match_template,
+            match_template_method=match_template_method,
+            _compute_seam_callable=custom_func,
+        )
+
+    def __post_init__(self):
+        if not (0.0 <= self.tolerance <= 1.0):
+            raise ValueError(f"{self.tolerance = } tolerance should be in the [0,1] range.")
+
+        # Bypass the frozen restriction to setup errors adjust function with respect to template matching method
+        if self.match_template_method == cv.TM_SQDIFF:
+            adjuster = lambda e: e
+        elif self.match_template_method == cv.TM_CCOEFF_NORMED:  # [-1, 1] , where 1 is the best possible match
+            adjuster = lambda e: 1 - e  # adjust to only positive values where smaller values mean a better match
+        else:
+            raise ValueError(f"{self.match_template_method = } is not supported.\n"
+                             f"Only TM_SQDIFF and TM_CCOEFF_NORMED are supported.")
+
+        object.__setattr__(self, '_mt_error_adjust', adjuster)
+
+    def _compute_seam(self, source: np.ndarray, patch: np.ndarray) -> np.ndarray:
+        return self._compute_seam_callable(source, patch, self.block_size, self.overlap, self.blend_config)
+
+    @property
+    def blend_into_patch(self) -> bool:
+        return self.blend_config is not None
+
+    @property
+    def bo(self) -> tuple[NumPixels, NumPixels]:
+        return self.block_size, self.overlap
+
+    @property
+    def bot(self) -> tuple[NumPixels, NumPixels, Percentage]:
+        return self.block_size, self.overlap, self.tolerance
+
+
+# endregion ==== CONFIG DATACLASSES ====
+
+
+# region   PATCH SEARCH & COMPUTE SEAMS + related auxiliary methods
 
 def find_patch_vx(overlaps_left: bool,
                   overlaps_right: bool,
@@ -199,7 +346,7 @@ def _select_a_random_patch(final_candidates: list[tuple[int, int, int]], rng: Ge
     return final_candidates[c]
 
 
-def _filter_candidate_patches(err_mats: list[ndarray | None],
+def _filter_candidate_patches(err_mats: list[np.ndarray | None],
                               global_min_error: float , tolerance: float) -> list[tuple[int, int, int]]:
     """
 
@@ -225,7 +372,7 @@ def _filter_candidate_patches(err_mats: list[ndarray | None],
     return final_candidates
 
 
-def get_4way_min_cut_patch(
+def get_4way_seam_patched(
         overlaps_left: bool,
         overlaps_right: bool,
         overlaps_top: bool,
@@ -250,7 +397,7 @@ def get_4way_min_cut_patch(
         np.maximum(mask, masks_max, out=masks_max)
 
     if overlaps_left:
-        mask = patching_config._compute_min_cut(ref_block, patch_block)
+        mask = patching_config._compute_seam(ref_block, patch_block)
 
         if patching_config.blend_into_patch:
             compute_adaptive_blend_mask(
@@ -264,7 +411,7 @@ def get_4way_min_cut_patch(
     if overlaps_right:
         adj_src = np.fliplr(ref_block)
         adj_ptc = np.fliplr(patch_block)
-        mask = patching_config._compute_min_cut(adj_src, adj_ptc)
+        mask = patching_config._compute_seam(adj_src, adj_ptc)
         if patching_config.blend_into_patch:
             compute_adaptive_blend_mask(
                 adj_src,
@@ -279,7 +426,7 @@ def get_4way_min_cut_patch(
         # V , >  counterclockwise rotation
         adj_src = np.rot90(ref_block)
         adj_ptc = np.rot90(patch_block)
-        mask = patching_config._compute_min_cut(adj_src, adj_ptc)
+        mask = patching_config._compute_seam(adj_src, adj_ptc)
         if patching_config.blend_into_patch:
             compute_adaptive_blend_mask(
                 adj_src,
@@ -293,7 +440,7 @@ def get_4way_min_cut_patch(
     if overlaps_bottom:
         adj_src = np.fliplr(np.rot90(ref_block))
         adj_ptc = np.fliplr(np.rot90(patch_block))
-        mask = patching_config._compute_min_cut(adj_src, adj_ptc)
+        mask = patching_config._compute_seam(adj_src, adj_ptc)
         if patching_config.blend_into_patch:
             compute_adaptive_blend_mask(
                 adj_src,
@@ -375,7 +522,7 @@ def _patch_blending_vignette(block_size: NumPixels, overlap: NumPixels,
     return np.subtract(1, mask, out=mask)
 
 
-def get_min_cut_patch_mask_horizontal_jena2020(ref_block, patch_block, block_size: NumPixels, overlap: NumPixels, _):
+def get_seam_mask_horizontal_min_cut(ref_block, patch_block, block_size: NumPixels, overlap: NumPixels, _):
     """
     Adapted from jena2020 solution.
     :return: ONLY the mask (not the patched overlap section)
@@ -421,7 +568,7 @@ def update_seams_map_view(seams_map_view: np.ndarray, patch_weights: np.ndarray,
     np.maximum(seams_map_view, seam_map_block, out=seams_map_view)
 
 
-def get_min_cut_patch_mask_horizontal_astar(
+def get_seam_mask_horizontal_astar(
         ref_block, patch_block,
         block_size: NumPixels, overlap: NumPixels,
         blend_config: SquarePatchingBlendConfig = None
@@ -496,7 +643,7 @@ def get_min_cut_patch_mask_horizontal_astar(
     return mask
 
 
-def ignore_min_cut_patch(
+def get_seam_mask_none(
         __, ___,
         block_size: NumPixels, overlap: NumPixels,
         ____
@@ -535,24 +682,49 @@ def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: NumPixels)
 # endregion
 
 
-# region min cut patch aliases
+# region   PATCH SEARCH METHODS ALIASES WITH RESPEC TO DIRECTIONS
 
-def get_min_cut_patch_horizontal(ref_block, patch_block, patching_config: SquarePatchingConfig):
-    return get_4way_min_cut_patch(
+def get_find_patch_to_the_right_method():
+    def vx_right(ref_block, image, patching_config, rng):
+        return find_patch_vx(True, False, False, False, ref_block, image, patching_config, rng)
+
+    return vx_right
+
+
+def get_find_patch_below_method():
+    def vx_below(ref_block, image, patching_config, rng):
+        return find_patch_vx(False, False, True, False, ref_block, image, patching_config, rng)
+
+    return vx_below
+
+
+def get_find_patch_both_method():
+    def vx_both(ref_block, image, patching_config, rng):
+        return find_patch_vx(True, False, True, False, ref_block, image, patching_config, rng)
+
+    return vx_both
+
+# endregion
+
+
+# region SEAM PATCHING METHODS ALIASES WITH RESPECT TO DIRECTION
+
+def get_seam_patched_horizontal(ref_block, patch_block, patching_config: SquarePatchingConfig):
+    return get_4way_seam_patched(
         True, False, False, False,
         ref_block, patch_block, patching_config
     )
 
 
-def get_min_cut_patch_vertical(ref_block, patch_block, patching_config: SquarePatchingConfig):
-    return get_4way_min_cut_patch(
+def get_seam_patched_vertical(ref_block, patch_block, patching_config: SquarePatchingConfig):
+    return get_4way_seam_patched(
         False, False, True, False,
         ref_block, patch_block, patching_config
     )
 
 
-def get_min_cut_patch_both(ref_block, patch_block, patching_config: SquarePatchingConfig):
-    return get_4way_min_cut_patch(
+def get_seam_patched_both(ref_block, patch_block, patching_config: SquarePatchingConfig):
+    return get_4way_seam_patched(
         True, False, True, False,
         ref_block, patch_block, patching_config
     )
@@ -562,6 +734,10 @@ def get_min_cut_patch_both(ref_block, patch_block, patching_config: SquarePatchi
 
 
 def get_seam_mask_from_patch_weights(patch_weights: np.ndarray, blends_into_patch: bool) -> np.ndarray:
+    """
+    Seam Mask here refers to mask containing the boundary or blending area highlighted;
+    it is not the same the mask used to merge the source with the patch.
+    """
     if blends_into_patch:
         # Has blending, compute distance to 0.5
         seam_mask = 1 - np.abs(.5 - patch_weights) * 2
@@ -581,3 +757,51 @@ def get_seam_mask_from_patch_weights(patch_weights: np.ndarray, blends_into_patc
 
 def clear_seam_overlapped_by_patch(seam_map_view: np.ndarray, patch_weights: np.ndarray):
     seam_map_view *= 1 - patch_weights
+
+
+def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask: np.ndarray,
+                                patching_config: SquarePatchingConfig) -> None:
+    """
+    Compute adaptive blend mask based on gradient differences.
+    The output is copied to cut_mask to avoid additional allocations.
+
+    :param source: existing texture block where the patch will be placed, where the overlap area is [:, :overlap].
+                    (rotate/flip the block in order to process other orientations)
+    :param patch:  the patch to be placed over the source, where the overlap area is [:, :overlap].
+                    (rotate/flip the block in order to process other orientations)
+    :param cut_mask: the mask used to produce the final patched block.
+    :param patching_config: generation parameters, which should contain the blend_config.
+    """
+    block_size = patching_config.block_size  # = source.shape[0]
+    overlap = patching_config.overlap
+    sobel_ksize = patching_config.blend_config.sobel_kernel_size
+
+    # Setup output dimensions
+    dims = np.copy(source.shape)
+    dims[0] = block_size
+    dims[1] = block_size * 2 - overlap
+
+    new_img = np.zeros(dims, dtype=source.dtype)
+    new_img[0:block_size, 0:block_size] = source
+
+    # Extract overlap regions (views, not copies)
+    cut_mask_overlap = cut_mask[:block_size, :overlap]
+    source_overlap = source[:block_size, :overlap]
+    patch_overlap = patch[:block_size, :overlap]
+    patched_overlap = blend_with_mask(patch_overlap, source_overlap, cut_mask_overlap)
+
+    # Compute Gradients Difference & Create Adaptive Blend Mask for the overlap section
+    tdiff_map = gradients_differences_at_the_seam(sobel_ksize, cut_mask_overlap,
+                                                  source_overlap, patch_overlap, patched_overlap,
+                                                  patching_config.blend_config.grad_diff_func,
+                                                  _tmp=patched_overlap)
+    blended = create_adaptive_blend_mask(
+        tdiff_map=tdiff_map,
+        mc_mask_overlap=cut_mask_overlap,
+        blend_config=patching_config.blend_config,
+        radii_limiter=_get_radii_limiter(block_size, overlap) if patching_config.blend_config.use_blur_radii_limiter else None,
+        dtype=source.dtype
+    )
+
+    # Update min-cut mask with adaptive blend
+    cut_mask[:block_size, :overlap] = blended

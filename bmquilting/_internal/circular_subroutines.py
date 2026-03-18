@@ -6,7 +6,7 @@ import cv2
 from .square_subroutines import (
     avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace,
     _filter_candidate_patches, _select_a_random_patch, blend_with_mask, update_seams_map_view)
-from ..types import NumPixels, CircularPatchingConfig, CircularPatchParams, PatchIdx
+from ..common_types import NumPixels, CircularPatchingConfig, CircularPatchParams, PatchIdx
 from .seams_blur import gradients_differences_at_the_seam, create_adaptive_blend_mask
 from .shmem_utils import SharedTextureList
 

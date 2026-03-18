@@ -11,7 +11,7 @@ from ._internal.seams_blur import (
 
 from ._internal.decorators import clear_cache_post_exec, step_predictor, ndarray_identity_cache
 from .utils.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
-from .types import NumPixels, CircularPatchingConfig, PatchIdx, CircularPatchParams
+from .common_types import NumPixels, CircularPatchingConfig, PatchIdx, CircularPatchParams
 from ._internal.hexagonal_lattice import HexagonalLatticeIterator, Vec2_int
 from ._internal.shmem_utils import SharedTextureList
 from ._internal.mask_utils import blend_with_mask
@@ -337,7 +337,7 @@ def generate_cphl6p(
 @step_predictor(_generate_guided_chlp6p_step_predictor)
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
-def guided_generate_cphl6p(
+def generate_cphl6p_guided(
         proxy_textures: list[np.ndarray],
         source_textures: list[np.ndarray],
         patching_config: CircularPatchingConfig,
@@ -543,7 +543,7 @@ def fill_cphl(
 @step_predictor(_guided_fill_cphl_step_predictor)
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
-def guided_fill_cphl(
+def fill_cphl_guided(
         proxy_target: np.ndarray, target: np.ndarray, mask: np.ndarray,
         proxy_textures: list[np.ndarray], source_textures: list[np.ndarray],
         patching_config: CircularPatchingConfig,
@@ -758,7 +758,7 @@ def _guided_make_seameless_both_circular_steps(target: np.ndarray, patching_conf
 @step_predictor(_make_seamless_vertical_circular_steps)
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
-def make_seamless_vertical(
+def seamless_vertical(
         target: np.ndarray, lookup_textures: list[np.ndarray] | None,
         patching_config: CircularPatchingConfig,
         seed: int, uicd: UiCoordData | None = None,
@@ -769,7 +769,7 @@ def make_seamless_vertical(
 @step_predictor(_make_seamless_horizontal_circular_steps)
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
-def make_seamless_horizontal(
+def seamless_horizontal(
         target: np.ndarray, lookup_textures: list[np.ndarray] | None,
         patching_config: CircularPatchingConfig,
         seed: int, uicd: UiCoordData | None = None,
@@ -780,7 +780,7 @@ def make_seamless_horizontal(
 @step_predictor(_make_seamless_both_circular_steps)
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
-def make_seamless_both(
+def seamless_both(
         target: np.ndarray, lookup_textures: list[np.ndarray] | None,
         patching_config: CircularPatchingConfig,
         seed: int, uicd: UiCoordData | None = None,
@@ -798,7 +798,7 @@ def make_seamless_both(
 @step_predictor(_guided_make_seamless_horizontal_circular_steps)
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
-def guided_make_seamless_both(
+def seamless_both_guided(
         proxy_target: np.ndarray, target: np.ndarray,
         proxy_textures: list[np.ndarray] | None, source_textures: list[np.ndarray] | None,
         patching_config: CircularPatchingConfig,
@@ -831,7 +831,7 @@ def guided_make_seamless_both(
 @step_predictor(_guided_make_seamless_vertical_circular_steps)
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
-def guided_make_seamless_vertical(
+def seamless_vertical_guided(
         proxy_target: np.ndarray, target: np.ndarray,
         proxy_textures: list[np.ndarray], source_textures: list[np.ndarray],
         patching_config: CircularPatchingConfig,
@@ -844,7 +844,7 @@ def guided_make_seamless_vertical(
 @step_predictor(_guided_make_seamless_horizontal_circular_steps)
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
-def guided_make_seamless_horizontal(
+def seamless_horizontal_guided(
         proxy_target: np.ndarray, target: np.ndarray,
         proxy_textures: list[np.ndarray], source_textures: list[np.ndarray],
         patching_config: CircularPatchingConfig,
@@ -854,3 +854,17 @@ def guided_make_seamless_horizontal(
         proxy_target, target, proxy_textures, source_textures, patching_config, seed, uicd)
 
 # endregion ===== MAKE SEAMLESS FUNCTIONS =====
+
+
+__all__ = [
+    "generate_cphl6p",
+    "generate_cphl6p_guided",
+    "fill_cphl",
+    "fill_cphl_guided",
+    "seamless_vertical",
+    "seamless_horizontal",
+    "seamless_both",
+    "seamless_both_guided",
+    "seamless_vertical_guided",
+    "seamless_horizontal_guided",
+]

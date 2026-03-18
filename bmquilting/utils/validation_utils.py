@@ -1,6 +1,7 @@
 import numpy as np
 import inspect
-from ..types import SquarePatchingConfig, NumPixels, Orientation
+from ..common_types import NumPixels, Orientation
+from bmquilting import SquarePatchingConfig
 
 
 def validate_array_shape(array: np.ndarray, min_height: int = None, min_width: int = None, help_msg: str = ""):

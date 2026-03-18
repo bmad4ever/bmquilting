@@ -1,5 +1,8 @@
+# run as module: python -m extras.visualizers.texture_generation
+
+from ..tkinter_ui_templates import SquarePatchGenApp
+
 from bmquilting.square import generate_texture_parallel, generate_texture, generate_texture_diagonal
-from bmquilting.extras.tkinter_ui_templates import SquarePatchGenApp
 from bmquilting.utils.guess_blocksize import guess_nice_block_size
 
 import tkinter as tk

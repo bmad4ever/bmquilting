@@ -2,9 +2,8 @@ from dataclasses import dataclass, field
 from collections.abc import Callable
 from numpy import ndarray, pi, amax
 from enum import Enum
-import cv2
 
-from .utils.functions import FuncWrapper, LogScalingFunc, TwoNTS, NormalizedTunableSigmoid
+from .utils.functions import FuncWrapper, LogScalingFunc, TwoNTS
 
 type NumPixels = int
 """the number of pixels (integer)"""
@@ -17,8 +16,7 @@ type PatchIdx = tuple[int, int, int]
 
 type _2D_Slice = tuple[slice, slice]
 
-type MinCutMethod = Callable[[ndarray, ndarray, int, int, BlendConfig], ndarray]
-"""method that computes the seam mask. Its arguments are: ref. block, patch block, block_size, overlap, and blend config."""
+
 
 class Orientation(Enum):
     H = "H"
@@ -137,86 +135,14 @@ class BlendConfig:
                              f" must be less or equal to {self.max_blur_diameter = }")
 
 
-@dataclass(frozen=True, slots=True)
-class SquarePatchingBlendConfig(BlendConfig):
-    use_blur_radii_guess_pathfind_limiter: bool = True
-    """
-    Attempts to mitigate seam blurring artifacts BEFORE seam computation.
-    Prior to computing the seam, make an educated guess of the potential max blur radius.
-    When computing the seam the overlapping area is further constrained with respect to this guess to avoid having 
-    the seam go near the edges of the overlapping area.
-
-    Only applicable when using pyastar2d to compute the seam.
-    """
-
-
-@dataclass(frozen=True, slots=True)
-class SquarePatchingConfig:
-    """
-    Data used across multiple quilting subroutines.
-    Used in quilting.py and make_seamless.py
-    """
-    block_size: NumPixels
-    overlap: NumPixels
-    tolerance: Percentage
-    blend_config: SquarePatchingBlendConfig | None
-    vignette_on_match_template: bool
-    """whether to use the blending vignette as a mask when searching for a matching patch"""
-
-    min_cut_search_method: MinCutMethod
-    """
-    From synthesis_subroutines, the following methods can be used:
-        - get_min_cut_patch_mask_horizontal_astar: A* grid based solution. Seams can backtrack.
-        - get_min_cut_patch_mask_horizontal_jena2020: purist solution, seams can not backtrack.
-    
-    The A* solution should be slightly faster due to the C backend; however, there is no direct way to customize the 
-    the errors computation, this can only be done indirectly via a proxy texture.    
-    
-    For a more performant solution --- faster or with a different error computation --- a custom function can be used. 
-    """
-
-    match_template_method: int = cv2.TM_SQDIFF
-    """
-    Match template method used when searching for a patch with a matching overlap section.
-    Only TM_SQDIFF and TM_CCOEFF_NORMED are supported.
-    """
-
-    _mt_error_adjust: Callable[[float], float] = field(init=False)
-    """
-    Function to adjust the errors with respect to the match_template_method selected.
-    Not meant to be set by the user; it is set automatically via __post_init__.
-    """
-
-
-    def __post_init__(self):
-        if not (0.0 <= self.tolerance <= 1.0):
-            raise ValueError(f"{self.tolerance = } tolerance should be in the [0,1] range.")
-
-        # Bypass the frozen restriction to setup errors adjust function with respect to template matching method
-        if self.match_template_method == cv2.TM_SQDIFF:
-            adjuster = lambda e: e
-        elif self.match_template_method == cv2.TM_CCOEFF_NORMED:  # [-1, 1] , where 1 is the best possible match
-            adjuster = lambda e: 1 - e   # adjust to only positive values where smaller values mean a better match
-        else:
-            raise ValueError(f"{self.match_template_method = } is invalid.\n"
-                             f"Only TM_SQDIFF and TM_CCOEFF_NORMED are supported.")
-
-        object.__setattr__(self, '_mt_error_adjust', adjuster)
-
-    def _compute_min_cut(self, source: ndarray, patch: ndarray) -> ndarray:
-        return self.min_cut_search_method(source, patch, self.block_size, self.overlap, self.blend_config)
-
-    @property
-    def blend_into_patch(self) -> bool:
-        return self.blend_config is not None
-
-    @property
-    def bo(self) -> tuple[NumPixels, NumPixels]:
-        return self.block_size, self.overlap
-
-    @property
-    def bot(self) -> tuple[NumPixels, NumPixels, Percentage]:
-        return self.block_size, self.overlap, self.tolerance
+class SeamsAlgorithm(Enum):
+    """Options for the minimum cut patch search algorithm."""
+    ASTAR = "astar"
+    """Implemented using pyastar2d; check documentation for more information."""
+    MIN_CUT = "min_cut"
+    """Implemented using numpy; adapted from jena2020."""
+    NONE = "none"
+    """Bypasses seam computation."""
 
 
 @dataclass(frozen=True, slots=True)

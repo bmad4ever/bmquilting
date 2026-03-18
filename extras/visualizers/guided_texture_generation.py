@@ -1,8 +1,6 @@
-from bmquilting.square import SquarePatchingConfig, generate_texture, generate_guided
-from bmquilting._internal.square_subroutines import ignore_min_cut_patch
-from utils.guess_blocksize import guess_nice_block_size
+from bmquilting.square import generate_texture, generate_guided, SquarePatchingConfig
 from bmquilting.utils.texture import add_salt_and_pepper
-from bmquilting.types import SquarePatchingBlendConfig
+from bmquilting import guess_nice_block_size
 
 from tkinter import filedialog, messagebox
 from PIL import Image, ImageTk
@@ -12,7 +10,6 @@ import threading
 import cv2
 
 import logging
-
 logging.basicConfig(level=logging.DEBUG)
 
 
@@ -206,20 +203,10 @@ class GuidedTextureApp:
             block_size = guess_nice_block_size(grayscale, False)
             overlap = round(block_size / 3.0)
 
-            # Blend config
-            #blend_config = auto_blend_config_2(9, overlap, False)
-            #**asdict(blend_config)
-            blend_config = SquarePatchingBlendConfig(
-                use_vignette=True
-            )
-
-            patching_config = SquarePatchingConfig(
-                vignette_on_match_template=True,
+            patching_config = SquarePatchingConfig.with_feathering(
                 block_size=block_size,
                 overlap=overlap,
                 tolerance=self.tolerance_var.get(),
-                blend_config=blend_config,
-                min_cut_search_method=ignore_min_cut_patch
             )
 
             # Add noise

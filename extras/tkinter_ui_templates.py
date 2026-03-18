@@ -1,8 +1,5 @@
-from bmquilting._internal.seams_blur import auto_blend_config_2
-from bmquilting.types import BlendConfig, SquarePatchingBlendConfig, NumPixels
-from bmquilting._internal.square_subroutines import (
-    ignore_min_cut_patch, get_min_cut_patch_mask_horizontal_jena2020, get_min_cut_patch_mask_horizontal_astar)
-from bmquilting.square import SquarePatchingConfig
+from bmquilting.square import SquarePatchingConfig, SquarePatchingBlendConfig
+from bmquilting import BlendConfig, SeamsAlgorithm, auto_blend_config_2
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -515,13 +512,13 @@ class SquarePatchGenApp(TextureAppTemplate):
     def get_seam_method(self):
         match self.seam_method_var.get():
             case "astar":
-                return get_min_cut_patch_mask_horizontal_astar
+                return SeamsAlgorithm.ASTAR
             case "purist":
-                return get_min_cut_patch_mask_horizontal_jena2020
+                return SeamsAlgorithm.MIN_CUT
             case _:
-                return ignore_min_cut_patch
+                return SeamsAlgorithm.NONE
 
-    def get_overlap_size(self, block_size) -> NumPixels:
+    def get_overlap_size(self, block_size) -> int:
         overlap_str = self.overlap_var.get().strip().lower()
         if overlap_str == "auto":
             overlap = self.on_auto_overlap_size(block_size)
@@ -534,7 +531,7 @@ class SquarePatchGenApp(TextureAppTemplate):
                 raise ValueError(f"Invalid overlap: {overlap_str}. Use 'auto' or an integer less than block_size.")
         return overlap
 
-    def get_block_size(self, src_img_float: ndarray) -> NumPixels:
+    def get_block_size(self, src_img_float: ndarray) -> int:
         block_size_str = self.block_size_var.get().strip().lower()
         if block_size_str == "auto":
             block_size = self.on_auto_block_size(src_img_float)
@@ -569,13 +566,13 @@ class SquarePatchGenApp(TextureAppTemplate):
                 )
             blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
 
-        patching_config = SquarePatchingConfig(
+        patching_config = SquarePatchingConfig.advanced(
             block_size=block_size,
             overlap=overlap,
             tolerance=self.tolerance_var.get(),
             vignette_on_match_template=self.vignette_match_var.get(),
             blend_config=blend_config,
-            min_cut_search_method=self.get_seam_method()
+            seam_algorithm=self.get_seam_method()
         )
         return patching_config
 

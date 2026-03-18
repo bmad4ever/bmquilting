@@ -1,7 +1,9 @@
 from ._internal.square_subroutines import (
+    SquarePatchingConfig, SquarePatchingBlendConfig,
+
     get_find_patch_to_the_right_method, get_find_patch_below_method, get_find_patch_both_method,
-    get_min_cut_patch_horizontal, get_min_cut_patch_vertical, get_min_cut_patch_both,
-    update_seams_map_view, find_patch_vx_idx, find_patch_vx, get_4way_min_cut_patch,
+    get_seam_patched_horizontal, get_seam_patched_vertical, get_seam_patched_both,
+    update_seams_map_view, find_patch_vx_idx, find_patch_vx, get_4way_seam_patched,
 
     # methods w/ cache
     _get_overlap_mask, _get_vignetted_overlap_mask, _patch_blending_vignette
@@ -11,12 +13,12 @@ from ._internal.seams_blur import (
     _circular_kernel, _get_max_possible_gradient_diff, _get_radii_limiter
 )
 
-from .types import SquarePatchingConfig, NumPixels, _2D_Slice, PatchIdx
-from ._internal.shmem_utils import SharedTextureList
-from .utils.texture import quick_checksum
+from .common_types import NumPixels, _2D_Slice, PatchIdx
 from ._internal.decorators import clear_cache_post_exec, step_predictor
 from .utils.ui_coord import handle_ui_interrupts, UiCoordData, check_ui
+from ._internal.shmem_utils import SharedTextureList
 from ._internal.mask_utils import apply_mask
+from .utils.texture import quick_checksum
 
 from joblib.externals.loky import get_reusable_executor
 from multiprocessing.shared_memory import SharedMemory
@@ -24,8 +26,8 @@ from numpy.random.bit_generator import SeedSequence
 from joblib import Parallel, delayed
 
 from contextlib import contextmanager
-from dataclasses import dataclass
 from collections.abc import Callable
+from dataclasses import dataclass
 from math import ceil
 import numpy as np
 import dataclasses
@@ -39,8 +41,10 @@ logger.addHandler(logging.NullHandler())
 type RetOnInterrupt = tuple[None, None]
 ret_val_on_interrupt = (None, None)
 
-type FindPatchFunc = Callable[[np.ndarray, list[np.ndarray] | SharedTextureList, SquarePatchingConfig, np.random.Generator], np.ndarray]
-type MinCutFunc = Callable[[np.ndarray, np.ndarray, SquarePatchingConfig], np.ndarray]
+type _FindPatchFunc = Callable[[np.ndarray, list[np.ndarray] | SharedTextureList, SquarePatchingConfig, np.random.Generator], np.ndarray]
+type _MinCutFunc = Callable[[np.ndarray, np.ndarray, SquarePatchingConfig], np.ndarray]
+"""Method variant (hor, vert, both) that computes the seam. Its arguments are: ref_block, patch_block, patching_config."""
+
 
 _CACHED_FUNCS = [
     _get_max_possible_gradient_diff,
@@ -52,6 +56,7 @@ _CACHED_FUNCS = [
 ]
 
 
+
 # region     _____ AUXILIARY_METHODS _____
 
 def child_seed(root_seed: SeedSequence, spawn_key: int):
@@ -60,10 +65,11 @@ def child_seed(root_seed: SeedSequence, spawn_key: int):
         spawn_key=(spawn_key,)
     )
 
+
 def process_block(text_view: np.ndarray, seams_view: np.ndarray,
                   lookup_textures: list[np.ndarray] | SharedTextureList,
                   block_idx: _2D_Slice,
-                  find_patch_func: FindPatchFunc, get_min_cut_func: MinCutFunc,
+                  find_patch_func: _FindPatchFunc, get_min_cut_func: _MinCutFunc,
                   patching_config: SquarePatchingConfig, rng: np.random.Generator,
                   uicd: UiCoordData | None = None) -> None:
     ref_block = text_view[block_idx]
@@ -111,7 +117,7 @@ def _fill_column_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarra
     for blk_y in range(bmo, texture_map_view.shape[0] - b + 1, bmo):
         block_idx = np.s_[blk_y:blk_y + b, :b]
         process_block(texture_map_view, seams_map_view, lookup_textures, block_idx,
-                      find_patch_below, get_min_cut_patch_vertical, patching_config, rng, uicd)
+                      find_patch_below, get_seam_patched_vertical, patching_config, rng, uicd)
 
 
 @handle_ui_interrupts(auto_close=True, re_raise=True)
@@ -150,7 +156,7 @@ def _fill_row_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
     for blk_x in range(bmo, texture_map_view.shape[1] - b + 1, bmo):
         block_idx = np.s_[:b, blk_x:blk_x + b]
         process_block(texture_map_view, seams_map_view, lookup_textures, block_idx,
-                      find_patch_to_the_right, get_min_cut_patch_horizontal, patching_config, rng, uicd)
+                      find_patch_to_the_right, get_seam_patched_horizontal, patching_config, rng, uicd)
 
 
 @handle_ui_interrupts(auto_close=True, re_raise=True)
@@ -166,7 +172,7 @@ def _pfill_quad(patching_config: SquarePatchingConfig, texture_map, seams_map,
         for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
             block_idx = np.s_[blk_y:(blk_y + b), blk_x:(blk_x + b)]
             process_block(texture_map, seams_map, lookup_textures, block_idx,
-                          find_patch_both, get_min_cut_patch_both, patching_config, rng, uicd)
+                          find_patch_both, get_seam_patched_both, patching_config, rng, uicd)
     return texture_map, seams_map
 
 
@@ -184,12 +190,12 @@ def _fill_quad_purist(patching_config: SquarePatchingConfig, texture_map, seams_
     for blk_y in range(bmo, texture_map.shape[0] - b + 1, bmo):
         block_idx = np.s_[blk_y:blk_y + b, :b]
         process_block(texture_map, seams_map, lookup_textures, block_idx,
-                      find_patch_below, get_min_cut_patch_vertical, patching_config, rng, uicd)
+                      find_patch_below, get_seam_patched_vertical, patching_config, rng, uicd)
 
         for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
             block_idx = np.s_[blk_y:blk_y + b, blk_x:blk_x + b]
             process_block(texture_map, seams_map, lookup_textures, block_idx,
-                          find_patch_both, get_min_cut_patch_both, patching_config, rng, uicd)
+                          find_patch_both, get_seam_patched_both, patching_config, rng, uicd)
     return texture_map, seams_map
 
 
@@ -671,7 +677,7 @@ def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiC
 
                 blk_index_j = j * bmo
                 block_idx = np.s_[blk_index_i:blk_index_i + block_size, blk_index_j:blk_index_j + block_size]
-                process_block(texture, seams_map, ltxts, block_idx, find_patch_both, get_min_cut_patch_both,
+                process_block(texture, seams_map, ltxts, block_idx, find_patch_both, get_seam_patched_both,
                               patching_config, rng, uicd)
 
                 coord_list[pid * 2 + 1] = j
@@ -800,7 +806,7 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
 
     # fill the rest iterating diagonally
     find_patch = get_find_patch_both_method()
-    find_cut = get_min_cut_patch_both
+    find_cut = get_seam_patched_both
     for d in range(1, n_d):
         d_ixd += bm2o
 
@@ -903,7 +909,7 @@ def _compute_synthesis_map(
             patch_idx = find_patch_vx_idx(
                 True, False, False, False,
                 ref_block, proxy_textures, patching_config, rng)
-            process_block(blk_idx, get_min_cut_patch_horizontal, ref_block, seams_map, patch_idx)
+            process_block(blk_idx, get_seam_patched_horizontal, ref_block, seams_map, patch_idx)
 
     def fill_quad_proxy():
         """
@@ -916,7 +922,7 @@ def _compute_synthesis_map(
             patch_idx = find_patch_vx_idx(
                 False, False, True, False,
                 ref_block, proxy_textures, patching_config, rng)
-            process_block(blk_idx, get_min_cut_patch_vertical, ref_block, seams_map, patch_idx)
+            process_block(blk_idx, get_seam_patched_vertical, ref_block, seams_map, patch_idx)
 
             for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
                 blk_idx = np.s_[blk_y:blk_y + b, blk_x:blk_x + b]
@@ -924,7 +930,7 @@ def _compute_synthesis_map(
                 patch_idx = find_patch_vx_idx(
                     True, False, True, False,
                     ref_block, proxy_textures, patching_config, rng)
-                process_block(blk_idx, get_min_cut_patch_both, ref_block, seams_map, patch_idx)
+                process_block(blk_idx, get_seam_patched_both, ref_block, seams_map, patch_idx)
 
         return texture_map, seams_map
 
@@ -1068,7 +1074,7 @@ def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchin
     # get 1st patch
     patch_block = find_patch_vx(
         True, True, False, False, ref_block, lookup_textures, patching_config, rng)
-    min_cut_patch, patch_weights = get_4way_min_cut_patch(
+    min_cut_patch, patch_weights = get_4way_seam_patched(
         True, True, False, False, ref_block, patch_block, patching_config)
 
     ref_block[:] = min_cut_patch
@@ -1085,7 +1091,7 @@ def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchin
 
         patch_block = find_patch_vx(True, True, True, False, ref_block,
                                     lookup_textures, patching_config, rng)
-        min_cut_patch, patch_weights = get_4way_min_cut_patch(
+        min_cut_patch, patch_weights = get_4way_seam_patched(
             True, True, True, False, ref_block, patch_block, patching_config)
 
         ref_block[:] = min_cut_patch
@@ -1097,7 +1103,7 @@ def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchin
 
     patch_block = find_patch_vx(True, True, True, False, ref_block,
                                 lookup_textures, patching_config, rng)
-    min_cut_patch, patch_weights = get_4way_min_cut_patch(
+    min_cut_patch, patch_weights = get_4way_seam_patched(
         True, True, True, True, ref_block, patch_block, patching_config)
     ref_block[:] = min_cut_patch
     update_seams_map_view(seams_map[-block_size:, :block_size], patch_weights, patching_config.blend_into_patch)
@@ -1185,7 +1191,7 @@ def _patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, 
     # PATCH H SEAM -> LEFT PATCH
     ref_block = texture_to_patch[ys:ye, xs - overlap:xe - overlap]
     patch = find_patch_vx(True, False, True, True, ref_block, lookup_textures, patching_config, rng)
-    patch, patch_weights = get_4way_min_cut_patch(True, False, True, True, ref_block, patch, patching_config)
+    patch, patch_weights = get_4way_seam_patched(True, False, True, True, ref_block, patch, patching_config)
     ref_block[:] = patch
     update_seams_map_view(seams_map[ys:ye, xs - overlap:xe - overlap], patch_weights, patching_config.blend_into_patch)
     check_ui(uicd, 1)
@@ -1194,8 +1200,8 @@ def _patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, 
     ref_block = texture_to_patch[ys:ye, xs + overlap:xe + overlap]
     patch = find_patch_vx(True, True, True, True,
                           ref_block, lookup_textures, patching_config, rng)
-    patch, patch_weights = get_4way_min_cut_patch(True, True, True, True,
-                                                  ref_block, patch, patching_config)
+    patch, patch_weights = get_4way_seam_patched(True, True, True, True,
+                                                 ref_block, patch, patching_config)
     ref_block[:] = patch
     update_seams_map_view(seams_map[ys:ye, xs + overlap:xe + overlap], patch_weights, patching_config.blend_into_patch)
     check_ui(uicd, 1)
@@ -1250,8 +1256,8 @@ def _seamless_horizontal_single(image: np.ndarray, lookup_texture: np.ndarray, p
     fake_block_sized_patch[:, :overlap] = lookup_texture[y:y + image.shape[0], x:x + overlap]
     fake_block_sized_patch[:, -overlap:] = lookup_texture[y:y + image.shape[0], x + block_size - overlap:x + block_size]
     fake_patching_config = dataclasses.replace(patching_config, block_size=image.shape[0])
-    left_side_patch , left_weights = get_min_cut_patch_horizontal(fake_left_block, fake_block_sized_patch, fake_patching_config)
-    right_side_patch, right_weights = get_min_cut_patch_horizontal(
+    left_side_patch , left_weights = get_seam_patched_horizontal(fake_left_block, fake_block_sized_patch, fake_patching_config)
+    right_side_patch, right_weights = get_seam_patched_horizontal(
             np.fliplr(fake_right_block),
             np.fliplr(fake_block_sized_patch),
             fake_patching_config
@@ -1337,3 +1343,19 @@ def seamless_both_single(image: np.ndarray, lookup_texture: np.ndarray,
     return texture, seams
 
 # endregion _____ MAKE SEAMLESS SINGLE PATCH _____
+
+
+__all__ = [
+    "SquarePatchingConfig",
+    "SquarePatchingBlendConfig",
+    "generate_texture",
+    "generate_texture_parallel",
+    "generate_texture_diagonal",
+    "generate_guided",
+    "seamless_horizontal_multi",
+    "seamless_vertical_multi",
+    "seamless_both_multi",
+    "seamless_horizontal_single",
+    "seamless_vertical_single",
+    "seamless_both_single",
+]

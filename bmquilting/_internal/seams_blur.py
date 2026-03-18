@@ -4,13 +4,12 @@ from math import ceil
 import numpy as np
 import cv2
 
-from ..types import SquarePatchingConfig, BlendConfig, NumPixels
-from .mask_utils import blend_with_mask
-
+#from .square_subroutines import SquarePatchingConfig
+from ..common_types import BlendConfig, NumPixels
 
 DEFAULT_MAX_BLEND_RATIO = 0.95  # percentage of the overlap size that can be used for blending purposes
 
-USE_SCHAAR_WHEN_KSIZE_EQUALS_3 = True
+USE_SCHARR_WHEN_KSIZE_EQUALS_3 = True
 
 
 def debug_resize(arr, factor=2):
@@ -56,7 +55,7 @@ def _get_max_possible_gradient_diff(dtype_str: str, sobel_ksize: int) -> float:
         max_pixel_value = float(np.iinfo(dtype).max) if np.issubdtype(dtype, np.integer) else 1.0
 
     # Get actual OpenCV kernel to determine scale
-    if USE_SCHAAR_WHEN_KSIZE_EQUALS_3 and sobel_ksize == 3:
+    if USE_SCHARR_WHEN_KSIZE_EQUALS_3 and sobel_ksize == 3:
         sobel_ksize = cv2.FILTER_SCHARR
     kx, ky = cv2.getDerivKernels(1, 0, ksize=sobel_ksize, normalize=False)
     kernel_2d = np.outer(kx, ky)
@@ -244,56 +243,6 @@ def auto_min_blend_size(sobel_ksize):
     #return sobel_ksize // 3 * 2 + 1
 
 
-def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask: np.ndarray,
-                                patching_config: SquarePatchingConfig) -> None:
-    """
-    Compute adaptive blend mask based on gradient differences.
-    The output is copied to cut_mask to avoid additional allocations.
-
-    :param source: existing texture block where the patch will be placed, where the overlap area is [:, :overlap].
-                    (rotate/flip the block in order to process other orientations)
-    :param patch:  the patch to be placed over the source, where the overlap area is [:, :overlap].
-                    (rotate/flip the block in order to process other orientations)
-    :param cut_mask: the mask used to produce the final patched block.
-    :param patching_config: generation parameters, which should contain the blend_config.
-    """
-    block_size = patching_config.block_size  # = source.shape[0]
-    overlap = patching_config.overlap
-    sobel_ksize = patching_config.blend_config.sobel_kernel_size
-    if USE_SCHAAR_WHEN_KSIZE_EQUALS_3:
-        sobel_ksize = cv2.FILTER_SCHARR
-
-    # Setup output dimensions
-    dims = np.copy(source.shape)
-    dims[0] = block_size
-    dims[1] = block_size * 2 - overlap
-
-    new_img = np.zeros(dims, dtype=source.dtype)
-    new_img[0:block_size, 0:block_size] = source
-
-    # Extract overlap regions (views, not copies)
-    cut_mask_overlap = cut_mask[:block_size, :overlap]
-    source_overlap = source[:block_size, :overlap]
-    patch_overlap = patch[:block_size, :overlap]
-    patched_overlap = blend_with_mask(patch_overlap, source_overlap, cut_mask_overlap)
-
-    # Compute Gradients Difference & Create Adaptive Blend Mask for the overlap section
-    tdiff_map = gradients_differences_at_the_seam(sobel_ksize, cut_mask_overlap,
-                                                  source_overlap, patch_overlap, patched_overlap,
-                                                  patching_config.blend_config.grad_diff_func,
-                                                  _tmp=patched_overlap)
-    blended = create_adaptive_blend_mask(
-        tdiff_map=tdiff_map,
-        mc_mask_overlap=cut_mask_overlap,
-        blend_config=patching_config.blend_config,
-        radii_limiter=_get_radii_limiter(block_size, overlap) if patching_config.blend_config.use_blur_radii_limiter else None,
-        dtype=source.dtype
-    )
-
-    # Update min-cut mask with adaptive blend
-    cut_mask[:block_size, :overlap] = blended
-
-
 def gradients_differences_at_the_seam(
         sobel_ksize: int, cut_mask_overlap: np.ndarray,
         source_overlap: np.ndarray, patch_overlap: np.ndarray, patched_overlap: np.ndarray,
@@ -305,7 +254,8 @@ def gradients_differences_at_the_seam(
     2. Compute the difference between source & patched, and patch & patched gradients
     3. Get the highest difference from both and mask them to only get values near the cut.
 
-    :param sobel_ksize: ksize argument when using cv2.Sobel function
+    :param sobel_ksize: ksize argument when using cv2.Sobel function.
+        If equal to three is replaced with cv2.FILTER_SCHARR.
     :param cut_mask_overlap: cut mask view of the area where source and patch overlap
     :param source_overlap: source view of the area which overlaps with the patch
     :param patch_overlap: patch view of the area which overlaps with the source
@@ -319,6 +269,8 @@ def gradients_differences_at_the_seam(
     :return: a 2D array with shape equal to grad_shape[:2] that contains the gradients differences around the seam
     """
     assert (source_overlap.dtype == np.float32)
+    if USE_SCHARR_WHEN_KSIZE_EQUALS_3 and sobel_ksize == 3:
+        sobel_ksize = cv2.FILTER_SCHARR
 
     # Setup types and shape
     grad_shape = patched_overlap.shape

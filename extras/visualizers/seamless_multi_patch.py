@@ -1,12 +1,14 @@
-from bmquilting.extras.tkinter_ui_templates import SquarePatchGenApp
-import bmquilting.square as ms_mp
+# run as module: python -m extras.visualizers.seamless_multi_patch
+
+from ..tkinter_ui_templates import SquarePatchGenApp
+
+import bmquilting.square as square
 
 import tkinter as tk
 import numpy as np
 import cv2
 
 import logging
-
 logging.basicConfig(level=logging.DEBUG)
 
 
@@ -56,9 +58,9 @@ class ConvertToSeamlessTextureApp(SquarePatchGenApp):
 
             # Select function based on direction
             seamless_multi_patch_functions = {
-                "H": ms_mp.seamless_horizontal_multi,
-                "V": ms_mp.seamless_vertical_multi,
-                "B": ms_mp.seamless_both_multi,
+                "H": square.seamless_horizontal_multi,
+                "V": square.seamless_vertical_multi,
+                "B": square.seamless_both_multi,
             }
 
             direction = self.direction_var.get()
