@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 from collections.abc import Callable
-from numpy import ndarray, pi, amax
-from enum import Enum
+from numpy import amax
 
 from .utils.functions import FuncWrapper, LogScalingFunc, TwoNTS
 
@@ -9,19 +8,11 @@ type NumPixels = int
 """the number of pixels (integer)"""
 
 type Percentage = float
-"""a float value in the range [0,1]"""
 
 type PatchIdx = tuple[int, int, int]
 """patches indexes (texture index, y coord, x coord), where coords are relative to the top-left corner."""
 
 type _2D_Slice = tuple[slice, slice]
-
-
-
-class Orientation(Enum):
-    H = "H"
-    V = "V"
-    H_AND_V = "H & V"
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,98 +124,3 @@ class BlendConfig:
         if self.max_blur_diameter < self.min_blur_diameter:
             raise ValueError(f"Invalid range: {self.min_blur_diameter = }"
                              f" must be less or equal to {self.max_blur_diameter = }")
-
-
-class SeamsAlgorithm(Enum):
-    """Options for the minimum cut patch search algorithm."""
-    ASTAR = "astar"
-    """Implemented using pyastar2d; check documentation for more information."""
-    MIN_CUT = "min_cut"
-    """Implemented using numpy; adapted from jena2020."""
-    NONE = "none"
-    """Bypasses seam computation."""
-
-
-@dataclass(frozen=True, slots=True)
-class CircularPatchParams:
-    """
-    Parameters for defining a circular patch with pre-calculated dimensions.
-
-    note: values are set up to work with cv2.circle.
-
-    :ivar diameter: The total width/height of the patch (must be odd).
-    :ivar overlap_ratio: Percentage of the radius within the overlapping area (0.0 to 1.0).
-
-    :ivar radius: The radius of the patch, calculated as ``diameter // 2``.
-    :ivar overlap_radius: The radial distance that overlaps with adjacent patches.
-    :ivar non_overlap_radius: The radius of the patch excluding the overlap area.
-    :ivar warped_len: The length of the patch along the y-axis when warped.
-    """
-
-    diameter: NumPixels
-    overlap_ratio: Percentage
-
-    # These are default-initialized but overwritten in __post_init__
-    overlap_radius: NumPixels = 0
-    non_overlap_radius: NumPixels = 0
-    radius: NumPixels = 0
-    warped_len: NumPixels = 0
-
-    def __post_init__(self):
-        if self.diameter % 2 != 1:
-            raise ValueError(f"diameter={self.diameter} must be odd to ensure a symmetric center.")
-
-        r_val = self.diameter // 2
-        ov_r_val = round(r_val * self.overlap_ratio)
-
-        object.__setattr__(self, "radius", r_val)
-        object.__setattr__(self, "overlap_radius", ov_r_val)
-        object.__setattr__(self, "non_overlap_radius", r_val - ov_r_val)
-        object.__setattr__(self, "warped_len", round(r_val * 2 * pi))
-
-    @property
-    def block_size(self) -> NumPixels:
-        """
-        The size of the square bounding box containing the circular patch.
-        :return: The diameter of the patch.
-        """
-        return self.diameter
-
-    @property
-    def center(self) -> NumPixels:
-        """
-        :return: The pixel index of the center (usable with cv2.circle).
-        """
-        return self.radius
-
-    @property
-    def center_2d_f(self) -> tuple[float, float]:
-        """
-        :return: The pixel indices of the center as a floats (usable with cv2.warpPolar).
-        """
-        center = float(self.center)
-        return center, center
-
-
-@dataclass(frozen=True, slots=True)
-class CircularPatchingConfig:
-    patch_params: CircularPatchParams
-    blend_config: BlendConfig | None
-    tolerance: Percentage
-    outer_corners_weighted_template_matching: bool
-    spacing_factor: float
-
-    no_seams: bool = False
-    """computes no seams if set to True; use this with vignette in BlendConfig."""
-
-    def __post_init__(self):
-        if 0.0 > self.tolerance:
-            raise ValueError(f"{self.tolerance = } tolerance should be greater than 0.")
-
-    @property
-    def blend_into_patch(self) -> bool:
-        return self.blend_config is not None
-
-    @property
-    def spacing(self) -> int:
-        return round(self.patch_params.radius * self.spacing_factor)

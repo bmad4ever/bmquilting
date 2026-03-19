@@ -1,14 +1,184 @@
+from dataclasses import dataclass
 from functools import lru_cache
-import pyastar2d
+from enum import Enum
 import numpy as np
+import pyastar2d
 import cv2
 
 from .square_subroutines import (
     avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace,
     _filter_candidate_patches, _select_a_random_patch, blend_with_mask, update_seams_map_view)
-from ..common_types import NumPixels, CircularPatchingConfig, CircularPatchParams, PatchIdx
-from .seams_blur import gradients_differences_at_the_seam, create_adaptive_blend_mask
+from .seams_blur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_1
 from .shmem_utils import SharedTextureList
+from ..common_types import NumPixels, Percentage, PatchIdx, BlendConfig
+
+
+# region ==== CONFIG DATACLASSES ====
+
+class AstarVariant(Enum):
+    """Options for the minimum cut patch search algorithm."""
+    DEFAULT = "default"
+    """Uses the default pyastar2d with diagonals set to true."""
+    ORTHO_Y = "ortho_y"
+    """Uses pyastar2d with ORTHOGONAL_Y heuristic override and diagonals set to true."""
+    NONE = "none"
+    """Bypasses seam computation."""
+
+
+@dataclass(frozen=True, slots=True)
+class CircularPatchParams:
+    """
+    Parameters for defining a circular patch with pre-calculated dimensions.
+
+    note: values are set up to work with cv2.circle.
+
+    :ivar diameter: The total width/height of the patch (must be odd).
+    :ivar overlap_ratio: Percentage of the radius within the overlapping area (0.0 to 1.0).
+
+    :ivar radius: The radius of the patch, calculated as ``diameter // 2``.
+    :ivar overlap_radius: The radial distance that overlaps with adjacent patches.
+    :ivar non_overlap_radius: The radius of the patch excluding the overlap area.
+    :ivar warped_len: The length of the patch along the y-axis when warped.
+    """
+
+    diameter: NumPixels
+    overlap_ratio: Percentage
+
+    # These are default-initialized but overwritten in __post_init__
+    overlap_radius: NumPixels = 0
+    non_overlap_radius: NumPixels = 0
+    radius: NumPixels = 0
+    warped_len: NumPixels = 0
+
+    def __post_init__(self):
+        if self.diameter % 2 != 1:
+            raise ValueError(f"diameter={self.diameter} must be odd to ensure a symmetric center.")
+
+        r_val = self.diameter // 2
+        ov_r_val = round(r_val * self.overlap_ratio)
+
+        object.__setattr__(self, "radius", r_val)
+        object.__setattr__(self, "overlap_radius", ov_r_val)
+        object.__setattr__(self, "non_overlap_radius", r_val - ov_r_val)
+        object.__setattr__(self, "warped_len", round(r_val * 2 * np.pi))
+
+    @property
+    def block_size(self) -> NumPixels:
+        """
+        The size of the square bounding box containing the circular patch.
+        :return: The diameter of the patch.
+        """
+        return self.diameter
+
+    @property
+    def center(self) -> NumPixels:
+        """
+        :return: The pixel index of the center (usable with cv2.circle).
+        """
+        return self.radius
+
+    @property
+    def center_2d_f(self) -> tuple[float, float]:
+        """
+        :return: The pixel indices of the center as a floats (usable with cv2.warpPolar).
+        """
+        center = float(self.center)
+        return center, center
+
+
+@dataclass(frozen=True, slots=True)
+class CircularPatchingConfig:
+    patch_params: CircularPatchParams
+    blend_config: BlendConfig | None
+    tolerance: Percentage
+    outer_corners_weighted_template_matching: bool
+
+    spacing_factor: Percentage
+    """
+    Spacing between the centers of two horizontal adjacent patches in the lattice with respect to the radius size.
+
+    May affect reproducibility of some algorithms when set to ~1.12 or lower.
+    """
+
+    astar_heur: int
+    """
+    Heuristic for the astar algorithm used when computing seams.
+
+        Available options via the **advanced** class method:
+      - `DEFAULT`: Uses Heuristic.DEFAULT.
+      - `ORTHO_Y`: Uses Heuristic.ORTHOGONAL_Y.
+      - `NONE`: No seams are computed.
+    """
+
+    @classmethod
+    def with_seams(cls, patch_params: CircularPatchParams, tolerance: Percentage, spacing_factor: Percentage
+                   ) -> "CircularPatchingConfig":
+        blend_config = auto_blend_config_1(
+            patch_params.block_size,
+            patch_params.overlap_radius,
+            True)
+        return cls(
+            patch_params=patch_params,
+            blend_config=blend_config,
+            tolerance=tolerance,
+            outer_corners_weighted_template_matching=False,
+            spacing_factor=spacing_factor,
+            astar_heur=pyastar2d.Heuristic.DEFAULT
+        )
+
+    @classmethod
+    def with_feathering(cls, patch_params: CircularPatchParams, tolerance: Percentage, spacing_factor: Percentage
+                        ) -> "CircularPatchingConfig":
+        blend_config = auto_blend_config_1(
+            patch_params.block_size,
+            patch_params.overlap_radius,
+            True)
+        return cls(
+            patch_params=patch_params,
+            blend_config=blend_config,
+            tolerance=tolerance,
+            outer_corners_weighted_template_matching=False,
+            spacing_factor=spacing_factor,
+            astar_heur=3
+        )
+
+    @classmethod
+    def advanced(cls, patch_params: CircularPatchParams, blend_config: BlendConfig,
+                 tolerance: Percentage, spacing_factor: Percentage,
+                 a_star_variant: AstarVariant,
+                 outer_corners_weighted_template_matching: bool = False,
+                 ) -> "CircularPatchingConfig":
+        astar_variant_map = {
+            AstarVariant.DEFAULT: pyastar2d.Heuristic.DEFAULT,
+            AstarVariant.ORTHO_Y: pyastar2d.Heuristic.ORTHOGONAL_Y,
+            AstarVariant.NONE: 3
+        }
+        return cls(
+            patch_params=patch_params,
+            blend_config=blend_config,
+            tolerance=tolerance,
+            outer_corners_weighted_template_matching=outer_corners_weighted_template_matching,
+            spacing_factor=spacing_factor,
+            astar_heur=astar_variant_map[a_star_variant],
+        )
+
+    def __post_init__(self):
+        if 0.0 > self.tolerance:
+            raise ValueError(f"{self.tolerance = } tolerance should be greater than 0.")
+
+    @property
+    def blend_into_patch(self) -> bool:
+        return self.blend_config is not None
+
+    @property
+    def spacing(self) -> int:
+        return round(self.patch_params.radius * self.spacing_factor)
+
+    @property
+    def use_seams(self) -> bool:
+        return self.astar_heur <= 2
+
+# endregion ==== CONFIG DATACLASSES ====
 
 
 @lru_cache(maxsize=2)
@@ -146,8 +316,9 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     aux = np.empty_like(patch)
 
     # Get mask to blend source and patch (pre vignette)
-    mask = _get_circle_mask(pp).copy() if config.no_seams else \
-        _compute_radial_seam_mask(config, roi, block, patch, _tmp=aux)
+    mask = _compute_radial_seam_mask(config, roi, block, patch, _tmp=aux) if config.use_seams \
+      else _get_circle_mask(pp).copy()
+
 
     # (optional) Apply Vignette
     if config.blend_into_patch and config.blend_config.use_vignette:
@@ -167,7 +338,8 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
 
 # region "Min Cut" Related Functions  ____START
 
-def _min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPixels) -> np.ndarray:
+def _min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPixels,
+                  heur_override:pyastar2d.Heuristic=0) -> np.ndarray:
     """
     @param errors: warped matrix with the pre-computed errors
     @param roi: warped binary mask of the region of interest
@@ -182,7 +354,7 @@ def _min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPi
     start_x = end_x = errors.shape[1] - 1
     if offset_row is None:
         # when no empty row is found, search for the cut endpoints at the top & bottom so that the path is not broken
-        start_x, end_x = _find_min_cut_circ_endpoints(errors, roi)
+        start_x, end_x = _find_min_cut_circ_endpoints(errors, roi, heur_override)
 
     errors[:, -1] = roi[:, -1] * errors[:, -1] + (1 - roi[:, -1])  # bottom holes escape path
     errors[:, :-1][roi[:, :-1] == 0] = np.inf  # don't travel outside the mask, unless via the escape path
@@ -190,7 +362,7 @@ def _min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPi
     start = (0, start_x)
     end = (errors.shape[0] - 1, end_x)
 
-    path = pyastar2d.astar_path(errors, start, end, allow_diagonal=True)
+    path = pyastar2d.astar_path(errors, start, end, allow_diagonal=True, heuristic_override=heur_override)
     mask = np.zeros_like(roi)
 
     for i, j in path:  # draw path
@@ -223,7 +395,7 @@ def _x_squared_distance_1d(a_1d: np.ndarray, b_1d: np.ndarray) -> np.ndarray:
     return squared_dist_matrix
 
 
-def _find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[int, int]:
+def _find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray, heur_override: pyastar2d.Heuristic=0) -> tuple[int, int]:
     """
     Consider the roi as the following sections: | A | B | C | D |
     This functions rolls & crops it to get the section: | D | A |
@@ -256,7 +428,7 @@ def _find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray) -> tuple[i
     start = (0, maze.shape[1] - 1)
     end = (maze.shape[0] - 1, maze.shape[1] - 1)
 
-    path = pyastar2d.astar_path(maze, start, end, allow_diagonal=True)
+    path = pyastar2d.astar_path(maze, start, end, allow_diagonal=True, heuristic_override=heur_override)
 
     # Compute the distance matrix between points (y is ignored since it is fixed)
     err_len_div4_minus1 = err_len_div4 - 1

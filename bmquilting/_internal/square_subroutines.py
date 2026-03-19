@@ -1,8 +1,10 @@
+from enum import Enum
+
 from .seams_blur import (
     auto_blend_config_1, auto_blend_config_2,
     gradients_differences_at_the_seam, create_adaptive_blend_mask, _get_radii_limiter,
 )
-from ..common_types import NumPixels, PatchIdx, Percentage, BlendConfig, SeamsAlgorithm
+from ..common_types import NumPixels, PatchIdx, Percentage, BlendConfig
 from .shmem_utils import SharedTextureList
 from .mask_utils import blend_with_mask
 
@@ -33,6 +35,15 @@ def debug_resize(arr, factor=8):
 
 type CallableSeamsAlgorithm = Callable[[np.ndarray, np.ndarray, int, int, BlendConfig], np.ndarray]
 """Algorithm that computes the seam mask. Its arguments are: ref. block, patch block, block_size, overlap, and blend config."""
+
+class SeamsAlgorithm(Enum):
+    """Options for the minimum cut patch search algorithm."""
+    ASTAR = "astar"
+    """Implemented using pyastar2d; check documentation for more information."""
+    MIN_CUT = "min_cut"
+    """Implemented using numpy; adapted from jena2020."""
+    NONE = "none"
+    """Bypasses seam computation."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,7 +78,7 @@ class SquarePatchingConfig:
 
     Available options via the **advanced** class method:
       - `ASTAR`: A* grid based solution. Seams can backtrack. (C backend)
-      - `JENA2020`: Purist solution; seams cannot backtrack.
+      - `MIN_CUT`: Purist solution; seams cannot backtrack.
       - `NONE`: No seams are computed.
 
     A custom method may be provided via the **custom** class method.
@@ -86,7 +97,7 @@ class SquarePatchingConfig:
     """
 
     @classmethod
-    def with_seams(cls, block_size, overlap, tolerance) -> "SquarePatchingConfig":
+    def with_seams(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage) -> "SquarePatchingConfig":
         """
         Uses seams whose blur size bounds are heuristically determined by the provided argument;
         they are complemented with a vignette-like mask.
@@ -108,7 +119,7 @@ class SquarePatchingConfig:
         )
 
     @classmethod
-    def with_feathering(cls, block_size, overlap, tolerance) -> "SquarePatchingConfig":
+    def with_feathering(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage) -> "SquarePatchingConfig":
         """Does not compute seams, the patch is blended using a vignette-like mask."""
         blend_config = auto_blend_config_1(block_size, overlap, True)
         blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
@@ -129,7 +140,7 @@ class SquarePatchingConfig:
                  vignette_on_match_template: bool = False,
                  match_template_method=cv.TM_SQDIFF
                  ) -> "SquarePatchingConfig":
-        method_map = {
+        seams_algo_map = {
             SeamsAlgorithm.ASTAR: get_seam_mask_horizontal_astar,
             SeamsAlgorithm.MIN_CUT: get_seam_mask_horizontal_min_cut,
             SeamsAlgorithm.NONE: get_seam_mask_none,
@@ -141,7 +152,7 @@ class SquarePatchingConfig:
             blend_config=blend_config,
             vignette_on_match_template=vignette_on_match_template,
             match_template_method=match_template_method,
-            _compute_seam_callable=method_map[seam_algorithm],
+            _compute_seam_callable=seams_algo_map[seam_algorithm],
         )
 
     @classmethod

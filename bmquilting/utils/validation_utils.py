@@ -1,7 +1,15 @@
+from enum import Enum
 import numpy as np
 import inspect
-from ..common_types import NumPixels, Orientation
-from bmquilting import SquarePatchingConfig
+
+from ..common_types import NumPixels
+from ..square import SquarePatchingConfig
+
+
+class Orientation(Enum):
+    H = "H"
+    V = "V"
+    H_AND_V = "H & V"
 
 
 def validate_array_shape(array: np.ndarray, min_height: int = None, min_width: int = None, help_msg: str = ""):

@@ -1,5 +1,5 @@
 from ._internal.square_subroutines import (
-    SquarePatchingConfig, SquarePatchingBlendConfig,
+    SquarePatchingConfig, SquarePatchingBlendConfig, SeamsAlgorithm,
 
     get_find_patch_to_the_right_method, get_find_patch_below_method, get_find_patch_both_method,
     get_seam_patched_horizontal, get_seam_patched_vertical, get_seam_patched_both,
@@ -1348,6 +1348,7 @@ def seamless_both_single(image: np.ndarray, lookup_texture: np.ndarray,
 __all__ = [
     "SquarePatchingConfig",
     "SquarePatchingBlendConfig",
+    "SeamsAlgorithm",
     "generate_texture",
     "generate_texture_parallel",
     "generate_texture_diagonal",

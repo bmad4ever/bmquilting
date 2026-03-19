@@ -4,9 +4,6 @@ from .common_types import (
     #PatchIdx,
     #Orientation,
     BlendConfig,
-    SeamsAlgorithm,
-    CircularPatchParams,
-    CircularPatchingConfig,
 )
 
 # Export core utilities for convenience
@@ -32,9 +29,6 @@ __all__ = [
     #"PatchIdx",
     #"Orientation",
     "BlendConfig",
-    "SeamsAlgorithm",
-    "CircularPatchParams",
-    "CircularPatchingConfig",
     "NormalizedTunableSigmoid",
     "PowerCurve",
     "LogScalingFunc",

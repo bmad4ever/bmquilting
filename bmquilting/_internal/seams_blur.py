@@ -4,16 +4,14 @@ from math import ceil
 import numpy as np
 import cv2
 
-#from .square_subroutines import SquarePatchingConfig
 from ..common_types import BlendConfig, NumPixels
 
-DEFAULT_MAX_BLEND_RATIO = 0.95  # percentage of the overlap size that can be used for blending purposes
+DEFAULT_MAX_BLEND_RATIO = 0.95
+"""Percentage of the overlap size that can be used for blending purposes"""
 
 USE_SCHARR_WHEN_KSIZE_EQUALS_3 = True
+"""When cv2.Sobel is used, use ksize=cv2.FILTER_SCHARR if the provided kernel size is equal to 3."""
 
-
-def debug_resize(arr, factor=2):
-    return cv2.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
 
 
 def auto_blend_config_2(sobel_kernel_size: NumPixels, overlap: NumPixels, use_vignette: bool = False) -> BlendConfig:
@@ -26,9 +24,13 @@ def auto_blend_config_2(sobel_kernel_size: NumPixels, overlap: NumPixels, use_vi
 
 
 def auto_blend_config_1(block_size: NumPixels, overlap: NumPixels, use_vignette: bool = False) -> BlendConfig:
+    sobel_ksize = min(round(overlap / 2.0), round(block_size / 10.0))
+    if sobel_ksize % 2 == 0:
+        sobel_ksize += 1
+
     return auto_blend_config_2(
         use_vignette=use_vignette,
-        sobel_kernel_size=min(ceil(overlap / 2.0), ceil(block_size // 5 / 2.0)),
+        sobel_kernel_size=sobel_ksize,
         overlap=overlap
     )
 
@@ -240,7 +242,6 @@ def auto_max_blend_diameter(overlap_size, sobel_ksize):
 
 def auto_min_blend_size(sobel_ksize):
     return round(np.sqrt(sobel_ksize) + 1)
-    #return sobel_ksize // 3 * 2 + 1
 
 
 def gradients_differences_at_the_seam(

@@ -1,4 +1,5 @@
 from ._internal.circular_subroutines import (
+    CircularPatchingConfig, CircularPatchParams, AstarVariant,
     set_random_patch_at_location, process_patch_at_location, get_bbox_idx,
 
     # methods w/ cache
@@ -11,7 +12,7 @@ from ._internal.seams_blur import (
 
 from ._internal.decorators import clear_cache_post_exec, step_predictor, ndarray_identity_cache
 from .utils.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
-from .common_types import NumPixels, CircularPatchingConfig, PatchIdx, CircularPatchParams
+from .common_types import NumPixels, PatchIdx
 from ._internal.hexagonal_lattice import HexagonalLatticeIterator, Vec2_int
 from ._internal.shmem_utils import SharedTextureList
 from ._internal.mask_utils import blend_with_mask
@@ -382,8 +383,7 @@ def generate_cphl6p_guided(
     def _record(job_id: int, result: tuple):
         _proxy_results[job_id].append(result)
 
-    # remove ui interrup wrapping
-    proxy_out_tex, out_seams = generate_cphl6p.__wrapped__.__wrapped__(
+    proxy_out_tex, out_seams = _generate_cphl6p(
         proxy_textures, out_h, out_w, patching_config,
         seed, n_processes, uicd,
         _record=_record
@@ -857,6 +857,9 @@ def seamless_horizontal_guided(
 
 
 __all__ = [
+    "CircularPatchingConfig",
+    "CircularPatchParams",
+    "AstarVariant",
     "generate_cphl6p",
     "generate_cphl6p_guided",
     "fill_cphl",
