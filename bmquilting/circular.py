@@ -48,6 +48,13 @@ _CACHED_FUNCS = [
     _get_circle_mask
 ]
 
+_INTERP_PAD = {
+    cv2.INTER_NEAREST:  1,
+    cv2.INTER_LINEAR:   2,
+    cv2.INTER_CUBIC:    4,
+    cv2.INTER_LANCZOS4: 8,
+}
+
 
 def _get_scale_factor(proxy_textures: list[np.ndarray], source_textures: list[np.ndarray]) -> int:
     if not proxy_textures or not source_textures:
@@ -73,25 +80,26 @@ def _get_scale_factor(proxy_textures: list[np.ndarray], source_textures: list[np
 
 def _periodic_resize(src: np.ndarray, dsize: tuple[int, int], interpolation=cv2.INTER_LINEAR) -> np.ndarray:
     """
-    Resizes a periodic (wrap-around) image by triplicating it to provide
-    context for interpolation at the boundaries, avoiding edge smearing.
-    :param src: Source image (proxy scale)
-    :param dsize: Target size (width, height)
-    :return: Resized image at target scale
+    Resizes a periodic image by adding a small wrap-around border to provide
+    interpolation context, avoiding edge smearing. Much less data-intensive than 3x3 tiling.
     """
     if src.shape[1] == dsize[0] and src.shape[0] == dsize[1]:
         return src
 
-    # Tile 3x3 to provide context
-    tiled = np.tile(src, (3, 3) + (1,) * (src.ndim - 2))
-    tw, th = dsize[0] * 3, dsize[1] * 3
-    resized_tiled = cv2.resize(tiled, (tw, th), interpolation=interpolation)
+    # Use wrap-around padding to provide context for periodic interpolation.
+    pad = _INTERP_PAD[interpolation]
+    padded = cv2.copyMakeBorder(src, pad, pad, pad, pad, borderType=cv2.BORDER_WRAP)
 
-    # Crop the center
-    y1, x1 = dsize[1], dsize[0]
-    y2, x2 = y1 + dsize[1], x1 + dsize[0]
-    return resized_tiled[y1:y2, x1:x2].copy()
+    # Calculate target padded size based on the synchronized scale
+    scale_w = dsize[0] // src.shape[1]
+    scale_h = dsize[1] // src.shape[0]
+    target_padded_size = (dsize[0] + 2 * pad * scale_w, dsize[1] + 2 * pad * scale_h)
 
+    resized_padded = cv2.resize(padded, target_padded_size, interpolation=interpolation)
+
+    # Extract the center
+    off_w, off_h = pad * scale_w, pad * scale_h
+    return resized_padded[off_h:off_h + dsize[1], off_w:off_w + dsize[0]].copy()
 
 def _get_proxy_configs(source_config: CircularPatchingConfig, scale: int) -> tuple[
     CircularPatchingConfig, CircularPatchingConfig]:
@@ -832,7 +840,7 @@ def _guided_make_seamless_vertical(
         proxy_textures: list[np.ndarray], source_textures: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         seed: int | SeedSequence, uicd: UiCoordData | None = None,
-        _seams: np.ndarray | None = None
+        _proxy_seams: np.ndarray | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     scale = _get_scale_factor(proxy_textures, source_textures)
     adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
@@ -843,11 +851,6 @@ def _guided_make_seamless_vertical(
 
     proxy_lookup = proxy_textures if proxy_textures else [proxy_target]
 
-    if _seams is not None and scale > 1:
-        p_seams_in = _periodic_resize(_seams, (proxy_target.shape[1], proxy_target.shape[0]), interpolation=cv2.INTER_LINEAR)
-    else:
-        p_seams_in = _seams
-
     # Calculate synchronized roll/center based on proxy scale
     y_proxy = proxy_target.shape[0] // 2
     y_roll = y_proxy * scale
@@ -855,7 +858,7 @@ def _guided_make_seamless_vertical(
     proxy, p_seams = _make_seamless_vertical_circular(
         proxy_target.copy(), proxy_lookup,
         proxy_config, seed, uicd,
-        _seams=p_seams_in, _record=record
+        _seams=_proxy_seams, _record=record
     )
 
     scaled_proxy_data = _scale_proxy_patch_list(proxy_data, scale, adj_source_config.patch_params.block_size)
@@ -884,7 +887,7 @@ def _guided_make_seamless_horizontal(
         proxy_textures: list[np.ndarray] | None, source_textures: list[np.ndarray] | None,
         patching_config: CircularPatchingConfig,
         seed: int | SeedSequence, uicd: UiCoordData | None = None,
-        _seams: np.ndarray | None = None
+        _proxy_seams: np.ndarray | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     # _make_seamless method copy the arrays, no need to copy them here
     texture, seams, proxy, p_seams = _guided_make_seamless_vertical(
@@ -893,7 +896,7 @@ def _guided_make_seamless_horizontal(
         proxy_textures=None if not proxy_textures else [np.rot90(t) for t in proxy_textures],
         source_textures=None if not source_textures else [np.rot90(t) for t in source_textures],
         patching_config=patching_config,
-        seed=seed, uicd=uicd, _seams=None if _seams is None else np.rot90(_seams)
+        seed=seed, uicd=uicd, _proxy_seams=None if _proxy_seams is None else np.rot90(_proxy_seams)
     )
     return (np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy(),
             np.rot90(proxy, -1).copy(), np.rot90(p_seams, -1).copy())
@@ -996,7 +999,7 @@ def seamless_both_guided(
 
     # 2. Horizontal pass
     texture, seams, proxy, p_seams = _guided_make_seamless_horizontal(
-        proxy, texture, proxy_textures, source_textures, adj_source_config, next(seed_iterator), uicd, _seams=seams)
+        proxy, texture, proxy_textures, source_textures, adj_source_config, next(seed_iterator), uicd, _proxy_seams=p_seams)
 
     # Calculate synchronized rolls based on proxy scale
     y_proxy = proxy.shape[0] // 2
