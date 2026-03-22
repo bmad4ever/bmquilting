@@ -115,11 +115,24 @@ class HexagonalLatticeIterator:
             yield current
             current = (current[0] + direction[0], current[1] + direction[1])
 
-    @staticmethod
-    def _get_angle(center: Vec2_int, point: Vec2_int) -> float:
-        """Calculate angle from center to point in radians"""
-        dx = point[0] - center[0]
-        dy = point[1] - center[1]
+    def _get_angle(self, center: Vec2_int, point: Vec2_int) -> float:
+        """Calculate angle from center to point in radians using ideal hexagonal coordinates"""
+        # In our hexagonal grid, odd rows are offset by spacing // 2.
+        # The "ideal" hexagonal offset is spacing / 2.0.
+        # We calculate the angle as if the points were on an ideal hexagonal grid.
+        offset_diff = (self.spacing / 2.0) - (self.spacing // 2)
+
+        c_x, c_y = center
+        p_x, p_y = point
+
+        c_row = c_y // self.spacing
+        p_row = p_y // self.spacing
+
+        c_ideal_x = c_x + (c_row % 2) * offset_diff
+        p_ideal_x = p_x + (p_row % 2) * offset_diff
+
+        dx = p_ideal_x - c_ideal_x
+        dy = p_y - c_y
         return math.atan2(dy, dx)
 
     @staticmethod
@@ -182,7 +195,8 @@ class HexagonalLatticeIterator:
             # But continue to be safe (the sector might have gaps)
 
             # Move to next scanline along angle1
-            current_start = (current_start[0] + dir1[0], current_start[1] + dir1[1])
+            current_start = current_start[0] + dir1[0], current_start[1] + dir1[1]
+            current_start = self._snap_to_grid(*current_start)
 
     def _partition_remaining_points(self, center: Vec2_int, neighbors: list[Vec2_int], ) -> list[Generator[Vec2_int]]:
         """
