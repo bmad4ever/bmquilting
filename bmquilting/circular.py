@@ -161,7 +161,7 @@ def _get_proxy_configs(source_config: CircularPatchingConfig, scale: int) -> tup
 def _scale_proxy_data_cphl6s(proxy_data_grouped_by_jid: ProxyDataCPHL6S, scale: int, source_block_size: int) -> None:
     """updates provided proxy_data"""
     if scale != 1:
-        for jid, patches in enumerate(proxy_data_grouped_by_jid):
+        for jid in range(len(proxy_data_grouped_by_jid)):
             _scale_proxy_patch_list(proxy_data_grouped_by_jid[jid], scale, source_block_size)
 
 
@@ -348,13 +348,19 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
                                 out_h: NumPixels, out_w: NumPixels,
                                 patching_config: CircularPatchingConfig,
                                 n_processes: int,
-                                uicd: UiCoordData | None
+                                uicd: UiCoordData | None,
+                                extended_h: int | None = None,
+                                extended_w: int | None = None,
+                                margin_y: int | None = None,
+                                margin_x: int | None = None
                                 ) -> np.ndarray | RetOnInterrupt:
     pp: CircularPatchParams = patching_config.patch_params
     block_size = pp.block_size
-    extended_h, extended_w = _get_extended_size(pp.block_size, out_h), _get_extended_size(pp.block_size, out_w)
+    if extended_h is None: extended_h = _get_extended_size(pp.block_size, out_h)
+    if extended_w is None: extended_w = _get_extended_size(pp.block_size, out_w)
 
-    margin_x, margin_y = (extended_w - out_w) // 2, (extended_h - out_h) // 2
+    if margin_x is None: margin_x = (extended_w - out_w) // 2
+    if margin_y is None: margin_y = (extended_h - out_h) // 2
     lookup_texts = SharedTextureList.from_list(source_textures)
     del source_textures  # ignore, from here & use lookup_texts
 
@@ -526,10 +532,21 @@ def generate_cphl6p_guided(
 
     _scale_proxy_data_cphl6s(_proxy_results, scale, adj_source_config.patch_params.block_size)
 
+    # Reconstruct using consistent extended size and margins from proxy run
+    p_pp = proxy_config.patch_params
+    p_ext_h = _get_extended_size(p_pp.block_size, p_out_h)
+    p_ext_w = _get_extended_size(p_pp.block_size, p_out_w)
+    p_margin_y = (p_ext_h - p_out_h) // 2
+    p_margin_x = (p_ext_w - p_out_w) // 2
+
     out_tex = _reconstruct_texture_cphl6p(
         source_textures, _proxy_results,
         out_h, out_w, adj_source_config,
-        n_processes, uicd
+        n_processes, uicd,
+        extended_h=p_ext_h * scale,
+        extended_w=p_ext_w * scale,
+        margin_y=p_margin_y * scale,
+        margin_x=p_margin_x * scale
     )
 
     if scale > 1:
@@ -631,11 +648,17 @@ def _reconstruct_fill_cphl(
         proxy_data: list[ProxyPatch],
         patching_config: CircularPatchingConfig,
         uicd: UiCoordData | None = None,
+        margin_y: int | None = None,
+        margin_x: int | None = None,
 ) -> np.ndarray:
     pp = patching_config.patch_params
 
     # setup extended target & mask
-    extended_holes_mask, margin_y, margin_x = _extend4filling(mask, pp)
+    if margin_y is None or margin_x is None:
+        _, def_margin_y, def_margin_x = _extend4filling(mask, pp)
+        margin_y = margin_y if margin_y is not None else def_margin_y
+        margin_x = margin_x if margin_x is not None else def_margin_x
+
     extended_target = cv2.copyMakeBorder(target, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
 
     # fill the holes using recorded coordinates
@@ -702,9 +725,16 @@ def fill_cphl_guided(
 
     _scale_proxy_patch_list(proxy_data, scale, adj_source_config.patch_params.block_size)
 
+    # Reconstruct using consistent margins from proxy run
+    p_pp = proxy_config.patch_params
+    _, p_margin_y, p_margin_x = _extend4filling(mask, p_pp)
+
     result = _reconstruct_fill_cphl(
         target=target, mask=mask, source_textures=source_textures, proxy_data=proxy_data,
-        patching_config=adj_source_config, uicd=uicd)
+        patching_config=adj_source_config, uicd=uicd,
+        margin_y=p_margin_y * scale,
+        margin_x=p_margin_x * scale
+    )
 
     if scale > 1:
         seams = cv2.resize(seams, (target.shape[1], target.shape[0]), interpolation=cv2.INTER_LINEAR)
@@ -857,13 +887,16 @@ def _guided_make_seamless_vertical(
     pp = adj_source_config.patch_params
     source_lookup = source_textures if source_textures else [target]
     target_rolled = np.roll(target, y_roll, axis=0)
-    extended_target = cv2.copyMakeBorder(target_rolled, 0, 0, pp.block_size, pp.block_size, cv2.BORDER_CONSTANT)
+
+    # Use scaled margin to match proxy's coordinate system
+    s_margin_x = proxy_config.patch_params.block_size * scale
+    extended_target = cv2.copyMakeBorder(target_rolled, 0, 0, s_margin_x, s_margin_x, cv2.BORDER_CONSTANT)
 
     for item in proxy_data:
         _paste_fromproxy(extended_target, item, pp, source_lookup)
         check_ui(uicd, 1)
 
-    ret_idx = np.s_[:, pp.block_size:target.shape[1] + pp.block_size]
+    ret_idx = np.s_[:, s_margin_x:target.shape[1] + s_margin_x]
     res_texture = extended_target[ret_idx]
 
     if scale > 1:
