@@ -20,6 +20,7 @@ from ._internal.mask_utils import blend_with_mask
 from joblib.externals.loky import get_reusable_executor
 from multiprocessing.shared_memory import SharedMemory
 from numpy.random.bit_generator import SeedSequence
+from multiprocessing.managers import ListProxy
 from joblib import Parallel, delayed
 from multiprocessing import Manager
 
@@ -38,7 +39,7 @@ ret_val_on_interrupt = (None, None)
 type JobID = int
 type ProxyPatch = tuple[PatchIdx, np.ndarray, int, int]
 """ lookup texture & patch top-left corner coordinates ; masks ; target x, target y """
-type ProxyDataCPHL6S = dict[int, list[ProxyPatch]]
+type ProxyDataCPHL6S = ListProxy[ListProxy[ProxyPatch]]
 """ job id -> list of ProxyPatch """
 
 _CACHED_FUNCS = [
@@ -157,29 +158,20 @@ def _get_proxy_configs(source_config: CircularPatchingConfig, scale: int) -> tup
     return adj_source_config, proxy_config
 
 
-def _scale_proxy_data_cphl6s(proxy_data: ProxyDataCPHL6S, scale: int, source_block_size: int) -> ProxyDataCPHL6S:
-    if scale == 1:
-        return proxy_data
-
-    scaled_data = {}
-    for jid, patches in proxy_data.items():
-        new_patches = []
-        for (idx, mask, tx, ty) in patches:
-            tex_idx, py, px = idx
-            new_idx = (tex_idx, py * scale, px * scale)
-            new_mask = cv2.resize(mask, (source_block_size, source_block_size), interpolation=cv2.INTER_LINEAR)
-            new_patches.append((new_idx, new_mask, tx * scale, ty * scale))
-        scaled_data[jid] = new_patches
-    return scaled_data
+def _scale_proxy_data_cphl6s(proxy_data_grouped_by_jid: ProxyDataCPHL6S, scale: int, source_block_size: int) -> None:
+    """updates provided proxy_data"""
+    if scale != 1:
+        for jid, patches in enumerate(proxy_data_grouped_by_jid):
+            _scale_proxy_patch_list(proxy_data_grouped_by_jid[jid][:], scale, source_block_size)
 
 
-def _scale_proxy_patch_list(proxy_data: list[ProxyPatch], scale: int, source_block_size: int) -> list[ProxyPatch]:
-    if scale == 1:
-        return proxy_data
-    return [((idx[0], idx[1] * scale, idx[2] * scale),
+def _scale_proxy_patch_list(proxy_data: list[ProxyPatch] | ListProxy[ProxyPatch], scale: int, source_block_size: int) -> None:
+    """updates provided proxy_data"""
+    if scale != 1:
+        proxy_data[:] = [((idx[0], idx[1] * scale, idx[2] * scale),
              cv2.resize(mask, (source_block_size, source_block_size), interpolation=cv2.INTER_LINEAR),
              tx * scale, ty * scale)
-            for idx, mask, tx, ty in proxy_data]
+             for idx, mask, tx, ty in proxy_data]
 
 
 def _get_patch(textures: list[np.ndarray] | SharedTextureList, idx: PatchIdx, block_size: NumPixels) -> np.ndarray:
@@ -191,7 +183,7 @@ def _get_patch(textures: list[np.ndarray] | SharedTextureList, idx: PatchIdx, bl
 
 def _paste_fromproxy(target: np.ndarray,
                      proxy_data_item: ProxyPatch, pp: CircularPatchParams,
-                     source_textures: list[np.ndarray]) -> None:
+                     source_textures: SharedTextureList | list[np.ndarray] ) -> None:
     patch_idx, mask, tx, ty = proxy_data_item   # tx, ty -> the patch center coordinate on the target texture
     patch = _get_patch(source_textures, patch_idx, pp.block_size)
     target_idx = get_bbox_idx(tx, ty, pp)
@@ -390,7 +382,7 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
 
         try:
             for item in patches[start_idx:]:
-                _paste_fromproxy(shm_out_text_main, item, pp, lookup_texts)
+                _paste_fromproxy(shm_out_text, item, pp, lookup_texts)
                 check_ui(job_uicd, 1)
         except JobInterrupted:
             raise JobInterrupted
@@ -402,7 +394,7 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
     try:
         # Step 1: Foundation (Center + Neighbors) are always the first 7 patches in proxy_data[0]
         # We apply them sequentially to establish the starting point.
-        patches_list_0 = proxy_data.get(0, [])
+        patches_list_0 = proxy_data[0]
         foundation_count = min(7, len(patches_list_0))
 
         if foundation_count > 0:
@@ -531,12 +523,11 @@ def generate_cphl6p_guided(
         seed, n_processes, uicd,
         _record=_record
     )
-    proxy_data = {i: list(inner_list) for i, inner_list in enumerate(_proxy_results)}
 
-    scaled_proxy_data = _scale_proxy_data_cphl6s(proxy_data, scale, adj_source_config.patch_params.block_size)
+    _scale_proxy_data_cphl6s(_proxy_results, scale, adj_source_config.patch_params.block_size)
 
     out_tex = _reconstruct_texture_cphl6p(
-        source_textures, scaled_proxy_data,
+        source_textures, _proxy_results,
         out_h, out_w, adj_source_config,
         n_processes, uicd
     )
@@ -709,10 +700,10 @@ def fill_cphl_guided(
         target=proxy_target, mask=proxy_mask, source_textures=proxy_textures,
         patching_config=proxy_config, seed=seed, uicd=uicd, _record=record)
 
-    scaled_proxy_data = _scale_proxy_patch_list(proxy_data, scale, adj_source_config.patch_params.block_size)
+    _scale_proxy_patch_list(proxy_data, scale, adj_source_config.patch_params.block_size)
 
     result = _reconstruct_fill_cphl(
-        target=target, mask=mask, source_textures=source_textures, proxy_data=scaled_proxy_data,
+        target=target, mask=mask, source_textures=source_textures, proxy_data=proxy_data,
         patching_config=adj_source_config, uicd=uicd)
 
     if scale > 1:
@@ -861,14 +852,14 @@ def _guided_make_seamless_vertical(
         _seams=_proxy_seams, _record=record
     )
 
-    scaled_proxy_data = _scale_proxy_patch_list(proxy_data, scale, adj_source_config.patch_params.block_size)
+    _scale_proxy_patch_list(proxy_data, scale, adj_source_config.patch_params.block_size)
 
     pp = adj_source_config.patch_params
     source_lookup = source_textures if source_textures else [target]
     target_rolled = np.roll(target, y_roll, axis=0)
     extended_target = cv2.copyMakeBorder(target_rolled, 0, 0, pp.block_size, pp.block_size, cv2.BORDER_CONSTANT)
 
-    for item in scaled_proxy_data:
+    for item in proxy_data:
         _paste_fromproxy(extended_target, item, pp, source_lookup)
         check_ui(uicd, 1)
 
@@ -1013,14 +1004,14 @@ def seamless_both_guided(
     proxy, p_seams = _patch_hseam(proxy, p_seams, proxy_textures, proxy_config, next(seed_iterator), uicd, _record=record, y_roll=y_proxy)
 
     # 4. Reconstruction
-    scaled_proxy_data = _scale_proxy_patch_list(proxy_data, scale, adj_source_config.patch_params.block_size)
+    _scale_proxy_patch_list(proxy_data, scale, adj_source_config.patch_params.block_size)
 
     # NOTE: texture is already rolled vertically by y_roll from step 1.
     # _patch_hseam rolls it by y_roll AGAIN to perform the horizontal patch line.
     texture = np.roll(texture, y_roll, axis=0)
     pp = adj_source_config.patch_params
     source_lookup = source_textures if source_textures else [target]
-    for pd_item in scaled_proxy_data:
+    for pd_item in proxy_data:
         _paste_fromproxy(texture, pd_item, pp, source_lookup)
         check_ui(uicd, 1)
 
