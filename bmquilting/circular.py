@@ -162,7 +162,7 @@ def _scale_proxy_data_cphl6s(proxy_data_grouped_by_jid: ProxyDataCPHL6S, scale: 
     """updates provided proxy_data"""
     if scale != 1:
         for jid, patches in enumerate(proxy_data_grouped_by_jid):
-            _scale_proxy_patch_list(proxy_data_grouped_by_jid[jid][:], scale, source_block_size)
+            _scale_proxy_patch_list(proxy_data_grouped_by_jid[jid], scale, source_block_size)
 
 
 def _scale_proxy_patch_list(proxy_data: list[ProxyPatch] | ListProxy[ProxyPatch], scale: int, source_block_size: int) -> None:
