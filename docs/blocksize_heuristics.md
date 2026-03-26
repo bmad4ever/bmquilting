@@ -78,7 +78,7 @@ The outputs of the Cluster Size and Cluster Distance heuristics are merged into 
 
 The results from both analyses are filtered, normalized, and combined into a list of "Size-Weight Pairs" $(d, w)$.
 
-1.  **Candidate Search**: The algorithm iterates through potential block sizes $b$ within the range $[\min(d), \min(\text{dimension}) / 2]$. The upper bound ensures **pattern continuity**: by keeping $b \leq \text{min\_dim} / 2$, the algorithm guarantees that even for the largest repeating patterns, there is sufficient "addressable search space" in the source image to find a valid patch that satisfies overlap requirements.
+1.  **Candidate Search**: The algorithm iterates through potential block sizes $b$ within the range $[\min(d), \min(\text{dimension}) / 2]$. The upper bound ensures **pattern continuity**: by keeping $b \leq min(dimension) / 2$, the algorithm guarantees that even for the largest repeating patterns, there is sufficient "addressable search space" in the source image to find a valid patch that satisfies overlap requirements.
 
     ![Block Size Limit Illustration](imgs/blocksize_limit_illustration.svg)
 
