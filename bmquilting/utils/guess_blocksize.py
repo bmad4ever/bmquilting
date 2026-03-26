@@ -84,14 +84,34 @@ def _filter_pairs_by_weight(pairs: SizeWeightPairs, weight_percentage_threshold)
 
 
 def guess_nice_block_size(
-        src: np.ndarray, freq_analysis_only: bool = True,
+        src: np.ndarray,
+        heuristic: str | bool = "fft",
         max_block_size: NumPixels | None = None
 ) -> NumPixels:
     """
-    :param src: numpy image with normalized float32 values
+    Block size guess heuristic selector.
+
+    :param src: numpy image with normalized float32 values for FFT and uint8 values for SIFT.
+    :param heuristic:
+        - "fft": FFT-based analysis only (default)
+        - "sift": SIFT keypoint-based analysis only
+        - "both": FFT + SIFT combined analysis
+        - bool: backward-compatible flag for old `freq_analysis_only` behavior
+            * True  => FFT only
+            * False => both, FFT + SIFT
     :param max_block_size: further restricts the upper bound for the guess.
                            the actually used upper bound might be lower than max_block_size.
     """
+
+    # Backward compatibility with previous freq_analysis_only boolean interface
+    if isinstance(heuristic, bool):
+        heuristic = "fft" if heuristic else "both"
+
+    heuristic = str(heuristic).strip().lower()
+    if heuristic not in {"fft", "sift", "both"}:
+        raise ValueError("heuristic must be 'fft', 'sift', 'both' or boolean (legacy), got %r" % heuristic)
+
+    freq_analysis_only = heuristic == "fft"
 
     def normalize_weights(pairs: SizeWeightPairs):
         if not pairs:
@@ -104,12 +124,12 @@ def guess_nice_block_size(
             normalized_pairs = [(index, 0) for index, weight in pairs]
         return normalized_pairs
 
-    # src should come with normalized float values already
-    freq_analysis_pairs = analyze_freq_spectrum(src)  # here the image needs to go with float normalized values
-    src = (src * 255).astype(np.uint8)
+    # src should come with normalized float values already for FFT
+    freq_analysis_pairs = analyze_freq_spectrum(src) if heuristic in {"fft", "both"} else []
+    src_uint8 = (src * 255).astype(np.uint8)
 
-    # here the image needs to go with integer, 0 to 255, values
-    desc_analysis_pairs = [] if freq_analysis_only else analyze_keypoint_scales(src)
+    # here the image needs to go with integer, 0 to 255, values for SIFT
+    desc_analysis_pairs = analyze_keypoint_scales(src_uint8) if heuristic in {"sift", "both"} else []
 
     # all pairs should come already sorted in descending order w/ respect to weight
 

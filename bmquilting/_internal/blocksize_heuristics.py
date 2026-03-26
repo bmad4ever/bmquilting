@@ -117,7 +117,7 @@ def analyze_keypoint_scales(image: np.ndarray) -> SizeWeightPairs:
 
 # region ==== FOURIER TRANSFORM BASED ====
 
-def compute_fft(image):
+def _compute_fft(image):
     image = np.float32(image)
     dft = cv2.dft(image, flags=cv2.DFT_COMPLEX_OUTPUT)
     dft_shift = np.fft.fftshift(dft)
@@ -125,7 +125,7 @@ def compute_fft(image):
     return magnitude_spectrum
 
 
-def compute_wavelens_of_interest(spectrum: np.ndarray, max_to_fetch: int = 16) -> SizeWeightPairs:
+def _compute_wavelens_of_interest(spectrum: np.ndarray, max_to_fetch: int = 16) -> SizeWeightPairs:
     h, w = spectrum.shape[:2]
     unique_wavelen = set()
     wavelen_magnitude_pairs = {}
@@ -165,8 +165,8 @@ def compute_wavelens_of_interest(spectrum: np.ndarray, max_to_fetch: int = 16) -
 
 
 def analyze_freq_spectrum(image: np.ndarray, max_items: int = 16) -> SizeWeightPairs:
-    magnitude_spectrum = compute_fft(image)
-    wlen_mag_pairs = compute_wavelens_of_interest(magnitude_spectrum, max_items)
+    magnitude_spectrum = _compute_fft(image)
+    wlen_mag_pairs = _compute_wavelens_of_interest(magnitude_spectrum, max_items)
     return wlen_mag_pairs
 
 # endregion ==== FOURIER TRANSFORM BASED ====
