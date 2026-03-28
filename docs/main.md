@@ -1,9 +1,10 @@
+# Documentation
 
 ### Topics
 
-* [Core Concepts](args_explained.md)
+* [**Quick Start Guide**](quick_start.md)
+* [Core Concepts & Arguments](args_explained.md)
+* [Blending Configuration](blending_config.md)
 * [Parallelization](parallelization.md)
-* [Feathering & Seams](feathering_and_seams.md)
-* [Proxy Synthesis](proxy_synth.md)
-* [Block Size Estimation](blocksize_heuristics.md)
-
+* [Proxy Synthesis (Guided Generation)](proxy_synth.md)
+* [Block Size Estimation Heuristics](blocksize_heuristics.md)
