@@ -61,18 +61,23 @@ Circular patches are placed on a **Hexagonal Lattice**, providing a more organic
 
 ### Basic Generation with Seams
 
+Circular patches are placed on a **Hexagonal Lattice** (CPHL), providing a more organic, non-grid-like distribution.
+
 ```python
 import cv2
 import numpy as np
-from bmquilting.circular import generate_cphl6p, CircularPatchingConfig
+from bmquilting.circular import generate_cphl6p, CircularPatchingConfig, CircularPatchParams
 
 src = cv2.imread("source.png")
 
-# Configure: 65px diameter, 25% overlap ratio
-config = CircularPatchingConfig.with_seams(diameter=65, overlap_ratio=0.25, tolerance=0.1)
+# 1. Define patch parameters: 65px diameter, 25% overlap ratio
+params = CircularPatchParams(diameter=65, overlap_ratio=0.25)
+
+# 2. Configure: 0.1 tolerance and 1.12 spacing factor
+config = CircularPatchingConfig.with_seams(params, tolerance=0.1, spacing_factor=1.12)
 seed = 42
 
-# Generate a 512x512 texture
+# 3. Generate a 512x512 texture
 out_tex, out_seams = generate_cphl6p(
     source_textures=[src],
     out_h=512,
@@ -91,9 +96,10 @@ cv2.imwrite("output_circular_seams.png", out_tex)
 ### Generation with Feathering
 
 ```python
-from bmquilting.circular import generate_cphl6p, CircularPatchingConfig
+from bmquilting.circular import generate_cphl6p, CircularPatchingConfig, CircularPatchParams
 
-config = CircularPatchingConfig.with_feathering(diameter=65, overlap_ratio=0.25, tolerance=0.1)
+params = CircularPatchParams(diameter=65, overlap_ratio=0.25)
+config = CircularPatchingConfig.with_feathering(params, tolerance=0.1, spacing_factor=1.12)
 out_tex, _ = generate_cphl6p([src], 512, 512, config, seed)
 ```
 
@@ -147,7 +153,30 @@ For more details on scaling and multi-resolution guidance, see the [Proxy Synthe
 
 ---
 
+## 5. Progress Tracking and Step Prediction
+
+All main generation functions are decorated with a `step_predictor`, which adds a `.predict_steps()` method to the function. This is useful for initializing progress bars in UI applications.
+
+```python
+from bmquilting.circular import generate_cphl6p, CircularPatchParams, CircularPatchingConfig
+
+params = CircularPatchParams(diameter=65, overlap_ratio=0.25)
+config = CircularPatchingConfig.with_seams(params, tolerance=0.1, spacing_factor=1.12)
+
+# Predict how many patches will be generated
+total_patches = generate_cphl6p.predict_steps(
+    patching_config=config, 
+    out_h=512, 
+    out_w=512
+)
+print(f"Expected patches: {total_patches}")
+```
+
+For more details on integrating with a GUI, see the [UICD Demo](../extras/demos/uicd.py).
+
+---
+
 ## Next Steps
 
 - **Parameter Details:** See [Arguments Explained](args_explained.md).
-- **Examples:** Check the `extras/visualizers/` to tinker with the methods via a GUI interface.
+- **Examples:** Check the `extras/demos/` to tinker with the methods via a GUI interface.
