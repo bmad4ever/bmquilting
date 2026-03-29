@@ -15,7 +15,8 @@ Guided generation can be particularly useful in scenarios where the raw source t
 - **Custom Error Weighting:** Proxy textures can be mathematically transformed to prioritize certain features during matching. For example, if images are processed in the **CIELAB** color space, the L (Lightness) component can be re-scaled in the proxy to have more or less impact on patch selection than the chrominance channels.
 - **Latent Space Guidance:** It is possible to use the image represented in latent space as a proxy in hybrid texture synthesis workflows.
 
-> **Note:** Due to the current implementation, a proxy must be the same size or smaller than the target texture. Since latent representations are typically smaller than the full‑resolution image, they can be used as proxies—but the reverse (using a full image to guide a latent) is not supported.
+> [!NOTE]
+> Due to the current implementation, a proxy must be the same size or smaller than the target texture. Since latent representations are typically smaller than the full‑resolution image, they can be used as proxies—but the reverse (using a full image to guide a latent) is not supported.
 
 ---
 
@@ -86,12 +87,20 @@ For **Circular Patching** methods (`generate_cphl6p_guided`, `fill_cphl_guided`,
 ### How it works
 The algorithm detects the scale factor ($S = \text{Source Size} / \text{Proxy Size}$) and performs the matching process at the lower resolution. The results are then scaled up by $S$ to reconstruct the final output using the full-resolution source textures.
 
+> [!IMPORTANT]
+> The scale factor must be an integer.
+> 
+> A 512x512 sized texture works with a 256x256 sized proxy ($S=2$), but not with a 300x300 sized ($S≈1.7$). 
+
 ### Auto-Adjustment & Alignment
 To ensure that the centers of patches and the hexagonal grid align perfectly between scales without "drifting," the algorithm may automatically adjust your parameters:
 1.  **Radius Adjustment:** The source `radius` is rounded to the nearest integer multiple of the scale factor $S$.
 2.  **Spacing Adjustment:** The `spacing_factor` is slightly adjusted so that the distance between patches in the source grid is exactly $S$ times the distance in the proxy grid.
 
-> **Note:** These adjustments are logged at the `INFO` level. If you want to avoid them, ensure your source `radius` is divisible by your scale factor and your output dimensions are multiples of the scale.
+> [!Note]
+> These adjustments are logged at the `INFO` level.
+>
+> If you want to avoid them, ensure your source `radius` is divisible by your scale factor and your output dimensions are multiples of the scale.
 
 ---
 

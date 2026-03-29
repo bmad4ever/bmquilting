@@ -56,8 +56,8 @@ This analysis identifies dominant periodicities in the texture by analyzing its 
 
 ### 2. Keypoint-Based Analysis (SIFT)
 
-> ⚠️ **WARNING:**
-> SIFT analysis is computationally expensive and can be significantly slower than FFT. It is recommended primarily for small source images where frequency analysis alone might be insufficient to capture complex structural features.
+> [!IMPORTANT]
+> SIFT Keypoints based analysis is computationally expensive and can be significantly slower than FFT. It is recommended primarily for small source images where frequency analysis alone might be insufficient to capture complex structural features.
 
 If the heuristic includes SIFT (e.g., `heuristic="sift"` or `heuristic="both"`), the algorithm also employs SIFT (Scale-Invariant Feature Transform) descriptors to identify structural patterns that might not be purely periodic.
 
