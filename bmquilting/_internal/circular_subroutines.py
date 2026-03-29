@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from collections.abc import Callable
 from functools import lru_cache
 from enum import Enum
 import numpy as np
@@ -6,7 +7,7 @@ import pyastar2d
 import cv2
 
 from .square_subroutines import (
-    avg_squared_diff, adjust_errors_func_inplace, adjust_errors_for_pystar2d_inplace,
+    avg_squared_diff, adjust_errors_for_pystar2d_inplace,
     _filter_candidate_patches, _select_a_random_patch, blend_with_mask, update_seams_map_view)
 from .seams_blur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_1
 from .shmem_utils import SharedTextureList
@@ -110,6 +111,13 @@ class CircularPatchingConfig:
       - `NONE`: No seams are computed.
     """
 
+    _error_func: Callable = field(init=True, repr=False)
+    """
+    Function used to compute the errors between overlapping patches, used to compute the seams.
+
+    A custom method may be provided via the **advanced** class method.
+    """
+
     @classmethod
     def with_seams(cls, patch_params: CircularPatchParams, tolerance: Percentage, spacing_factor: Percentage
                    ) -> "CircularPatchingConfig":
@@ -123,7 +131,8 @@ class CircularPatchingConfig:
             tolerance=tolerance,
             outer_corners_weighted_template_matching=False,
             spacing_factor=spacing_factor,
-            astar_heur=pyastar2d.Heuristic.DEFAULT
+            astar_heur=pyastar2d.Heuristic.DEFAULT,
+            _error_func=avg_squared_diff
         )
 
     @classmethod
@@ -139,7 +148,8 @@ class CircularPatchingConfig:
             tolerance=tolerance,
             outer_corners_weighted_template_matching=False,
             spacing_factor=spacing_factor,
-            astar_heur=3
+            astar_heur=3,
+            _error_func=avg_squared_diff
         )
 
     @classmethod
@@ -147,6 +157,7 @@ class CircularPatchingConfig:
                  tolerance: Percentage, spacing_factor: Percentage,
                  a_star_variant: AstarVariant,
                  outer_corners_weighted_template_matching: bool = False,
+                 custom_error_func: Callable = None
                  ) -> "CircularPatchingConfig":
         astar_variant_map = {
             AstarVariant.DEFAULT: pyastar2d.Heuristic.DEFAULT,
@@ -160,6 +171,7 @@ class CircularPatchingConfig:
             outer_corners_weighted_template_matching=outer_corners_weighted_template_matching,
             spacing_factor=spacing_factor,
             astar_heur=astar_variant_map[a_star_variant],
+            _error_func=custom_error_func if custom_error_func is not None else avg_squared_diff
         )
 
     def __post_init__(self):
@@ -211,8 +223,7 @@ def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
     f_radius = float(pp.radius)
 
     # Compute Errors prior to warping
-    errors = avg_squared_diff(block, patch)
-    adjust_errors_func_inplace(errors)
+    errors = circ_patching_config._error_func(block, patch)
 
     # Find Seam using Polar Coordinates
     center = circ_patching_config.patch_params.center_2d_f

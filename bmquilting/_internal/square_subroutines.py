@@ -84,6 +84,13 @@ class SquarePatchingConfig:
     A custom method may be provided via the **custom** class method.
     """
 
+    _error_func: Callable = field(init=True, repr=False)
+    """
+    Function used to compute the errors between overlapping patches, used to compute the seams.
+    
+    A custom method may be provided via the **advanced** class method.
+    """
+
     _mt_error_adjust: Callable[[float], float] = field(init=False)
     """
     Function to adjust the errors with respect to the match_template_method selected.
@@ -95,6 +102,7 @@ class SquarePatchingConfig:
     Match template method used when searching for a patch with a matching overlap section.
     Only TM_SQDIFF and TM_CCOEFF_NORMED are supported.
     """
+
 
     @classmethod
     def with_seams(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage) -> "SquarePatchingConfig":
@@ -116,6 +124,7 @@ class SquarePatchingConfig:
             vignette_on_match_template=False,
             match_template_method=cv.TM_SQDIFF,
             _compute_seam_callable=get_seam_mask_horizontal_astar,
+            _error_func=avg_squared_diff
         )
 
     @classmethod
@@ -132,13 +141,15 @@ class SquarePatchingConfig:
             vignette_on_match_template=False,
             match_template_method=cv.TM_SQDIFF,
             _compute_seam_callable=get_seam_mask_none,
+            _error_func=avg_squared_diff
         )
 
     @classmethod
     def advanced(cls, block_size, overlap, tolerance, blend_config,
                  seam_algorithm: SeamsAlgorithm = SeamsAlgorithm.ASTAR,
                  vignette_on_match_template: bool = False,
-                 match_template_method=cv.TM_SQDIFF
+                 match_template_method=cv.TM_SQDIFF,
+                 custom_error_func: Callable = None
                  ) -> "SquarePatchingConfig":
         seams_algo_map = {
             SeamsAlgorithm.ASTAR: get_seam_mask_horizontal_astar,
@@ -153,6 +164,7 @@ class SquarePatchingConfig:
             vignette_on_match_template=vignette_on_match_template,
             match_template_method=match_template_method,
             _compute_seam_callable=seams_algo_map[seam_algorithm],
+            _error_func= custom_error_func if custom_error_func is not None else avg_squared_diff
         )
 
     @classmethod
@@ -170,6 +182,7 @@ class SquarePatchingConfig:
             vignette_on_match_template=vignette_on_match_template,
             match_template_method=match_template_method,
             _compute_seam_callable=custom_func,
+            _error_func=lambda _: 0  # IGNORED; supposes that the custom seam function does not access it
         )
 
     def __post_init__(self):
@@ -188,7 +201,7 @@ class SquarePatchingConfig:
         object.__setattr__(self, '_mt_error_adjust', adjuster)
 
     def _compute_seam(self, source: np.ndarray, patch: np.ndarray) -> np.ndarray:
-        return self._compute_seam_callable(source, patch, self.block_size, self.overlap, self.blend_config)
+        return self._compute_seam_callable(source, patch, self.block_size, self.overlap, self)
 
     @property
     def blend_into_patch(self) -> bool:
@@ -533,13 +546,14 @@ def _patch_blending_vignette(block_size: NumPixels, overlap: NumPixels,
     return np.subtract(1, mask, out=mask)
 
 
-def get_seam_mask_horizontal_min_cut(ref_block, patch_block, block_size: NumPixels, overlap: NumPixels, _):
+def get_seam_mask_horizontal_min_cut(ref_block, patch_block, block_size: NumPixels,
+                                     overlap: NumPixels, config: SquarePatchingConfig):
     """
     Adapted from jena2020 solution.
     :return: ONLY the mask (not the patched overlap section)
     """
     inf = float('inf')
-    err = ((ref_block[:, :overlap] - patch_block[:, :overlap]) ** 2).mean(2)
+    err =config._error_func(ref_block[:, :overlap], patch_block[:, :overlap])
     # maintain minIndex for 2nd row onwards and
     min_index = []
     e = [list(err[0])]
@@ -582,7 +596,8 @@ def update_seams_map_view(seams_map_view: np.ndarray, patch_weights: np.ndarray,
 def get_seam_mask_horizontal_astar(
         ref_block, patch_block,
         block_size: NumPixels, overlap: NumPixels,
-        blend_config: SquarePatchingBlendConfig = None
+        config: SquarePatchingConfig
+        #blend_config: SquarePatchingBlendConfig = None
 ) -> np.ndarray:
     """
     :param ref_block: block in the source texture being generated (should be normalized)
@@ -591,6 +606,8 @@ def get_seam_mask_horizontal_astar(
     :return: ONLY the mask (not the patched overlap section)
     """
     # get min and max safety radii
+    blend_config = config.blend_config
+
     safety_radius = 0  # suppose zero until computed
     if blend_config is not None and blend_config.use_blur_radii_guess_pathfind_limiter:
         min_safe_rad = blend_config.min_blur_diameter // 2
@@ -607,7 +624,8 @@ def get_seam_mask_horizontal_astar(
         block1_safe_overlap_view = block1_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
         block2_safe_overlap_view = block2_safe_overlap_view[:, min_safe_rad:-min_safe_rad]
 
-    err = avg_squared_diff(block1_safe_overlap_view, block2_safe_overlap_view)
+    err = config._error_func(block1_safe_overlap_view, block2_safe_overlap_view)
+    #avg_squared_diff(block1_safe_overlap_view, block2_safe_overlap_view)
 
     if max_safe_rad > 0:
         # compute safety_radius & trim the remaining area
@@ -626,7 +644,6 @@ def get_seam_mask_horizontal_astar(
         if to_trim > 0:
             err = err[:, to_trim:-to_trim]
 
-    adjust_errors_func_inplace(err)
     adjust_errors_for_pystar2d_inplace(err, block_size)
 
     # Create 'free-corridors' at both extremes, so that the X starting point is arbitrary
@@ -667,12 +684,6 @@ def avg_squared_diff(block1: np.ndarray, block2: np.ndarray) -> np.ndarray:
     err **= 2
     err = err.mean(2)
     return err
-
-
-def adjust_errors_func_inplace(errors: np.ndarray) -> None:
-    # make penalty func steeper
-    # TODO consider making this a custom function, or adding params in the config to control it
-    errors **= 2
 
 
 def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: NumPixels) -> None:
