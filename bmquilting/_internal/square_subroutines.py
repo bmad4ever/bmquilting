@@ -105,7 +105,7 @@ class SquarePatchingConfig:
         Uses A* to compute the seams, where the error is the channels' averaged squared difference squared
         (^4; you read that correctly, it is not a typo).
         """
-        blend_config = BlendConfig.auto_blend_config_1(block_size, overlap, True)
+        blend_config = BlendConfig.auto_blend_config_2(block_size, overlap, True)
         blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
 
         return cls(
@@ -122,7 +122,7 @@ class SquarePatchingConfig:
     @classmethod
     def with_feathering(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage) -> SquarePatchingConfig:
         """Does not compute seams, the patch is blended using a vignette-like mask."""
-        blend_config = BlendConfig.auto_blend_config_1(block_size, overlap, True)
+        blend_config = BlendConfig.auto_blend_config_2(block_size, overlap, True)
         blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
 
         return cls(

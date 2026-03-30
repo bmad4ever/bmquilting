@@ -124,9 +124,40 @@ class BlendConfig:
             raise ValueError(f"Invalid range: {self.min_blur_diameter = }"
                              f" must be less or equal to {self.max_blur_diameter = }")
 
+
     @classmethod
-    def auto_blend_config_2(cls, sobel_kernel_size: NumPixels, overlap: NumPixels,
+    def auto_blend_config_2(cls, block_size: NumPixels, overlap: NumPixels, use_vignette: bool = False) -> BlendConfig:
+        """
+        Creates a BlendConfig by heuristically determining an adequate sobel kernel size and blur diameter bounds
+        based on the provided inputs.
+
+        :param block_size: The length of one of the patch's edges.
+        :param overlap: The size of the overlapping area between patches.
+        :param use_vignette: Whether to apply a vignette-like mask for additional smoothing.
+        :return: A BlendConfig instance with calculated blur bounds.
+        """
+        sobel_ksize = min(round(overlap / 2.0), round(block_size / 10.0))
+        if sobel_ksize % 2 == 0:
+            sobel_ksize += 1
+
+        return cls.auto_blend_config_1(
+            use_vignette=use_vignette,
+            sobel_kernel_size=sobel_ksize,
+            overlap=overlap
+        )
+
+    @classmethod
+    def auto_blend_config_1(cls, sobel_kernel_size: NumPixels, overlap: NumPixels,
                             use_vignette: bool = False) -> BlendConfig:
+        """
+        Creates a BlendConfig by heuristically determining the blur diameter bounds
+        based on the provided inputs.
+
+        :param sobel_kernel_size: The kernel size used for gradient computation.
+        :param overlap: The size of the overlapping area between patches.
+        :param use_vignette: Whether to apply a vignette-like mask for additional smoothing.
+        :return: A BlendConfig instance with calculated blur bounds.
+        """
 
         DEFAULT_MAX_BLEND_RATIO = 0.95
         MAX_TO_SOBEL_FACTOR = 1.75
@@ -148,18 +179,6 @@ class BlendConfig:
             sobel_kernel_size=sobel_kernel_size,
             min_blur_diameter=_min_blur_diam(sobel_kernel_size),
             max_blur_diameter=_max_blur_diam(overlap, sobel_kernel_size)
-        )
-
-    @classmethod
-    def auto_blend_config_1(cls, block_size: NumPixels, overlap: NumPixels, use_vignette: bool = False) -> BlendConfig:
-        sobel_ksize = min(round(overlap / 2.0), round(block_size / 10.0))
-        if sobel_ksize % 2 == 0:
-            sobel_ksize += 1
-
-        return cls.auto_blend_config_2(
-            use_vignette=use_vignette,
-            sobel_kernel_size=sobel_ksize,
-            overlap=overlap
         )
 
 
