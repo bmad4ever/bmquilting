@@ -5,8 +5,8 @@ from collections import Counter
 import numpy as np
 import cv2
 
+from .common import NumPixels
 type Weight = float
-type NumPixels = int  # same as types.py
 type SizeWeightPairs = list[tuple[NumPixels, Weight]]
 
 

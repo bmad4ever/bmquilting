@@ -13,11 +13,11 @@ from ._internal.seams_blur import (
     _circular_kernel, _get_max_possible_gradient_diff, _get_radii_limiter
 )
 
-from .common_types import NumPixels, _2D_Slice, PatchIdx
+from ._internal.common import NumPixels, _2D_Slice, PatchIdx
 from ._internal.decorators import clear_cache_post_exec, step_predictor
 from .utils.ui_coord import handle_ui_interrupts, UiCoordData, check_ui
 from ._internal.shmem_utils import SharedTextureList
-from ._internal.mask_utils import apply_mask
+from ._internal.common import apply_mask
 from .utils.texture import quick_checksum
 
 from joblib.externals.loky import get_reusable_executor

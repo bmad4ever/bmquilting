@@ -12,10 +12,10 @@ from ._internal.seams_blur import (
 
 from ._internal.decorators import clear_cache_post_exec, step_predictor, ndarray_identity_cache
 from .utils.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
-from .common_types import NumPixels, PatchIdx
 from ._internal.hexagonal_lattice import HexagonalLatticeIterator, Vec2_int
 from ._internal.shmem_utils import SharedTextureList
-from ._internal.mask_utils import blend_with_mask
+from ._internal.common import NumPixels, PatchIdx
+from ._internal.common import blend_with_mask
 
 from joblib.externals.loky import get_reusable_executor
 from multiprocessing.shared_memory import SharedMemory

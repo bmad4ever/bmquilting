@@ -2,7 +2,7 @@ from enum import Enum
 import numpy as np
 import inspect
 
-from ..common_types import NumPixels
+from .._internal.common import NumPixels
 from ..square import SquarePatchingConfig
 
 

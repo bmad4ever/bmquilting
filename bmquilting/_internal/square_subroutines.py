@@ -1,24 +1,19 @@
-from enum import Enum
+from __future__ import annotations
 
-from .seams_blur import (
-    auto_blend_config_1, auto_blend_config_2,
-    gradients_differences_at_the_seam, create_adaptive_blend_mask, _get_radii_limiter,
+from .seams_blur import BlendConfig, gradients_differences_at_the_seam, create_adaptive_blend_mask, _get_radii_limiter
+from .common import (
+    NumPixels, PatchIdx, Percentage, avg_squared_diff, adjust_errors_for_pystar2d_inplace,
+    blend_with_mask, _filter_candidate_patches, _select_a_random_patch
 )
-from ..common_types import NumPixels, PatchIdx, Percentage, BlendConfig
 from .shmem_utils import SharedTextureList
-from .mask_utils import blend_with_mask
-
 
 from dataclasses import dataclass, field, asdict
 from collections.abc import Callable
 from functools import lru_cache
-from numpy.random import Generator
+from enum import Enum
 import numpy as np
 import pyastar2d
 import cv2 as cv
-
-
-
 
 import logging
 logger = logging.getLogger(__name__)
@@ -26,9 +21,6 @@ logger.addHandler(logging.NullHandler())
 
 epsilon = np.finfo(float).eps
 
-
-def debug_resize(arr, factor=8):
-    return cv.resize(arr, (arr.shape[1] * factor, arr.shape[0] * factor))
 
 
 # region ==== CONFIG DATACLASSES ====
@@ -105,7 +97,7 @@ class SquarePatchingConfig:
 
 
     @classmethod
-    def with_seams(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage) -> "SquarePatchingConfig":
+    def with_seams(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage) -> SquarePatchingConfig:
         """
         Uses seams whose blur size bounds are heuristically determined by the provided argument;
         they are complemented with a vignette-like mask.
@@ -113,7 +105,7 @@ class SquarePatchingConfig:
         Uses A* to compute the seams, where the error is the channels' averaged squared difference squared
         (^4; you read that correctly, it is not a typo).
         """
-        blend_config = auto_blend_config_1(block_size, overlap, True)
+        blend_config = BlendConfig.auto_blend_config_1(block_size, overlap, True)
         blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
 
         return cls(
@@ -128,9 +120,9 @@ class SquarePatchingConfig:
         )
 
     @classmethod
-    def with_feathering(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage) -> "SquarePatchingConfig":
+    def with_feathering(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage) -> SquarePatchingConfig:
         """Does not compute seams, the patch is blended using a vignette-like mask."""
-        blend_config = auto_blend_config_1(block_size, overlap, True)
+        blend_config = BlendConfig.auto_blend_config_1(block_size, overlap, True)
         blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
 
         return cls(
@@ -150,7 +142,7 @@ class SquarePatchingConfig:
                  vignette_on_match_template: bool = False,
                  match_template_method=cv.TM_SQDIFF,
                  custom_error_func: Callable = None
-                 ) -> "SquarePatchingConfig":
+                 ) -> SquarePatchingConfig:
         seams_algo_map = {
             SeamsAlgorithm.ASTAR: get_seam_mask_horizontal_astar,
             SeamsAlgorithm.MIN_CUT: get_seam_mask_horizontal_min_cut,
@@ -172,7 +164,7 @@ class SquarePatchingConfig:
                custom_func: CallableSeamsAlgorithm,
                vignette_on_match_template: bool = False,
                match_template_method=cv.TM_SQDIFF
-               ) -> "SquarePatchingConfig":
+               ) -> SquarePatchingConfig:
         """Create a config using a user‑supplied min‑cut function."""
         return cls(
             block_size=block_size,
@@ -345,7 +337,7 @@ def find_patch_vx_idx(overlaps_left: bool,
 
     # --- Check for impossible match ---
     if global_min_error == np.inf:
-        logger.warning(f"Global minimum error is {global_min_error}")
+        logger.error(f"Global minimum error is {global_min_error}.")
         raise ValueError("Could not find a suitable patch in any lookup texture "
                          "(all textures were too small or had matching issues).")
 
@@ -353,47 +345,6 @@ def find_patch_vx_idx(overlaps_left: bool,
     final_candidates = _filter_candidate_patches(err_mats, global_min_error, tolerance)
     best_texture_idx, best_y, best_x = _select_a_random_patch(final_candidates, rng)
     return best_texture_idx, best_y, best_x
-
-
-def _select_a_random_patch(final_candidates: list[tuple[int, int, int]], rng: Generator) -> tuple[int, int, int]:
-    """
-    :param final_candidates: the list of patches' metadata in the following tuple format: ( texture index, y-coord, x-coord )
-    :param rng: random generator used to select the patch.
-    :return: tuple with the selected patch metadata: ( texture index, y-coord, x-coord )
-    """
-    if not final_candidates:
-        # This occurs if the tolerance factor is so small it filters out everything,
-        # but the check for global_min_error == np.inf should usually catch the
-        # true impossible cases.
-        raise ValueError("No patches met the final tolerance criteria.")
-    c = rng.integers(len(final_candidates))
-    return final_candidates[c]
-
-
-def _filter_candidate_patches(err_mats: list[np.ndarray | None],
-                              global_min_error: float , tolerance: float) -> list[tuple[int, int, int]]:
-    """
-
-    :param err_mats: error matrices resulting from template matching.
-        NOTE: the error matrices indices should match the texture indices.
-              if a texture is too small, or has some other problem that invalidates fetching a patch from it,
-              its' corresponding err_mat can be set as None to preserve the indices correspondence.
-    :param global_min_error: the min error found from all the provided matrices.
-        NOTE: the iteration used to obtain the err_mats should also compute the global minimum error,
-        there is no need to iterate the list an additional time to obtain this value prior to filtering the candidates.
-    :param tolerance: how high, percentage wise, can the error be above the global minimum error to pass as a candidate.
-    :return: the list of candidates in the following tuple format: ( index in err_mats, y-coord, x-coord )
-    """
-    final_candidates: list[tuple[int, int, int]] = []  # (texture_idx, y, x)
-    acceptable_error = (1.0 + tolerance) * global_min_error
-
-    for texture_idx, err_mat in enumerate(err_mats):
-        if err_mat is None:  # skip small or invalid textures
-            continue
-        y_t, x_t = np.nonzero(err_mat <= acceptable_error)  # filter positions with respect to the tolerance threshold
-        for y, x in zip(y_t, x_t):   # record all valid patch coordinates
-            final_candidates.append((texture_idx, y, x))
-    return final_candidates
 
 
 def get_4way_seam_patched(
@@ -677,28 +628,6 @@ def get_seam_mask_none(
         ____
 ) -> np.ndarray:
     return np.zeros((block_size, block_size), dtype=np.float32)
-
-
-def avg_squared_diff(block1: np.ndarray, block2: np.ndarray) -> np.ndarray:
-    err = block1 - block2
-    err **= 2
-    err = err.mean(2)
-    return err
-
-
-def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: NumPixels) -> None:
-    """Adjust the errors so that 1s can be used to create 'free-corridors'"""
-
-    # scale to integer color range and offset by 1 (works for both RGB and LAB)
-    #   this is done so that the distance from 0 to the smallest possible error
-    #   keeps the same proportion relative to other error values
-    #   otherwise there would be a relative penalty mismatch for pixels with error equal to zero
-    #   when offsetting the errors, which is required for both pyastar2d (min. value accepted as weight is 1)
-    errors *= 255
-    errors += 1
-
-    # make the lowest value big enough for 1 to be negligible (paths created w/ 1s become "free-corridors")
-    errors *= block_len ** 2
 
 
 # endregion

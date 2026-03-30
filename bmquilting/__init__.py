@@ -1,8 +1,4 @@
-from .common_types import (
-    #NumPixels,
-    #Percentage,
-    #PatchIdx,
-    #Orientation,
+from ._internal.seams_blur import (
     BlendConfig,
 )
 
@@ -18,16 +14,8 @@ from .utils import (
     guess_nice_block_size,
 )
 
-from ._internal.seams_blur import (
-    auto_blend_config_1,
-    auto_blend_config_2,
-)
 
 __all__ = [
-    #"NumPixels",
-    #"Percentage",
-    #"PatchIdx",
-    #"Orientation",
     "BlendConfig",
     "NormalizedTunableSigmoid",
     "PowerCurve",
@@ -37,6 +25,4 @@ __all__ = [
     "JobMemoryManager",
     "JobInterrupted",
     "guess_nice_block_size",
-    "auto_blend_config_1",
-    "auto_blend_config_2"
 ]

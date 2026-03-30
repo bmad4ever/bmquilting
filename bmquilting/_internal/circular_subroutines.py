@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from collections.abc import Callable
 from functools import lru_cache
@@ -6,12 +8,12 @@ import numpy as np
 import pyastar2d
 import cv2
 
-from .square_subroutines import (
+from .common import (
     avg_squared_diff, adjust_errors_for_pystar2d_inplace,
     _filter_candidate_patches, _select_a_random_patch, blend_with_mask, update_seams_map_view)
-from .seams_blur import gradients_differences_at_the_seam, create_adaptive_blend_mask, auto_blend_config_1
+from .seams_blur import BlendConfig, gradients_differences_at_the_seam, create_adaptive_blend_mask
+from .common import NumPixels, Percentage, PatchIdx
 from .shmem_utils import SharedTextureList
-from ..common_types import NumPixels, Percentage, PatchIdx, BlendConfig
 
 
 # region ==== CONFIG DATACLASSES ====
@@ -120,8 +122,8 @@ class CircularPatchingConfig:
 
     @classmethod
     def with_seams(cls, patch_params: CircularPatchParams, tolerance: Percentage, spacing_factor: Percentage
-                   ) -> "CircularPatchingConfig":
-        blend_config = auto_blend_config_1(
+                   ) -> CircularPatchingConfig:
+        blend_config = BlendConfig.auto_blend_config_1(
             patch_params.block_size,
             patch_params.overlap_radius,
             True)
@@ -137,8 +139,8 @@ class CircularPatchingConfig:
 
     @classmethod
     def with_feathering(cls, patch_params: CircularPatchParams, tolerance: Percentage, spacing_factor: Percentage
-                        ) -> "CircularPatchingConfig":
-        blend_config = auto_blend_config_1(
+                        ) -> CircularPatchingConfig:
+        blend_config = BlendConfig.auto_blend_config_1(
             patch_params.block_size,
             patch_params.overlap_radius,
             True)
@@ -158,7 +160,7 @@ class CircularPatchingConfig:
                  a_star_variant: AstarVariant,
                  outer_corners_weighted_template_matching: bool = False,
                  custom_error_func: Callable = None
-                 ) -> "CircularPatchingConfig":
+                 ) -> CircularPatchingConfig:
         astar_variant_map = {
             AstarVariant.DEFAULT: pyastar2d.Heuristic.DEFAULT,
             AstarVariant.ORTHO_Y: pyastar2d.Heuristic.ORTHOGONAL_Y,
