@@ -1,5 +1,5 @@
 from bmquilting.square import SquarePatchingConfig, SquarePatchingBlendConfig, SeamsAlgorithm
-from bmquilting import BlendConfig, auto_blend_config_2
+from bmquilting import BlendConfig
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
