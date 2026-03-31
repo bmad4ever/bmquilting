@@ -121,12 +121,15 @@ class CircularPatchingConfig:
     """
 
     @classmethod
-    def with_seams(cls, patch_params: CircularPatchParams, tolerance: Percentage, spacing_factor: Percentage
-                   ) -> CircularPatchingConfig:
-        blend_config = BlendConfig.auto_blend_config_2(
-            patch_params.block_size,
-            patch_params.overlap_radius,
-            True)
+    def with_seams(cls, patch_params: CircularPatchParams, tolerance: Percentage, spacing_factor: Percentage,
+                   blend: bool = True) -> CircularPatchingConfig:
+        if blend:
+            blend_config = BlendConfig.auto_blend_config_2(
+                patch_params.block_size,
+                patch_params.overlap_radius,
+                True)
+        else:
+            blend_config = None
         return cls(
             patch_params=patch_params,
             blend_config=blend_config,

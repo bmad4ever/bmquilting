@@ -97,16 +97,18 @@ class SquarePatchingConfig:
 
 
     @classmethod
-    def with_seams(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage) -> SquarePatchingConfig:
+    def with_seams(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage, blend: bool=True) -> SquarePatchingConfig:
         """
         Uses seams whose blur size bounds are heuristically determined by the provided argument;
         they are complemented with a vignette-like mask.
 
-        Uses A* to compute the seams, where the error is the channels' averaged squared difference squared
-        (^4; you read that correctly, it is not a typo).
+        Uses A* to compute the seams, where the error is the channels' averaged squared difference.
         """
-        blend_config = BlendConfig.auto_blend_config_2(block_size, overlap, True)
-        blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
+        if blend:
+            blend_config = BlendConfig.auto_blend_config_2(block_size, overlap, True)
+            blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
+        else:
+            blend_config = None
 
         return cls(
             block_size=block_size,
