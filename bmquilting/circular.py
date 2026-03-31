@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from ._internal.circular_subroutines import (
     CircularPatchingConfig, CircularPatchParams, AstarVariant,
     set_random_patch_at_location, process_patch_at_location, get_bbox_idx,
@@ -10,7 +12,7 @@ from ._internal.seams_blur import (
     _circular_kernel, _get_max_possible_gradient_diff
 )
 
-from ._internal.decorators import clear_cache_post_exec, step_predictor, ndarray_identity_cache
+from ._internal.decorators import clear_cache_post_exec, step_predictor, ndarray_identity_cache, auto_uint8_to_float32
 from .utils.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
 from ._internal.hexagonal_lattice import HexagonalLatticeIterator, Vec2_int
 from ._internal.shmem_utils import SharedTextureList
@@ -451,6 +453,7 @@ def _generate_guided_chlp6p_step_predictor(patching_config: CircularPatchingConf
 
 
 @step_predictor(_generate_chlp6p_step_predictor)
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_cphl6p(
@@ -465,6 +468,7 @@ def generate_cphl6p(
 
 
 @step_predictor(_generate_guided_chlp6p_step_predictor)
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def generate_cphl6p_guided(
@@ -676,6 +680,7 @@ def _guided_fill_cphl_step_predictor(mask, patching_config):
 
 
 @step_predictor(_fill_cphl_step_predictor)
+@auto_uint8_to_float32
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def fill_cphl(
@@ -691,6 +696,7 @@ def fill_cphl(
 
 
 @step_predictor(_guided_fill_cphl_step_predictor)
+@auto_uint8_to_float32
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def fill_cphl_guided(
@@ -958,6 +964,7 @@ def _guided_make_seameless_both_circular_steps(target: np.ndarray, patching_conf
 
 
 @step_predictor(_make_seamless_vertical_circular_steps)
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def seamless_vertical(
@@ -969,6 +976,7 @@ def seamless_vertical(
 
 
 @step_predictor(_make_seamless_horizontal_circular_steps)
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def seamless_horizontal(
@@ -980,6 +988,7 @@ def seamless_horizontal(
 
 
 @step_predictor(_make_seamless_both_circular_steps)
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def seamless_both(
@@ -998,6 +1007,7 @@ def seamless_both(
 
 
 @step_predictor(_guided_make_seamless_horizontal_circular_steps)
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def seamless_both_guided(
@@ -1066,6 +1076,7 @@ def seamless_both_guided(
 
 
 @step_predictor(_guided_make_seamless_vertical_circular_steps)
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def seamless_vertical_guided(
@@ -1087,6 +1098,7 @@ def seamless_vertical_guided(
 
 
 @step_predictor(_guided_make_seamless_horizontal_circular_steps)
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def seamless_horizontal_guided(

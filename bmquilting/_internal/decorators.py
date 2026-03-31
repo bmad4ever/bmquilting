@@ -1,4 +1,5 @@
 from functools import wraps
+import numpy as np
 import weakref
 import inspect
 
@@ -133,3 +134,56 @@ def ndarray_identity_cache(array_arg_index: int = 0):
         return wrapper
 
     return decorator
+
+
+def auto_uint8_to_float32(func):
+    """
+    Decorator that detects uint8 numpy inputs and automatically converts them to float32 [0, 1].
+    The output(s) of the function are converted back to uint8 [0, 255] if any input was uint8.
+
+    Supports:
+    - np.ndarray inputs
+    - list[np.ndarray] inputs (like source_textures)
+    """
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        was_uint8 = False
+
+        def convert_in(obj):
+            nonlocal was_uint8
+            if isinstance(obj, np.ndarray) and obj.dtype == np.uint8:
+                if not was_uint8:
+                    logger.info(f"auto_uint8_to_float32: Detected uint8 input in '{func.__name__}'. "
+                                f"Converting to float32 [0, 1] for processing.")
+                was_uint8 = True
+                return obj.astype(np.float32) / 255.0
+            if isinstance(obj, list):
+                return [convert_in(item) for item in obj]
+            return obj
+
+        def convert_out(obj):
+            if isinstance(obj, np.ndarray) and obj.dtype == np.float32:
+                # Use np.round and clip to handle potential float precision issues
+                return np.clip(np.round(obj * 255.0), 0, 255).astype(np.uint8)
+            if isinstance(obj, tuple):
+                return tuple(convert_out(item) for item in obj)
+            if isinstance(obj, list):
+                return [convert_out(item) for item in obj]
+            return obj
+
+        # Convert positional arguments
+        new_args = tuple(convert_in(arg) for arg in args)
+
+        # Convert keyword arguments
+        new_kwargs = {k: convert_in(v) for k, v in kwargs.items()}
+
+        result = func(*new_args, **new_kwargs)
+
+        if was_uint8:
+            logger.info(f"auto_uint8_to_float32: Converting output of '{func.__name__}' back to uint8.")
+            return convert_out(result)
+
+        return result
+
+    return wrapper

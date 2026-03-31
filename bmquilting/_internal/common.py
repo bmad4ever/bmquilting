@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from numpy.random import Generator
 import numpy as np
 import cv2

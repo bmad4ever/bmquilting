@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from ._internal.square_subroutines import (
     SquarePatchingConfig, SquarePatchingBlendConfig, SeamsAlgorithm,
 
@@ -13,8 +15,8 @@ from ._internal.seams_blur import (
     _circular_kernel, _get_max_possible_gradient_diff, _get_radii_limiter
 )
 
+from ._internal.decorators import clear_cache_post_exec, step_predictor, auto_uint8_to_float32
 from ._internal.common import NumPixels, _2D_Slice, PatchIdx
-from ._internal.decorators import clear_cache_post_exec, step_predictor
 from .utils.ui_coord import handle_ui_interrupts, UiCoordData, check_ui
 from ._internal.shmem_utils import SharedTextureList
 from ._internal.common import apply_mask
@@ -215,6 +217,7 @@ def _parallel_generate_texture_step_predictor(patching_config: SquarePatchingCon
 
 
 @step_predictor(_parallel_generate_texture_step_predictor)
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_texture_parallel(
@@ -274,7 +277,7 @@ def generate_texture_parallel(
         # might get 1 more row or column than needed here
 
         # Patch the central area containing the central block shared by in all the stripes
-        gen_res = generate_texture.__wrapped__.__wrapped__.__wrapped__ (  # access wrapped to avoid clearing cache
+        gen_res = _generate_texture(
             src_textures,
             patching_config,
             block_size + 2 * (block_size - overlap),  # 2*overlap would suffice, but seams would have an offset
@@ -704,18 +707,11 @@ def _generate_texture_step_predictor(patching_config: SquarePatchingConfig, out_
     return (n_h + 1) * (n_w + 1)
 
 
-@step_predictor(_generate_texture_step_predictor)
-@clear_cache_post_exec(*_CACHED_FUNCS)
-@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def generate_texture(src_textures: list[np.ndarray],
+def _generate_texture(src_textures: list[np.ndarray],
                      patching_config: SquarePatchingConfig,
                      out_h: NumPixels, out_w: NumPixels,
                      rng: np.random.Generator,
                      uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    """
-    :param out_h: output's height in pixels
-    :param out_w: output's width in pixels
-    """
     block_size, overlap = patching_config.block_size, patching_config.overlap
 
     n_h = int(ceil((out_h - block_size) / (block_size - overlap)))
@@ -753,6 +749,23 @@ def generate_texture(src_textures: list[np.ndarray],
     return texture_map[:out_h, :out_w], seams_map[:out_h, :out_w]
 
 
+@step_predictor(_generate_texture_step_predictor)
+@auto_uint8_to_float32
+@clear_cache_post_exec(*_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
+def generate_texture(src_textures: list[np.ndarray],
+                     patching_config: SquarePatchingConfig,
+                     out_h: NumPixels, out_w: NumPixels,
+                     rng: np.random.Generator,
+                     uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """
+    :param out_h: output's height in pixels
+    :param out_w: output's width in pixels
+    """
+    return _generate_texture(src_textures, patching_config, out_h, out_w, rng, uicd)
+
+
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 def generate_texture_diagonal(src_textures: list[np.ndarray],
                               patching_config: SquarePatchingConfig,
@@ -1010,6 +1023,7 @@ def _generate_guided_steps_predictor(patching_config: SquarePatchingConfig, out_
 
 
 @step_predictor(_generate_guided_steps_predictor)
+@auto_uint8_to_float32
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def generate_guided(
         proxy_textures: list[np.ndarray],
@@ -1115,6 +1129,7 @@ def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchin
     return texture_map, seams_map
 
 
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchingConfig, rng: np.random.Generator,
@@ -1140,6 +1155,7 @@ def _seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingC
         return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
 
 
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingConfig, rng: np.random.Generator,
@@ -1148,6 +1164,7 @@ def seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingCo
     return _seamless_vertical_multi(image, patching_config, rng, lookup_textures, uicd)
 
 
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_both_multi(image, patching_config: SquarePatchingConfig, rng: np.random.Generator,
@@ -1290,6 +1307,7 @@ def _seamless_vertical_single(image: np.ndarray, lookup_texture: np.ndarray,
         return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
 
 
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_horizontal_single(image: np.ndarray, lookup_texture: np.ndarray, patching_config: SquarePatchingConfig,
@@ -1298,6 +1316,7 @@ def seamless_horizontal_single(image: np.ndarray, lookup_texture: np.ndarray, pa
     return _seamless_horizontal_single(image, lookup_texture, patching_config, rng, seams_map, uicd)
 
 
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_vertical_single(image: np.ndarray, lookup_texture: np.ndarray,
@@ -1306,6 +1325,7 @@ def seamless_vertical_single(image: np.ndarray, lookup_texture: np.ndarray,
     return _seamless_vertical_single(image, lookup_texture, patching_config, rng, uicd)
 
 
+@auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_both_single(image: np.ndarray, lookup_texture: np.ndarray,
