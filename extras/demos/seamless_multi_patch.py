@@ -20,6 +20,7 @@ class ConvertToSeamlessTextureApp(SquarePatchGenApp):
         self.grid_img = None
         self.current_display = "result"
         super().__init__(root, "Convert to Seamless Texture")
+        self.seam_method_var.set(value="none")
 
     def view_options(self) -> list[tuple[str, str]]:
         return [("Result", "result"), ("Seams Map", "seams"), ("2x2 Grid", "grid")]
@@ -48,9 +49,6 @@ class ConvertToSeamlessTextureApp(SquarePatchGenApp):
             src_img_float = self.src_img.astype(np.float32) / 255.0
             src_img_bgr = cv2.cvtColor(src_img_float, cv2.COLOR_RGB2BGR)
 
-            # Setup random generator w/ the provided seed
-            rand_gen = np.random.default_rng(seed=self.seed_var.get())
-
             # Fetch Gen Params
             block_size = self.get_block_size(src_img_float)
             overlap = self.get_overlap_size(block_size)
@@ -67,7 +65,7 @@ class ConvertToSeamlessTextureApp(SquarePatchGenApp):
             seamless_texture, seams_map = seamless_multi_patch_functions[direction](
                 image=src_img_bgr,
                 patching_config=patching_config,
-                rng=rand_gen,
+                seed=self.seed_var.get(),
                 lookup_textures=self.get_lookup_textures(src_img_bgr)
             )
 

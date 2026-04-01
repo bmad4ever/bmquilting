@@ -551,7 +551,7 @@ class SquarePatchGenApp(TextureAppTemplate):
             if blend_mode == "auto":
                 sobel_kernel = self.auto_sobel_kernel_var.get()
                 use_vignette = self.auto_use_vignette_var.get()
-                blend_config = auto_blend_config_2(sobel_kernel, overlap, use_vignette)
+                blend_config = BlendConfig.auto_blend_config_1(sobel_kernel, overlap, use_vignette)
             else:  # manual
                 use_vignette = self.use_vignette_var.get()
                 sobel_kernel = self.sobel_kernel_var.get()

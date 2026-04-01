@@ -10,7 +10,6 @@ import numpy as np
 import cv2
 
 import logging
-
 logging.basicConfig(level=logging.DEBUG)
 
 
@@ -64,7 +63,6 @@ class GenerateTextureApp(SquarePatchGenApp):
 
             # Setup random generator
             seed = self.seed_var.get()
-            rand_gen = np.random.default_rng(seed=seed)
 
             # Fetch Gen Params
             block_size = self.get_block_size(src_img_float)
@@ -80,7 +78,7 @@ class GenerateTextureApp(SquarePatchGenApp):
                     patching_config=gen_params,
                     out_h=self.out_height_var.get(),
                     out_w=self.out_width_var.get(),
-                    rng=rand_gen,
+                    seed=seed,
                     uicd=None
                 )
             elif nps == 0:
@@ -89,7 +87,7 @@ class GenerateTextureApp(SquarePatchGenApp):
                     patching_config=gen_params,
                     out_h=self.out_height_var.get(),
                     out_w=self.out_width_var.get(),
-                    rng=rand_gen,
+                    seed=seed,
                     uicd=None
                 )
             else:

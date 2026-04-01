@@ -194,7 +194,6 @@ class GuidedTextureApp:
 
             # Parameters
             seed = self.seed_var.get()
-            rand_gen = np.random.default_rng(seed=seed)
             out_size = self.out_size_var.get()
 
             # Block size calculation
@@ -235,7 +234,7 @@ class GuidedTextureApp:
                 patching_config=patching_config,
                 out_h=out_size,
                 out_w=out_size,
-                rng=rand_gen,
+                seed=seed,
                 uicd=None
             )
             self.display_bgr_image("out_proxy", out_proxy)
@@ -248,7 +247,7 @@ class GuidedTextureApp:
                 patching_config=patching_config,
                 out_h=out_size,
                 out_w=out_size,
-                rng=rand_gen,
+                seed=seed,
                 uicd=None
             )
             self.display_bgr_image("no_guided", no_guide_tex)
