@@ -91,6 +91,13 @@ class CircularPatchParams:
 
 @dataclass(frozen=True, slots=True)
 class CircularPatchingConfig:
+    """
+    Centralises all parameters needed across the circular patching subroutines.
+
+    Instances should be created via the class methods rather than directly,
+    as the internal seam and error callables are managed automatically:
+    :meth:`with_seams`, :meth:`with_feathering`, :meth:`advanced`
+    """
     patch_params: CircularPatchParams
     blend_config: BlendConfig | None
     tolerance: Percentage
@@ -121,8 +128,12 @@ class CircularPatchingConfig:
     """
 
     @classmethod
-    def with_seams(cls, patch_params: CircularPatchParams, tolerance: Percentage, spacing_factor: Percentage,
+    def with_seams(cls, patch_params: CircularPatchParams | tuple[NumPixels, Percentage],
+                   tolerance: Percentage, spacing_factor: Percentage,
                    blend: bool = True) -> CircularPatchingConfig:
+        if not isinstance(patch_params, CircularPatchParams):
+            patch_params = CircularPatchParams(*patch_params)
+
         if blend:
             blend_config = BlendConfig.auto_blend_config_2(
                 patch_params.block_size,
@@ -141,8 +152,12 @@ class CircularPatchingConfig:
         )
 
     @classmethod
-    def with_feathering(cls, patch_params: CircularPatchParams, tolerance: Percentage, spacing_factor: Percentage
+    def with_feathering(cls, patch_params: CircularPatchParams | tuple[NumPixels, Percentage],
+                        tolerance: Percentage, spacing_factor: Percentage
                         ) -> CircularPatchingConfig:
+        if not isinstance(patch_params, CircularPatchParams):
+            patch_params = CircularPatchParams(*patch_params)
+
         blend_config = BlendConfig.auto_blend_config_2(
             patch_params.block_size,
             patch_params.overlap_radius,
@@ -158,12 +173,15 @@ class CircularPatchingConfig:
         )
 
     @classmethod
-    def advanced(cls, patch_params: CircularPatchParams, blend_config: BlendConfig,
+    def advanced(cls, patch_params: CircularPatchParams | tuple[NumPixels, Percentage], blend_config: BlendConfig,
                  tolerance: Percentage, spacing_factor: Percentage,
                  a_star_variant: AstarVariant,
                  outer_corners_weighted_template_matching: bool = False,
                  custom_error_func: Callable = None
                  ) -> CircularPatchingConfig:
+        if not isinstance(patch_params, CircularPatchParams):
+            patch_params = CircularPatchParams(*patch_params)
+
         astar_variant_map = {
             AstarVariant.DEFAULT: pyastar2d.Heuristic.DEFAULT,
             AstarVariant.ORTHO_Y: pyastar2d.Heuristic.ORTHOGONAL_Y,
