@@ -756,12 +756,13 @@ def _generate_texture(src_textures: list[np.ndarray],
 def generate_texture(src_textures: list[np.ndarray],
                      patching_config: SquarePatchingConfig,
                      out_h: NumPixels, out_w: NumPixels,
-                     rng: np.random.Generator,
+                     seed: int,
                      uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
     :param out_h: output's height in pixels
     :param out_w: output's width in pixels
     """
+    rng = np.random.default_rng(seed=seed)
     return _generate_texture(src_textures, patching_config, out_h, out_w, rng, uicd)
 
 
@@ -770,7 +771,7 @@ def generate_texture(src_textures: list[np.ndarray],
 def generate_texture_diagonal(src_textures: list[np.ndarray],
                               patching_config: SquarePatchingConfig,
                               out_h: NumPixels, out_w: NumPixels,
-                              rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+                              seed: int) -> tuple[np.ndarray, np.ndarray]:
     """
         I've wondered if iterating diagonally with an overlap sized offset --- so that the corners shared by 4 patches are
         covered by the new patches --- could improve the generation quality, and perhaps help avoid "loose" seams.
@@ -779,6 +780,8 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
     """
     b, o = patching_config.block_size, patching_config.overlap
     assert o * 2 < b
+
+    rng = np.random.default_rng(seed=seed)
 
     bm2o = b - 2 * o
     _n_h = n_h = ceil(out_h / bm2o)
@@ -1030,7 +1033,7 @@ def generate_guided(
         source_textures: list[np.ndarray],
         patching_config: SquarePatchingConfig,
         out_h: NumPixels, out_w: NumPixels,
-        rng: np.random.Generator,
+        seed: int,
         uicd: UiCoordData | None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
@@ -1049,6 +1052,7 @@ def generate_guided(
     """
     # note: ui interrupt exceptions are not caught by _compute_synthesis_map or _reconstruct_texture.
     #       the handle_ui_interrupts wrapper catches the exception here instead, since this is the public method.
+    rng = np.random.default_rng(seed=seed)
     patches_idxs, masks, proxy_out_tex, out_cut = _compute_synthesis_map(
         proxy_textures, patching_config, out_h, out_w, rng, uicd)
     out_tex = _reconstruct_texture(
@@ -1132,13 +1136,14 @@ def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchin
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchingConfig, rng: np.random.Generator,
+def seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchingConfig, seed: int,
                               lookup_textures: list[np.ndarray] = None, seams_map: np.ndarray | None = None,
                               uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
     :param image: the image to make seamless; also be used to fetch the patches.
     :param lookup_textures: if provided, the patches will be obtained from the list of "lookup_textures" instead.
     """
+    rng = np.random.default_rng(seed=seed)
     return _seamless_horizontal_multi(image, patching_config, rng, lookup_textures, seams_map, uicd)
 
 
@@ -1158,20 +1163,23 @@ def _seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingC
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingConfig, rng: np.random.Generator,
+def seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingConfig, seed: int,
                             lookup_textures: list[np.ndarray] = None,
                             uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    rng = np.random.default_rng(seed=seed)
     return _seamless_vertical_multi(image, patching_config, rng, lookup_textures, uicd)
 
 
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def seamless_both_multi(image, patching_config: SquarePatchingConfig, rng: np.random.Generator,
+def seamless_both_multi(image, patching_config: SquarePatchingConfig, seed: int,
                         lookup_textures: list[np.ndarray] = None,
                         uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     lookup_textures = [image] if lookup_textures is None else lookup_textures
     block_size = patching_config.block_size
+
+    rng = np.random.default_rng(seed=seed)
 
     # patch the texture in both directions. the last stripe's endpoints won't loop yet.
     texture, seams = _seamless_vertical_multi(image, patching_config, rng, lookup_textures=lookup_textures, uicd=uicd)
@@ -1311,17 +1319,19 @@ def _seamless_vertical_single(image: np.ndarray, lookup_texture: np.ndarray,
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_horizontal_single(image: np.ndarray, lookup_texture: np.ndarray, patching_config: SquarePatchingConfig,
-                               rng: np.random.Generator, seams_map=None,
+                               seed: int,
                                uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    return _seamless_horizontal_single(image, lookup_texture, patching_config, rng, seams_map, uicd)
+    rng = np.random.default_rng(seed=seed)
+    return _seamless_horizontal_single(image, lookup_texture, patching_config, rng, None, uicd)
 
 
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_vertical_single(image: np.ndarray, lookup_texture: np.ndarray,
-                             patching_config: SquarePatchingConfig, rng: np.random.Generator,
+                             patching_config: SquarePatchingConfig, seed: int,
                              uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    rng = np.random.default_rng(seed=seed)
     return _seamless_vertical_single(image, lookup_texture, patching_config, rng, uicd)
 
 
@@ -1329,18 +1339,19 @@ def seamless_vertical_single(image: np.ndarray, lookup_texture: np.ndarray,
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def seamless_both_single(image: np.ndarray, lookup_texture: np.ndarray,
-                         patching_config: SquarePatchingConfig, rng: np.random.Generator,
+                         patching_config: SquarePatchingConfig, seed: int,
                          uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
     :param image: source texture to be made seamless.
     :param lookup_texture: texture from where the patches will be extracted.
     :param patching_config: generation parameters.
-    :param rng: random number generator (RNG).
+    :param seed: seed used for the random number generator (RNG).
     :param uicd: optional element to keep track of the generation or interrupt it.
     :return: the tuple: (texture, seam map)
     """
     lookup_texture = image if lookup_texture is None else lookup_texture
     block_size = patching_config.block_size
+    rng = np.random.default_rng(seed=seed)
 
     texture, seams = _seamless_vertical_single(image, lookup_texture, patching_config, rng, uicd)
     if texture is None:
