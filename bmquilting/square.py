@@ -224,7 +224,7 @@ def generate_texture_parallel(
         src_textures: list[np.ndarray], patching_config: SquarePatchingConfig,
         out_h: NumPixels, out_w: NumPixels,
         nps: int, seed: int,
-        uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+        uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
     :param out_h: output's height in pixels
     :param out_w: output's width in pixels
@@ -757,7 +757,7 @@ def generate_texture(src_textures: list[np.ndarray],
                      patching_config: SquarePatchingConfig,
                      out_h: NumPixels, out_w: NumPixels,
                      seed: int,
-                     uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+                     uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
     :param out_h: output's height in pixels
     :param out_w: output's width in pixels
@@ -1034,7 +1034,7 @@ def generate_guided(
         patching_config: SquarePatchingConfig,
         out_h: NumPixels, out_w: NumPixels,
         seed: int,
-        uicd: UiCoordData | None
+        uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
     Uses a variant of the source_textures to guide the texture synthesis algorithms and maps the result to the
