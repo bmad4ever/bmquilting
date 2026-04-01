@@ -458,8 +458,8 @@ def _generate_guided_chlp6p_step_predictor(patching_config: CircularPatchingConf
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_cphl6p(
         source_textures: list[np.ndarray],
-        out_h: NumPixels, out_w: NumPixels,
         patching_config: CircularPatchingConfig,
+        out_h: NumPixels, out_w: NumPixels,
         seed: int,
         n_processes: int = 1,
         uicd: UiCoordData | None = None
