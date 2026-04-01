@@ -382,12 +382,13 @@ def _min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPi
 
     offset_row = _find_first_2adjacent_all_zero_rows(roi[:, non_overlap_radius:])
     if offset_row is not None:
+        # 2 adjacent all-0s rows exist
         errors = np.roll(errors, -offset_row, axis=0)
         roi = np.roll(roi, -offset_row, axis=0)
-
-    start_x = end_x = errors.shape[1] - 1
-    if offset_row is None:
-        # when no empty row is found, search for the cut endpoints at the top & bottom so that the path is not broken
+        start_x = end_x = errors.shape[1] - 1
+    else:
+        # NO 2 adjacent all-0s rows exist
+        # search for the cut endpoints at the top & bottom so that the path is not broken
         start_x, end_x = _find_min_cut_circ_endpoints(errors, roi, heur_override)
 
     errors[:, -1] = roi[:, -1] * errors[:, -1] + (1 - roi[:, -1])  # bottom holes escape path
