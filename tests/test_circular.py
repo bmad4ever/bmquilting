@@ -35,8 +35,8 @@ class TestCircularAPI(unittest.TestCase):
         cls.proxy_textures = [cls.proxy_tex]
         
         # Config
-        pp = CircularPatchParams(diameter=31, overlap_ratio=0.3)
-        cls.config = CircularPatchingConfig.with_seams(pp, tolerance=0.1, spacing_factor=1.2)
+        pp = {"diameter":31, "overlap_ratio":0.3}
+        cls.config = CircularPatchingConfig.with_seams(**pp, tolerance=0.1, spacing_factor=1.2)
 
     def test_01_generate_cphl6p(self):
         out_tex, out_seams = generate_cphl6p(self.source_textures, self.config, self.h, self.w, self.seed)

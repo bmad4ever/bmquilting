@@ -1131,7 +1131,6 @@ def seamless_horizontal_guided(
 
 __all__ = [
     "CircularPatchingConfig",
-    "CircularPatchParams",
     "AstarVariant",
     "generate_cphl6p",
     "generate_cphl6p_guided",

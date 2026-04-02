@@ -128,11 +128,10 @@ class CircularPatchingConfig:
     """
 
     @classmethod
-    def with_seams(cls, patch_params: CircularPatchParams | tuple[NumPixels, Percentage],
+    def with_seams(cls, diameter: NumPixels, overlap_ratio: Percentage,
                    tolerance: Percentage, spacing_factor: Percentage,
                    blend: bool = True) -> CircularPatchingConfig:
-        if not isinstance(patch_params, CircularPatchParams):
-            patch_params = CircularPatchParams(*patch_params)
+        patch_params = CircularPatchParams(diameter=diameter, overlap_ratio=overlap_ratio)
 
         if blend:
             blend_config = BlendConfig.auto_blend_config_2(
@@ -152,11 +151,10 @@ class CircularPatchingConfig:
         )
 
     @classmethod
-    def with_feathering(cls, patch_params: CircularPatchParams | tuple[NumPixels, Percentage],
+    def with_feathering(cls, diameter: NumPixels, overlap_ratio: Percentage,
                         tolerance: Percentage, spacing_factor: Percentage
                         ) -> CircularPatchingConfig:
-        if not isinstance(patch_params, CircularPatchParams):
-            patch_params = CircularPatchParams(*patch_params)
+        patch_params = CircularPatchParams(diameter=diameter, overlap_ratio=overlap_ratio)
 
         blend_config = BlendConfig.auto_blend_config_2(
             patch_params.block_size,
@@ -173,14 +171,14 @@ class CircularPatchingConfig:
         )
 
     @classmethod
-    def advanced(cls, patch_params: CircularPatchParams | tuple[NumPixels, Percentage], blend_config: BlendConfig,
+    def advanced(cls, diameter: NumPixels, overlap_ratio: Percentage,
+                 blend_config: BlendConfig,
                  tolerance: Percentage, spacing_factor: Percentage,
                  a_star_variant: AstarVariant,
                  outer_corners_weighted_template_matching: bool = False,
                  custom_error_func: Callable = None
                  ) -> CircularPatchingConfig:
-        if not isinstance(patch_params, CircularPatchParams):
-            patch_params = CircularPatchParams(*patch_params)
+        patch_params = CircularPatchParams(diameter=diameter, overlap_ratio=overlap_ratio)
 
         astar_variant_map = {
             AstarVariant.DEFAULT: pyastar2d.Heuristic.DEFAULT,
