@@ -138,7 +138,7 @@ class CircularPatchingConfig:
             blend_config = BlendConfig.auto_blend_config_2(
                 patch_params.block_size,
                 patch_params.overlap_radius,
-                True)
+                False)
         else:
             blend_config = None
         return cls(

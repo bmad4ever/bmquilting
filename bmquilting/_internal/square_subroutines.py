@@ -54,8 +54,11 @@ class SquarePatchingBlendConfig(BlendConfig):
 @dataclass(frozen=True, slots=True)
 class SquarePatchingConfig:
     """
-    Data used across multiple quilting subroutines.
-    Used in quilting.py and make_seamless.py
+    Centralises all parameters needed across the square patching subroutines.
+
+    Instances should be created via the class methods rather than directly,
+    as the internal seam and error callables are managed automatically:
+    :meth:`with_seams`, :meth:`with_feathering`, :meth:`advanced`, :meth:`custom`.
     """
     block_size: NumPixels
     overlap: NumPixels
@@ -105,7 +108,7 @@ class SquarePatchingConfig:
         Uses A* to compute the seams, where the error is the channels' averaged squared difference.
         """
         if blend:
-            blend_config = BlendConfig.auto_blend_config_2(block_size, overlap, True)
+            blend_config = BlendConfig.auto_blend_config_2(block_size, overlap, False)
             blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
         else:
             blend_config = None
