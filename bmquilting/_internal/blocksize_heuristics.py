@@ -88,6 +88,9 @@ def _inner_square_area(circle_diameter: float) -> float:
 
 
 def analyze_keypoint_scales(image: np.ndarray) -> SizeWeightPairs:
+    """
+    :param image: uint8 image with arbitrary number of channels.
+    """
     sift = cv2.SIFT_create()
     keypoints = sift.detect(image, None)
     if len(keypoints) == 0:  # edge case
@@ -118,7 +121,6 @@ def analyze_keypoint_scales(image: np.ndarray) -> SizeWeightPairs:
 # region ==== FOURIER TRANSFORM BASED ====
 
 def _compute_fft(image):
-    image = np.float32(image)
     dft = cv2.dft(image, flags=cv2.DFT_COMPLEX_OUTPUT)
     dft_shift = np.fft.fftshift(dft)
     magnitude_spectrum = cv2.magnitude(dft_shift[:, :, 0], dft_shift[:, :, 1])
@@ -165,6 +167,9 @@ def _compute_wavelens_of_interest(spectrum: np.ndarray, max_to_fetch: int = 16) 
 
 
 def analyze_freq_spectrum(image: np.ndarray, max_items: int = 16) -> SizeWeightPairs:
+    """
+    :param image: single channel float32 image
+    """
     magnitude_spectrum = _compute_fft(image)
     wlen_mag_pairs = _compute_wavelens_of_interest(magnitude_spectrum, max_items)
     return wlen_mag_pairs

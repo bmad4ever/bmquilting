@@ -91,7 +91,7 @@ def guess_nice_block_size(
     """
     Block size guess heuristic selector.
 
-    :param src: numpy image with normalized float32 values for FFT and uint8 values for SIFT.
+    :param src: must be single channel if "fft" is used.
     :param heuristic:
         - "fft": FFT-based analysis only (default)
         - "sift": SIFT keypoint-based analysis only
@@ -125,11 +125,18 @@ def guess_nice_block_size(
         return normalized_pairs
 
     # src should come with normalized float values already for FFT
-    freq_analysis_pairs = analyze_freq_spectrum(src) if heuristic in {"fft", "both"} else []
-    src_uint8 = (src * 255).astype(np.uint8)
+    if heuristic in {"fft", "both"}:
+        src_float32 = np.float32(src)/255.0 if src.dtype != np.float32 else src
+        freq_analysis_pairs = analyze_freq_spectrum(src_float32)
+    else:
+        freq_analysis_pairs = []
 
     # here the image needs to go with integer, 0 to 255, values for SIFT
-    desc_analysis_pairs = analyze_keypoint_scales(src_uint8) if heuristic in {"sift", "both"} else []
+    if heuristic in {"sift", "both"}:
+        src_uint8 = (src * 255.0).astype(np.uint8) if src.dtype != np.uint8 else src
+        desc_analysis_pairs = analyze_keypoint_scales(src_uint8)
+    else:
+        desc_analysis_pairs = []
 
     # all pairs should come already sorted in descending order w/ respect to weight
 
