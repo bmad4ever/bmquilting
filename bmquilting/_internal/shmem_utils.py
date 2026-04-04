@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 import numpy as np
 import tempfile
@@ -125,10 +127,10 @@ class SharedTextureList:
         try:
             get_base_memmap(self.metadata)
         except Exception as e:
-            logger.error(f"ERROR: SharedTextureList failed to initialize base map: {e}")
+            logger.error(f"ERROR: {self.__class__.__name__} failed to initialize base map: {e}")
 
     @classmethod
-    def from_list(cls, texture_list: list[np.ndarray]) -> 'SharedTextureList':
+    def from_list(cls, texture_list: list[np.ndarray]) -> SharedTextureList:
         """
         Alternative constructor that creates the shared file on disk and
         returns a SharedTextureList instance to access it.
@@ -162,7 +164,7 @@ class SharedTextureList:
         current_offset_bytes = 0
         total_bytes_written = 0
 
-        logger.info(f"SharedTextureList: Writing raw data to {filename}...")
+        logger.info(f"{SharedTextureList.__class__.__name__}: Writing raw data to {filename}...")
 
         # 3. Write all raw data sequentially to the file
         with open(filename, 'wb') as f:
@@ -184,7 +186,7 @@ class SharedTextureList:
                 current_offset_bytes += byte_size
                 total_bytes_written += byte_size
 
-        logger.info(f"SharedTextureList: File created with total size {total_bytes_written / (1024 * 1024):.2f} MB.")
+        logger.info(f"{SharedTextureList.__class__.__name__}: File created with total size {total_bytes_written / (1024 * 1024):.2f} MB.")
 
         # 4. Create metadata and initialize the instance
         metadata = TextureMetadata(
@@ -215,12 +217,12 @@ class SharedTextureList:
 
                 # Forcing a collection helps ensure the file handle is released immediately.
                 gc.collect()
-                logger.info(f"SharedTextureList: Released memmap file handle for {filepath}.")
+                logger.info(f"{self.__class__.__name__}: Released memmap file handle for {filepath}.")
 
             shutil.rmtree(temp_dir)
-            logger.info(f"SharedTextureList: Cleaned up temporary directory and shared file: {temp_dir}")
+            logger.info(f"{self.__class__.__name__}:Cleaned up temporary directory and shared file: {temp_dir}")
         except OSError as e:
-            logger.warning(f"SharedTextureList: WARNING - Could not remove temporary directory {temp_dir}: {e}")
+            logger.warning(f"{self.__class__.__name__}: WARNING - Could not remove temporary directory {temp_dir}: {e}")
 
     def __len__(self) -> int:
         """Enables len(texture_list)"""

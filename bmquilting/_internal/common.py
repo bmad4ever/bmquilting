@@ -33,12 +33,14 @@ class TexLookupTable:
 
         self.texs = []
         self.masks = []
-        for tx in texs:
+        for idx, tx in enumerate(texs):
             tx_copy = np.copy(tx)
             valid_mask = np.isfinite(tx)
             if np.all(valid_mask):
                 self.masks.append(None)
             else:
+                logger.info(f"{self.__class__.__name__}: lookup texture {idx:02} contains non-valid data.")
+
                 invalid_mask = np.logical_not(valid_mask, out=valid_mask)
                 tx_copy[invalid_mask] = FAKE_OUTLIER
 
@@ -50,6 +52,7 @@ class TexLookupTable:
                 invalid_mask = invalid_uint8 > 0
 
                 self.masks.append(invalid_mask)
+                logger.info(f"{self.__class__.__name__}: an invalid-points mask was created for texture {idx:02}.")
             self.texs.append(tx_copy)
 
 
