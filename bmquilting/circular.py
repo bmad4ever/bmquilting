@@ -14,10 +14,9 @@ from ._internal.seams_blur import (
 
 from ._internal.decorators import clear_cache_post_exec, step_predictor, ndarray_identity_cache, auto_uint8_to_float32
 from .utils.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
+from ._internal.common import NumPixels, PatchIdx, blend_with_mask, TexLookupTable
 from ._internal.hexagonal_lattice import HexagonalLatticeIterator, Vec2_int
 from ._internal.shmem_utils import SharedTextureList
-from ._internal.common import NumPixels, PatchIdx
-from ._internal.common import blend_with_mask
 
 from joblib.externals.loky import get_reusable_executor
 from multiprocessing.shared_memory import SharedMemory
@@ -593,7 +592,7 @@ def _fill_cphl_step_predictor(mask: np.ndarray, patching_config: CircularPatchin
 def _fill_cphl(
         target: np.ndarray,
         mask: np.ndarray,
-        source_textures: list[np.ndarray],
+        source_textures: TexLookupTable,
         patching_config: CircularPatchingConfig,
         seed: int,
         uicd: UiCoordData | None = None,
@@ -692,6 +691,7 @@ def fill_cphl(
         uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """:return: texture, seams"""
+    source_textures = TexLookupTable(source_textures, patching_config.get_patch_kernel())
     return _fill_cphl(target, mask, source_textures, patching_config, seed, uicd)
 
 
@@ -725,6 +725,7 @@ def fill_cphl_guided(
     def record(idx_mask_tuple: ProxyPatch):
         proxy_data.append(idx_mask_tuple)
 
+    proxy_textures = TexLookupTable(proxy_textures, patching_config.get_patch_kernel())
     proxy_result, seams = _fill_cphl(
         target=proxy_target, mask=proxy_mask, source_textures=proxy_textures,
         patching_config=proxy_config, seed=seed, uicd=uicd, _record=record)

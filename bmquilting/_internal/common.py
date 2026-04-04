@@ -20,6 +20,49 @@ type PatchIdx = tuple[int, int, int]
 type _2D_Slice = tuple[slice, slice]
 
 
+class TexLookupTable:
+    texs: list[np.ndarray]
+    masks: list[np.ndarray|None]
+
+    def __init__(self, texs: list[np.ndarray], patch_kernel: np.ndarray):
+        """
+        :param texs: textures
+        :param patch_kernel: mask with the shape of the full patch
+        """
+        FAKE_OUTLIER: int = 4
+
+        self.texs = []
+        self.masks = []
+        for tx in texs:
+            tx_copy = np.copy(tx)
+            valid_mask = np.isfinite(tx)
+            if np.all(valid_mask):
+                self.masks.append(None)
+            else:
+                invalid_mask = np.logical_not(valid_mask, out=valid_mask)
+                tx_copy[invalid_mask] = FAKE_OUTLIER
+
+                # dilate invalid mask by block size
+                if invalid_mask.ndim == 3:
+                    invalid_mask = valid_mask.any(axis=-1)
+                invalid_uint8 = np.uint8(invalid_mask)
+                cv2.dilate(invalid_uint8, patch_kernel, anchor=(0, 0), dst=invalid_uint8)
+                invalid_mask = invalid_uint8 > 0
+
+                self.masks.append(invalid_mask)
+            self.texs.append(tx_copy)
+
+
+    def __getitem__(self, index: int) -> np.ndarray:
+        return self.texs[index]
+
+    def has_mask(self, index: int) -> bool:
+        return self.masks[index] is not None
+
+    def get_mask(self, index: int) -> np.ndarray:
+        return self.masks[index]
+
+
 # region    ----- MASK UTILITIES -----
 
 def apply_mask(src: np.ndarray, mask: np.ndarray, overwrite: bool = False):
@@ -100,6 +143,7 @@ def _select_a_random_patch(patches: list[PatchIdx], rng: Generator) -> PatchIdx:
     return patches[c]
 
 # endregion --- PATCH SELECTION METHODS ---
+
 
 # region    ----- SEAMS AUXILIARY METHODS -----
 

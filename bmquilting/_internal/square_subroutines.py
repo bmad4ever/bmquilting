@@ -212,6 +212,9 @@ class SquarePatchingConfig:
     def bot(self) -> tuple[NumPixels, NumPixels, Percentage]:
         return self.block_size, self.overlap, self.tolerance
 
+    def get_patch_kernel(self, dtype=np.uint8) -> np.ndarray:
+        return np.ones((self.block_size, self.block_size), dtype=dtype, order='C')
+
 
 # endregion ==== CONFIG DATACLASSES ====
 

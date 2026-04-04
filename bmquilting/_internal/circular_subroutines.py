@@ -10,7 +10,7 @@ import cv2
 
 from .common import (
     avg_squared_diff, adjust_errors_for_pystar2d_inplace,
-    _filter_candidate_patches, _select_a_random_patch, blend_with_mask, update_seams_map_view)
+    _filter_candidate_patches, _select_a_random_patch, blend_with_mask, update_seams_map_view, TexLookupTable)
 from .seams_blur import BlendConfig, gradients_differences_at_the_seam, create_adaptive_blend_mask
 from .common import NumPixels, Percentage, PatchIdx
 from .shmem_utils import SharedTextureList
@@ -210,6 +210,14 @@ class CircularPatchingConfig:
     @property
     def use_seams(self) -> bool:
         return self.astar_heur <= 2
+
+    def get_patch_kernel(self, dtype=np.uint8) -> np.ndarray:
+        block_size = self.patch_params.block_size
+        center = self.patch_params.center
+        radius = self.patch_params.radius
+        kernel = np.zeros((block_size, block_size), dtype=dtype, order='C')
+        cv2.circle(kernel, (center, center), radius, 1, -1)
+        return kernel
 
 # endregion ==== CONFIG DATACLASSES ====
 
@@ -479,7 +487,7 @@ def _find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray, heur_overr
 # endregion "Min Cut" Related Functions  ____END
 
 
-def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
+def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList | TexLookupTable,
                          block: np.ndarray, mask: np.ndarray,
                          params: CircularPatchingConfig, rng: np.random.Generator) -> PatchIdx:
     """
@@ -496,8 +504,14 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
     err_mats: list[np.ndarray | None] = []
     global_min_error = np.inf
 
+    # TODO
+    #  ideally, list should disappear and SharedTextureList should also include mask data.
+    #  this way any method could work w/ potential invalid sections.
+    #  something to revisit in the future!
+    may_have_mask = isinstance(lookup_textures, TexLookupTable)
+
     # --- PASS 1: Compute errors for each texture & find the absolute global minimum error ---
-    for texture in lookup_textures:
+    for idx, texture in enumerate(lookup_textures):
 
         # Skip if texture is too small for a block
         if texture.shape[0] < block_size or texture.shape[1] < block_size:
@@ -508,8 +522,12 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList,
         # notes: only TM_SQDIFF and TM_CCORR_NORMED accept a mask, which is required even if not weighted
         err_mat = cv2.matchTemplate(image=texture, templ=block, mask=mask, method=cv2.TM_SQDIFF)
         err_mat = np.maximum(err_mat, 1e-8)  # clip floor to zero
-        err_mats.append(err_mat)
 
+        if may_have_mask and lookup_textures.has_mask(idx):
+            invalid_mask = lookup_textures.get_mask(idx)[:err_mat.shape[0], :err_mat.shape[1]]
+            err_mat[invalid_mask] = np.inf
+
+        err_mats.append(err_mat)
         global_min_error = min(global_min_error, np.min(err_mat))  # update minimum
 
     # --- Check for impossible match ---
