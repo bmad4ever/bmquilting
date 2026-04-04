@@ -64,6 +64,9 @@ class TextureList:
     def __getitem__(self, index: int) -> np.ndarray:
         return self.texs[index]
 
+    def __len__(self) -> int:
+        return len(self.texs)
+
     def has_mask(self, index: int) -> bool:
         return self.masks[index] is not None
 

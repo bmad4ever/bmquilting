@@ -592,7 +592,7 @@ def _fill_cphl_step_predictor(mask: np.ndarray, patching_config: CircularPatchin
 def _fill_cphl(
         target: np.ndarray,
         mask: np.ndarray,
-        source_textures: TextureList,
+        source_textures: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         seed: int,
         uicd: UiCoordData | None = None,
@@ -632,6 +632,7 @@ def _fill_cphl(
     )
 
     # fill the holes
+    source_textures = TextureList(source_textures, patching_config.get_patch_kernel())
     for x, y in hexa_iter.iterate_row_major(extended_holes_mask):
         result = process_patch_at_location(
             extended_target, extended_filled_mask, extended_seams,
@@ -691,7 +692,6 @@ def fill_cphl(
         uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """:return: texture, seams"""
-    source_textures = TextureList(source_textures, patching_config.get_patch_kernel())
     return _fill_cphl(target, mask, source_textures, patching_config, seed, uicd)
 
 
@@ -725,7 +725,6 @@ def fill_cphl_guided(
     def record(idx_mask_tuple: ProxyPatch):
         proxy_data.append(idx_mask_tuple)
 
-    proxy_textures = TextureList(proxy_textures, patching_config.get_patch_kernel())
     proxy_result, seams = _fill_cphl(
         target=proxy_target, mask=proxy_mask, source_textures=proxy_textures,
         patching_config=proxy_config, seed=seed, uicd=uicd, _record=record)
@@ -779,6 +778,7 @@ def _fill_hline(
         x_bounds = (pp.radius, extended_target.shape[1]-pp.radius)
 
     # fill line
+    source_textures = TextureList(source_textures, patching_config.get_patch_kernel())
     for x in range(x_bounds[0], x_bounds[1], patching_config.spacing):
         result = process_patch_at_location(
             extended_target, extended_fill_mask, extended_seams,
@@ -802,6 +802,7 @@ def _make_seamless_vertical_circular(
 
     if not lookup_textures:
         lookup_textures = [target]
+
     row = target.shape[0]//2
     target = np.roll(target, row, axis=0).copy()
     return _fill_hline(
