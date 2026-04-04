@@ -28,12 +28,14 @@ class TestCircularAPI(unittest.TestCase):
         for y in range(cls.h):
             for x in range(cls.w):
                 cls.source_tex[y, x] = [x / cls.w, y / cls.h, (x + y) / (cls.w + cls.h)]
-        
+
         cls.proxy_tex = cv2.resize(cls.source_tex, (cls.pw, cls.ph), interpolation=cv2.INTER_LINEAR)
         
-        cls.source_textures = [cls.source_tex]
-        cls.proxy_textures = [cls.proxy_tex]
-        
+        cls.source_textures = [cls.source_tex.copy()]
+        cls.source_textures[0][0, 0] = np.inf
+        cls.proxy_textures = [cls.proxy_tex.copy()]
+        cls.proxy_textures[0][0, 0] = np.inf
+
         # Config
         pp = {"diameter":31, "overlap_ratio":0.3}
         cls.config = CircularPatchingConfig.with_seams(**pp, tolerance=0.1, spacing_factor=1.2)

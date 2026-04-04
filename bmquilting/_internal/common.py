@@ -20,6 +20,10 @@ type PatchIdx = tuple[int, int, int]
 type _2D_Slice = tuple[slice, slice]
 
 
+FAKE_OUTLIER: int = 4
+"""Value used to fill holes in textures."""
+
+
 class TextureList:
     """
     Similar to a list of textures, but makes the necessary adjustments in order to be used with match template
@@ -34,31 +38,16 @@ class TextureList:
         :param texs: textures
         :param patch_kernel: mask with the shape of the full patch
         """
-        FAKE_OUTLIER: int = 4
 
         self.texs = []
         self.masks = []
         for idx, tx in enumerate(texs):
-            tx_copy = np.copy(tx)
-            valid_mask = np.isfinite(tx)
-            if np.all(valid_mask):
-                self.masks.append(None)
-            else:
-                logger.info(f"{self.__class__.__name__}: lookup texture {idx:02} contains non-valid data.")
-
-                invalid_mask = np.logical_not(valid_mask, out=valid_mask)
-                tx_copy[invalid_mask] = FAKE_OUTLIER
-
-                # dilate invalid mask by block size
-                if invalid_mask.ndim == 3:
-                    invalid_mask = valid_mask.any(axis=-1)
-                invalid_uint8 = np.uint8(invalid_mask)
-                cv2.dilate(invalid_uint8, patch_kernel, anchor=(0, 0), dst=invalid_uint8)
-                invalid_mask = invalid_uint8 > 0
-
-                self.masks.append(invalid_mask)
-                logger.info(f"{self.__class__.__name__}: an invalid-points mask was created for texture {idx:02}.")
+            tx_copy, mask = process_invalid_data(tx, patch_kernel)
             self.texs.append(tx_copy)
+            self.masks.append(mask)
+
+            if mask is not None:
+                logger.info(f"{self.__class__.__name__}: an invalid-points mask was created for texture {idx:02}.")
 
 
     def __getitem__(self, index: int) -> np.ndarray:
@@ -72,6 +61,31 @@ class TextureList:
 
     def get_mask(self, index: int) -> np.ndarray:
         return self.masks[index]
+
+
+def process_invalid_data(texture: np.ndarray, patch_kernel: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+    """
+    Checks for invalid data (NaN/Inf) in the texture.
+    If found, fills holes with FAKE_OUTLIER and returns a dilated mask.
+    :return: (processed_texture, mask or None)
+    """
+    valid_mask = np.isfinite(texture)
+    if np.all(valid_mask):
+        return texture, None
+
+    processed_texture = np.copy(texture)
+    invalid_mask = np.logical_not(valid_mask, out=valid_mask)
+    processed_texture[invalid_mask] = FAKE_OUTLIER
+
+    # dilate invalid mask by block size
+    if invalid_mask.ndim == 3:
+        invalid_mask = invalid_mask.any(axis=-1)
+
+    invalid_uint8 = np.uint8(invalid_mask)
+    cv2.dilate(invalid_uint8, patch_kernel, anchor=(0, 0), dst=invalid_uint8)
+    mask = invalid_uint8 > 0
+
+    return processed_texture, mask
 
 
 # region    ----- MASK UTILITIES -----

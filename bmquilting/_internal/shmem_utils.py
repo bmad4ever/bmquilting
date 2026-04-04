@@ -8,6 +8,8 @@ import time
 import os
 import gc
 
+from .common import process_invalid_data
+
 import logging
 
 logger = logging.getLogger(__name__)
@@ -22,10 +24,14 @@ class TextureInfo:
     :var shape: the shape of the texture array.
     :var offset: the byte offset of the texture in the temp file.
     :var byte_size: the size of the texture array in bytes.
+    :var mask_offset: the byte offset of the mask in the temp file.
+    :var mask_byte_size: the size of the mask in bytes.
     """
     shape: tuple[int, int, int]  # must have the channels dimension
     offset: int
     byte_size: int
+    mask_offset: int | None = None
+    mask_byte_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -108,6 +114,34 @@ def get_individual_texture(metadata: TextureMetadata, index: int) -> np.ndarray:
     return texture
 
 
+def get_individual_mask(metadata: TextureMetadata, index: int) -> np.ndarray | None:
+    """
+    Accesses the mask data for the texture at the given index from the
+    shared memory map, if it exists.
+    """
+    if index >= len(metadata.texture_infos):
+        raise IndexError("Texture index out of bounds.")
+
+    info = metadata.texture_infos[index]
+    if info.mask_offset is None:
+        return None
+
+    # 1. Get the shared 1D raw byte view (cached)
+    base_map = get_base_memmap(metadata)
+
+    start_byte = info.mask_offset
+    end_byte = start_byte + info.mask_byte_size
+
+    # 2. Extract the raw byte slice for the mask
+    raw_slice = base_map[start_byte:end_byte]
+
+    # 3. Cast to boolean and reshape (mask is always 2D: H x W)
+    mask_shape = (info.shape[0], info.shape[1])
+    mask = raw_slice.view(dtype=np.bool_).reshape(mask_shape)
+
+    return mask
+
+
 # --- 3. SEQUENCE PROTOCOL WRAPPER (Public Interface) ---
 
 class SharedTextureList:
@@ -130,7 +164,7 @@ class SharedTextureList:
             logger.error(f"ERROR: {self.__class__.__name__} failed to initialize base map: {e}")
 
     @classmethod
-    def from_list(cls, texture_list: list[np.ndarray]) -> SharedTextureList:
+    def from_list(cls, texture_list: list[np.ndarray], patch_kernel: np.ndarray | None = None) -> SharedTextureList:
         """
         Alternative constructor that creates the shared file on disk and
         returns a SharedTextureList instance to access it.
@@ -164,29 +198,50 @@ class SharedTextureList:
         current_offset_bytes = 0
         total_bytes_written = 0
 
-        logger.info(f"{SharedTextureList.__class__.__name__}: Writing raw data to {filename}...")
+        logger.info(f"{cls.__name__}: Writing raw data to {filename}...")
 
         # 3. Write all raw data sequentially to the file
         with open(filename, 'wb') as f:
             for i, texture in enumerate(texture_list):
-                texture = np.ascontiguousarray(texture)
-                texture_bytes = texture.tobytes()
+                # Process mask if patch_kernel is provided
+                mask: np.ndarray | None = None
+                processed_texture = texture
+                if patch_kernel is not None:
+                    processed_texture, mask = process_invalid_data(texture, patch_kernel)
+                    if mask is not None:
+                        logger.info(f"{cls.__name__}: an invalid-points mask was created for texture {i:02}.")
+
+                processed_texture = np.ascontiguousarray(processed_texture)
+                texture_bytes = processed_texture.tobytes()
                 byte_size = len(texture_bytes)
 
+                texture_offset = current_offset_bytes
                 f.write(texture_bytes)
-
-                texture_infos.append(
-                    TextureInfo(
-                        shape= texture.shape,
-                        offset= current_offset_bytes,
-                        byte_size = byte_size
-                    )
-                )
-
                 current_offset_bytes += byte_size
                 total_bytes_written += byte_size
 
-        logger.info(f"{SharedTextureList.__class__.__name__}: File created with total size {total_bytes_written / (1024 * 1024):.2f} MB.")
+                # Mask processing
+                mask_offset = None
+                mask_byte_size = None
+                if mask is not None:
+                    mask_bytes = mask.tobytes()
+                    mask_byte_size = len(mask_bytes)
+                    mask_offset = current_offset_bytes
+                    f.write(mask_bytes)
+                    current_offset_bytes += mask_byte_size
+                    total_bytes_written += mask_byte_size
+
+                texture_infos.append(
+                    TextureInfo(
+                        shape=processed_texture.shape,
+                        offset=texture_offset,
+                        byte_size=byte_size,
+                        mask_offset=mask_offset,
+                        mask_byte_size=mask_byte_size
+                    )
+                )
+
+        logger.info(f"{cls.__name__}: File created with total size {total_bytes_written / (1024 * 1024):.2f} MB.")
 
         # 4. Create metadata and initialize the instance
         metadata = TextureMetadata(
@@ -237,6 +292,18 @@ class SharedTextureList:
             raise NotImplementedError("Slicing (e.g., texture_list[:5]) is not supported.")
 
         return get_individual_texture(self.metadata, index)
+
+    def has_mask(self, index: int) -> bool:
+        """Returns True if the texture at the given index has an associated mask."""
+        return self.metadata.texture_infos[index].mask_offset is not None
+
+    def get_mask(self, index: int) -> np.ndarray | None:
+        """
+        Returns the mask for the texture at the given index, or None if no mask exists.
+        """
+        if isinstance(index, slice):
+            raise NotImplementedError("Slicing is not supported.")
+        return get_individual_mask(self.metadata, index)
 
     # --- Context Manager Implementation ---
     def __enter__(self):

@@ -487,7 +487,7 @@ def _find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray, heur_overr
 # endregion "Min Cut" Related Functions  ____END
 
 
-def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList | TextureList,
+def _find_circular_patch(lookup_textures: TextureList | SharedTextureList,
                          block: np.ndarray, mask: np.ndarray,
                          params: CircularPatchingConfig, rng: np.random.Generator) -> PatchIdx:
     """
@@ -504,12 +504,6 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList |
     err_mats: list[np.ndarray | None] = []
     global_min_error = np.inf
 
-    # TODO
-    #  ideally, list should disappear and SharedTextureList should also include mask data.
-    #  this way any method could work w/ potential invalid sections.
-    #  something to revisit in the future!
-    may_have_mask = isinstance(lookup_textures, TextureList)
-
     # --- PASS 1: Compute errors for each texture & find the absolute global minimum error ---
     for idx, texture in enumerate(lookup_textures):
 
@@ -523,7 +517,7 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList |
         err_mat = cv2.matchTemplate(image=texture, templ=block, mask=mask, method=cv2.TM_SQDIFF)
         err_mat = np.maximum(err_mat, 1e-8)  # clip floor to zero
 
-        if may_have_mask and lookup_textures.has_mask(idx):
+        if lookup_textures.has_mask(idx):
             invalid_mask = lookup_textures.get_mask(idx)[:err_mat.shape[0], :err_mat.shape[1]]
             err_mat[invalid_mask] = np.inf
 

@@ -256,7 +256,7 @@ def _generate_cphl6p(
     extended_h, extended_w = _get_extended_size(pp.block_size, out_h), _get_extended_size(pp.block_size, out_w)
 
     margin_x, margin_y = (extended_w - out_w) // 2, (extended_h - out_h) // 2
-    lookup_texts = SharedTextureList.from_list(source_textures)
+    lookup_texts = SharedTextureList.from_list(source_textures, patching_config.get_patch_kernel())
     del source_textures  # ignore, from here & use lookup_texts
 
     texture_shm, texture_meta = _shm_mem_array(
