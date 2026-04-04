@@ -10,7 +10,7 @@ import cv2
 
 from .common import (
     avg_squared_diff, adjust_errors_for_pystar2d_inplace,
-    _filter_candidate_patches, _select_a_random_patch, blend_with_mask, update_seams_map_view, TexLookupTable)
+    _filter_candidate_patches, _select_a_random_patch, blend_with_mask, update_seams_map_view, TextureList)
 from .seams_blur import BlendConfig, gradients_differences_at_the_seam, create_adaptive_blend_mask
 from .common import NumPixels, Percentage, PatchIdx
 from .shmem_utils import SharedTextureList
@@ -303,7 +303,7 @@ def get_bbox_idx(x: int, y: int, patch_params: CircularPatchParams) -> tuple[sli
 
 
 def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_map: np.ndarray,
-                              lookup_textures: list[np.ndarray] | SharedTextureList,
+                              lookup_textures: TextureList | SharedTextureList,
                               x: int, y: int,
                               config: CircularPatchingConfig,
                               rng: np.random.Generator) -> tuple[PatchIdx, np.ndarray]:
@@ -487,7 +487,7 @@ def _find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray, heur_overr
 # endregion "Min Cut" Related Functions  ____END
 
 
-def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList | TexLookupTable,
+def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList | TextureList,
                          block: np.ndarray, mask: np.ndarray,
                          params: CircularPatchingConfig, rng: np.random.Generator) -> PatchIdx:
     """
@@ -508,7 +508,7 @@ def _find_circular_patch(lookup_textures: list[np.ndarray] | SharedTextureList |
     #  ideally, list should disappear and SharedTextureList should also include mask data.
     #  this way any method could work w/ potential invalid sections.
     #  something to revisit in the future!
-    may_have_mask = isinstance(lookup_textures, TexLookupTable)
+    may_have_mask = isinstance(lookup_textures, TextureList)
 
     # --- PASS 1: Compute errors for each texture & find the absolute global minimum error ---
     for idx, texture in enumerate(lookup_textures):
