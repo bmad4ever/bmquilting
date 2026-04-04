@@ -20,7 +20,12 @@ type PatchIdx = tuple[int, int, int]
 type _2D_Slice = tuple[slice, slice]
 
 
-class TexLookupTable:
+class TextureList:
+    """
+    Similar to a list of textures, but makes the necessary adjustments in order to be used with match template
+    in the eventual presence of invalid data which is interpreted as holes in the texture.
+    """
+
     texs: list[np.ndarray]
     masks: list[np.ndarray|None]
 
