@@ -585,7 +585,7 @@ def _distance_to_points(points_mask: np.ndarray) -> np.ndarray:
 
 
 def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
-                                 lookup_textures: list[np.ndarray] | SharedTextureList,
+                                 lookup_textures: TextureList | SharedTextureList,
                                  x: int, y: int,
                                  config: CircularPatchingConfig,
                                  rng: np.random.Generator) -> tuple[PatchIdx, np.ndarray]:
@@ -601,12 +601,52 @@ def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
     y1, y2, x1, x2 = y - radius, y + radius + 1, x - radius, x + radius + 1
 
     # Random patch selection
-    rnd_text_idx = int(rng.integers(len(lookup_textures)))
-    rnd_lookup = lookup_textures[rnd_text_idx]
-    h, w = rnd_lookup.shape[:2]
-    rand_h = int(rng.integers(h - block_size))
-    rand_w = int(rng.integers(w - block_size))
-    start_block = rnd_lookup[rand_h:rand_h + block_size, rand_w:rand_w + block_size]
+    all_valid_counts = []
+    total_valid = 0
+
+    # Identify all valid patches across all textures
+    for idx in range(len(lookup_textures)):
+        texture = lookup_textures[idx]
+        if texture.shape[0] < block_size or texture.shape[1] < block_size:
+            all_valid_counts.append(0)
+            continue
+
+        if lookup_textures.has_mask(idx):
+            mask = lookup_textures.get_mask(idx)
+            count = np.count_nonzero(~mask)
+        else:
+            h, w = texture.shape[:2]
+            count = (h - block_size + 1) * (w - block_size + 1)
+
+        all_valid_counts.append(count)
+        total_valid += count
+
+    if total_valid == 0:
+        raise ValueError("set_random_patch_at_location: No valid patches found in lookup textures.")
+
+    r = int(rng.integers(total_valid))
+    accumulated = 0
+    rnd_text_idx = rand_h = rand_w = 0
+    for idx, count in enumerate(all_valid_counts):
+        if accumulated + count > r:
+            target_index = r - accumulated
+            texture = lookup_textures[idx]
+
+            if lookup_textures.has_mask(idx):
+                mask = lookup_textures.get_mask(idx)
+                y_t, x_t = np.nonzero(~mask)
+                rand_h = int(y_t[target_index])
+                rand_w = int(x_t[target_index])
+            else:
+                w = texture.shape[1]
+                row_len = (w - block_size + 1)
+                rand_h = target_index // row_len
+                rand_w = target_index % row_len
+
+            rnd_text_idx = idx
+            start_block = lookup_textures[rnd_text_idx][rand_h:rand_h + block_size, rand_w:rand_w + block_size]
+            break
+        accumulated += count
 
     # Create circular mask
     mask = np.zeros((block_size, block_size), dtype=filled_mask.dtype)
