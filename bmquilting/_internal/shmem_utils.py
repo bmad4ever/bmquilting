@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from dataclasses import dataclass
+
 import numpy as np
 import tempfile
 import shutil
@@ -9,7 +10,7 @@ import time
 import os
 import gc
 
-from .common import process_invalid_data, ValidatedTexturesIterator
+from .common import process_invalid_data, is_valid_texture_list
 
 import logging
 
@@ -147,7 +148,7 @@ def get_individual_mask(metadata: TextureMetadata, index: int) -> np.ndarray | N
 
 # --- 3. SEQUENCE PROTOCOL WRAPPER (Public Interface) ---
 
-class SharedTextureList(ValidatedTexturesIterator):
+class SharedTextureList:
     """
     The main class for creating, managing, and accessing shared, variable-sized
     NumPy arrays via a single memory-mapped file.
@@ -166,6 +167,14 @@ class SharedTextureList(ValidatedTexturesIterator):
         except Exception as e:
             logger.error(f"ERROR: {self.__class__.__name__} failed to initialize base map: {e}")
 
+    @property
+    def global_channel_count(self) -> int:
+        return self.metadata.global_number_of_channels
+
+    @property
+    def global_dtype(self) -> np._DTypeT_co:
+        return np.dtype(self.metadata.global_dtype)
+
     @classmethod
     def from_list(cls, texture_list: list[np.ndarray], patch_kernel: np.ndarray | None = None) -> SharedTextureList:
         """
@@ -179,21 +188,12 @@ class SharedTextureList(ValidatedTexturesIterator):
             if len(texture.shape) <= 2:
                 raise ValueError("All textures must have shape equal to 3.")
 
-        # 1. Validate and extract the common dtype & number of channels
-        first_dtype = texture_list[0].dtype
-        for texture in texture_list:
-            if texture.dtype != first_dtype:
-                raise ValueError("All textures must have the same dtype.")
-
-        first_numb_channels = texture_list[0].shape[2]
-        for texture in texture_list:
-            if texture.shape[2] != first_numb_channels:
-                raise ValueError("All textures must have the same number of channels.")
+        first_dtype, first_numb_channels = is_valid_texture_list(texture_list)
 
         base_dtype_str = str(first_dtype)
         number_of_channels = first_numb_channels
 
-        # 2. Setup file path in a secure, OS-appropriate temporary location
+        # Setup file path in a secure, OS-appropriate temporary location
         temp_dir = tempfile.mkdtemp(prefix='texture_synth_')
         filename = os.path.join(temp_dir, f'shared_textures_{time.time_ns()}.dat')
 
@@ -203,7 +203,7 @@ class SharedTextureList(ValidatedTexturesIterator):
 
         logger.info(f"{cls.__name__}: Writing raw data to {filename}...")
 
-        # 3. Write all raw data sequentially to the file
+        # Write all raw data sequentially to the file
         with open(filename, 'wb') as f:
             for i, texture in enumerate(texture_list):
                 # Process mask if patch_kernel is provided
@@ -246,7 +246,7 @@ class SharedTextureList(ValidatedTexturesIterator):
 
         logger.info(f"{cls.__name__}: File created with total size {total_bytes_written / (1024 * 1024):.2f} MB.")
 
-        # 4. Create metadata and initialize the instance
+        # Create metadata and initialize the instance
         metadata = TextureMetadata(
             filepath=filename,
             global_dtype=base_dtype_str,
@@ -256,6 +256,7 @@ class SharedTextureList(ValidatedTexturesIterator):
             patch_kernel_shape=patch_kernel.shape if patch_kernel is not None else None
         )
         return cls(metadata)
+
 
     def release(self):
         """

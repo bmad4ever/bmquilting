@@ -27,6 +27,15 @@ FAKE_OUTLIER: int = 4
 """Value used to fill holes in textures."""
 
 class ValidatedTexturesIterator(Protocol):
+
+    @property
+    def global_channel_count(self) -> int:
+        ...
+
+    @property
+    def global_dtype(self) -> np._DTypeT_co:
+        ...
+
     def __iter__(self) -> Iterator[np.ndarray]:
         """Should iterate the textures."""
         ...
@@ -45,8 +54,24 @@ class ValidatedTexturesIterator(Protocol):
         ...
 
 
+def is_valid_texture_list(texture_list: list[np.ndarray]) -> tuple[np._DTypeT_co, int]:
+    """
+    :raise ValueError: raised if not all textures have the same dtype and number of channels
+    :return: dtype, number of channels
+    """
+    first_dtype = texture_list[0].dtype  # somewhat redundant, should always be float32, but alas
+    for texture in texture_list:
+        if texture.dtype != first_dtype:
+            raise ValueError("All textures must have the same dtype.")
 
-class TextureList(ValidatedTexturesIterator):
+    first_numb_channels = texture_list[0].shape[2]
+    for texture in texture_list:
+        if texture.shape[2] != first_numb_channels:
+            raise ValueError("All textures must have the same number of channels.")
+    return first_dtype, first_numb_channels
+
+
+class TextureList:
     """
     Similar to a list of textures, but makes the necessary adjustments in order to be used with match template
     in the eventual presence of invalid data which is interpreted as holes in the texture.
@@ -60,6 +85,7 @@ class TextureList(ValidatedTexturesIterator):
         :param texs: textures
         :param patch_kernel: mask with the shape of the full patch
         """
+        self._dtype, self._number_of_channels = is_valid_texture_list(texs)
 
         self.texs = []
         self.masks = []
@@ -86,6 +112,14 @@ class TextureList(ValidatedTexturesIterator):
 
     def get_mask(self, index: int) -> np.ndarray:
         return self.masks[index]
+
+    @property
+    def global_channel_count(self) -> int:
+        return self._number_of_channels
+
+    @property
+    def global_dtype(self) -> np._DTypeT_co:
+        return self._dtype
 
 
 def process_invalid_data(texture: np.ndarray, patch_kernel: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
