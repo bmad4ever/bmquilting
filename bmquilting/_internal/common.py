@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from numpy.random import Generator
 import numpy as np
 import cv2
@@ -56,6 +57,9 @@ class TextureList:
     def __len__(self) -> int:
         return len(self.texs)
 
+    def __iter__(self) -> Iterator[np.ndarray]:
+        return self.texs.__iter__()
+
     def has_mask(self, index: int) -> bool:
         return self.masks[index] is not None
 
@@ -85,7 +89,7 @@ def process_invalid_data(texture: np.ndarray, patch_kernel: np.ndarray) -> tuple
     cv2.dilate(invalid_uint8, patch_kernel, anchor=(0, 0), dst=invalid_uint8)
     mask = invalid_uint8 > 0
 
-    return processed_texture, mask
+    return processed_texture, mask[:-patch_kernel.shape[0]+1, :-patch_kernel.shape[1]+1]
 
 
 # region    ----- MASK UTILITIES -----

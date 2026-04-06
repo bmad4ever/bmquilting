@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 import numpy as np
 import tempfile
@@ -49,6 +50,7 @@ class TextureMetadata:
     global_number_of_channels: int
     texture_infos: list[TextureInfo]
     total_bytes: int
+    patch_kernel_shape: tuple[int, int] | None
 
 
 # --- 2. UTILITY FUNCTIONS FOR WORKERS (Unchanged core logic) ---
@@ -135,8 +137,9 @@ def get_individual_mask(metadata: TextureMetadata, index: int) -> np.ndarray | N
     # 2. Extract the raw byte slice for the mask
     raw_slice = base_map[start_byte:end_byte]
 
-    # 3. Cast to boolean and reshape (mask is always 2D: H x W)
-    mask_shape = (info.shape[0], info.shape[1])
+    # 3. Cast to boolean and reshape (mask is 2D: H x W - kernel_shape + 1)
+    mask_shape = (info.shape[0]-metadata.patch_kernel_shape[0]+1,
+                  info.shape[1]-metadata.patch_kernel_shape[1]+1)
     mask = raw_slice.view(dtype=np.bool_).reshape(mask_shape)
 
     return mask
@@ -249,7 +252,8 @@ class SharedTextureList:
             global_dtype=base_dtype_str,
             global_number_of_channels=number_of_channels,
             texture_infos=texture_infos,
-            total_bytes=total_bytes_written
+            total_bytes=total_bytes_written,
+            patch_kernel_shape=patch_kernel.shape if patch_kernel is not None else None
         )
         return cls(metadata)
 
@@ -292,6 +296,10 @@ class SharedTextureList:
             raise NotImplementedError("Slicing (e.g., texture_list[:5]) is not supported.")
 
         return get_individual_texture(self.metadata, index)
+
+    def __iter__(self) -> Iterator[np.ndarray]:
+        for i in range(len(self.metadata.texture_infos)):
+            yield self.__getitem__(i)
 
     def has_mask(self, index: int) -> bool:
         """Returns True if the texture at the given index has an associated mask."""

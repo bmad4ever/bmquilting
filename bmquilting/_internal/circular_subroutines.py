@@ -518,7 +518,7 @@ def _find_circular_patch(lookup_textures: TextureList | SharedTextureList,
         err_mat = np.maximum(err_mat, 1e-8)  # clip floor to zero
 
         if lookup_textures.has_mask(idx):
-            invalid_mask = lookup_textures.get_mask(idx)[:err_mat.shape[0], :err_mat.shape[1]]
+            invalid_mask = lookup_textures.get_mask(idx)
             err_mat[invalid_mask] = np.inf
 
         err_mats.append(err_mat)
