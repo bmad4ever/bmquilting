@@ -9,7 +9,7 @@ import time
 import os
 import gc
 
-from .common import process_invalid_data
+from .common import process_invalid_data, ValidatedTexturesIterator
 
 import logging
 
@@ -147,7 +147,7 @@ def get_individual_mask(metadata: TextureMetadata, index: int) -> np.ndarray | N
 
 # --- 3. SEQUENCE PROTOCOL WRAPPER (Public Interface) ---
 
-class SharedTextureList:
+class SharedTextureList(ValidatedTexturesIterator):
     """
     The main class for creating, managing, and accessing shared, variable-sized
     NumPy arrays via a single memory-mapped file.

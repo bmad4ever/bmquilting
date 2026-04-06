@@ -4,16 +4,16 @@ from dataclasses import dataclass, field
 from collections.abc import Callable
 from functools import lru_cache
 from enum import Enum
+
 import numpy as np
 import pyastar2d
 import cv2
 
 from .common import (
-    avg_squared_diff, adjust_errors_for_pystar2d_inplace,
-    _filter_candidate_patches, _select_a_random_patch, blend_with_mask, update_seams_map_view, TextureList)
+    avg_squared_diff, adjust_errors_for_pystar2d_inplace, _get_random_valid_block, ValidatedTexturesIterator,
+    _filter_candidate_patches, _select_a_random_patch, blend_with_mask, update_seams_map_view )
 from .seams_blur import BlendConfig, gradients_differences_at_the_seam, create_adaptive_blend_mask
 from .common import NumPixels, Percentage, PatchIdx
-from .shmem_utils import SharedTextureList
 
 
 # region ==== CONFIG DATACLASSES ====
@@ -303,7 +303,7 @@ def get_bbox_idx(x: int, y: int, patch_params: CircularPatchParams) -> tuple[sli
 
 
 def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_map: np.ndarray,
-                              lookup_textures: TextureList | SharedTextureList,
+                              lookup_textures: ValidatedTexturesIterator,
                               x: int, y: int,
                               config: CircularPatchingConfig,
                               rng: np.random.Generator) -> tuple[PatchIdx, np.ndarray]:
@@ -487,7 +487,7 @@ def _find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray, heur_overr
 # endregion "Min Cut" Related Functions  ____END
 
 
-def _find_circular_patch(lookup_textures: TextureList | SharedTextureList,
+def _find_circular_patch(lookup_textures: ValidatedTexturesIterator,
                          block: np.ndarray, mask: np.ndarray,
                          params: CircularPatchingConfig, rng: np.random.Generator) -> PatchIdx:
     """
@@ -585,7 +585,7 @@ def _distance_to_points(points_mask: np.ndarray) -> np.ndarray:
 
 
 def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
-                                 lookup_textures: TextureList | SharedTextureList,
+                                 lookup_textures: ValidatedTexturesIterator,
                                  x: int, y: int,
                                  config: CircularPatchingConfig,
                                  rng: np.random.Generator) -> tuple[PatchIdx, np.ndarray]:
@@ -595,70 +595,18 @@ def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
 
         :return: patch_idxs, mask
     """
-    radius = config.patch_params.radius
-    center = config.patch_params.center
     block_size = config.patch_params.block_size
-    y1, y2, x1, x2 = y - radius, y + radius + 1, x - radius, x + radius + 1
+    mask = _get_circle_mask(config.patch_params)
 
-    # Random patch selection
-    all_valid_counts = []
-    total_valid = 0
-
-    # Identify all valid patches across all textures
-    for idx in range(len(lookup_textures)):
-        texture = lookup_textures[idx]
-        if texture.shape[0] < block_size or texture.shape[1] < block_size:
-            all_valid_counts.append(0)
-            continue
-
-        if lookup_textures.has_mask(idx):
-            mask = lookup_textures.get_mask(idx)
-            count = np.count_nonzero(~mask)
-        else:
-            h, w = texture.shape[:2]
-            count = (h - block_size + 1) * (w - block_size + 1)
-
-        all_valid_counts.append(count)
-        total_valid += count
-
-    if total_valid == 0:
-        raise ValueError("set_random_patch_at_location: No valid patches found in lookup textures.")
-
-    r = int(rng.integers(total_valid))
-    accumulated = 0
-    rnd_text_idx = rand_h = rand_w = 0
-    for idx, count in enumerate(all_valid_counts):
-        if accumulated + count > r:
-            target_index = r - accumulated
-            texture = lookup_textures[idx]
-
-            if lookup_textures.has_mask(idx):
-                mask = lookup_textures.get_mask(idx)
-                y_t, x_t = np.nonzero(~mask)
-                rand_h = int(y_t[target_index])
-                rand_w = int(x_t[target_index])
-            else:
-                w = texture.shape[1]
-                row_len = (w - block_size + 1)
-                rand_h = target_index // row_len
-                rand_w = target_index % row_len
-
-            rnd_text_idx = idx
-            start_block = lookup_textures[rnd_text_idx][rand_h:rand_h + block_size, rand_w:rand_w + block_size]
-            break
-        accumulated += count
-
-    # Create circular mask
-    mask = np.zeros((block_size, block_size), dtype=filled_mask.dtype)
-    cv2.circle(mask, (center, center), radius, (1,), -1)
+    patch_idx, start_block = _get_random_valid_block(block_size, lookup_textures, rng)
 
     # Update image & Filled mask
-    bbox_idx = np.s_[y1:y2, x1:x2]
+    bbox_idx = get_bbox_idx(x, y, config.patch_params)
     np.maximum(mask, filled_mask[bbox_idx], out=filled_mask[bbox_idx])
     np.subtract(1, mask, out=mask)
     blend_with_mask(start_block, image[bbox_idx], mask, out=image[bbox_idx])
 
-    return (rnd_text_idx, rand_h, rand_w), mask
+    return patch_idx, mask
 
 
 def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst: np.ndarray = None) -> np.ndarray:

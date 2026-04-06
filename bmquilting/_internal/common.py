@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import Protocol
+
 from numpy.random import Generator
 import numpy as np
 import cv2
@@ -24,8 +26,27 @@ type _2D_Slice = tuple[slice, slice]
 FAKE_OUTLIER: int = 4
 """Value used to fill holes in textures."""
 
+class ValidatedTexturesIterator(Protocol):
+    def __iter__(self) -> Iterator[np.ndarray]:
+        """Should iterate the textures."""
+        ...
 
-class TextureList:
+    def __getitem__(self, index: int) -> np.ndarray:
+        """Should return the texture."""
+        ...
+
+    def __len__(self) -> int:
+        ...
+
+    def has_mask(self, idx: int) -> bool:
+        ...
+
+    def get_mask(self, idx:int) -> np.ndarray:
+        ...
+
+
+
+class TextureList(ValidatedTexturesIterator):
     """
     Similar to a list of textures, but makes the necessary adjustments in order to be used with match template
     in the eventual presence of invalid data which is interpreted as holes in the texture.
@@ -129,6 +150,57 @@ def blend_with_mask(bg: np.ndarray, fg: np.ndarray, mask: np.ndarray, out: np.nd
 
 
 # region --- PATCH SELECTION METHODS ---
+
+def _get_random_valid_block(block_size: int, lookup_textures: ValidatedTexturesIterator, rng: Generator)\
+        -> tuple[PatchIdx, np.ndarray]:
+    # Random patch selection
+    all_valid_counts = []
+    total_valid = 0
+
+    # Identify all valid patches across all textures
+    for idx in range(len(lookup_textures)):
+        texture = lookup_textures[idx]
+        if texture.shape[0] < block_size or texture.shape[1] < block_size:
+            all_valid_counts.append(0)
+            continue
+
+        if lookup_textures.has_mask(idx):
+            mask = lookup_textures.get_mask(idx)
+            count = np.count_nonzero(~mask)
+        else:
+            h, w = texture.shape[:2]
+            count = (h - block_size + 1) * (w - block_size + 1)
+
+        all_valid_counts.append(count)
+        total_valid += count
+
+    if total_valid == 0:
+        raise ValueError("set_random_patch_at_location: No valid patches found in lookup textures.")
+
+    r = int(rng.integers(total_valid))
+    accumulated = 0
+    for idx, count in enumerate(all_valid_counts):
+        if accumulated + count > r:
+            target_index = r - accumulated
+            texture = lookup_textures[idx]
+
+            if lookup_textures.has_mask(idx):
+                mask = lookup_textures.get_mask(idx)
+                y_t, x_t = np.nonzero(~mask)
+                rand_h = int(y_t[target_index])
+                rand_w = int(x_t[target_index])
+            else:
+                w = texture.shape[1]
+                row_len = (w - block_size + 1)
+                rand_h = target_index // row_len
+                rand_w = target_index % row_len
+
+            rnd_text_idx = idx
+            start_block = lookup_textures[rnd_text_idx][rand_h:rand_h + block_size, rand_w:rand_w + block_size]
+            return (rnd_text_idx, rand_h, rand_w), start_block
+        accumulated += count
+    raise RuntimeError("Reached unreachable code: target not found in items.")
+
 
 def _filter_candidate_patches(err_mats: list[np.ndarray | None],
                               global_min_error: float , tolerance: float) -> list[tuple[int, int, int]]:

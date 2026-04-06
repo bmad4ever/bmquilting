@@ -175,17 +175,17 @@ def _scale_proxy_patch_list(proxy_data: list[ProxyPatch] | ListProxy[ProxyPatch]
              for idx, mask, tx, ty in proxy_data]
 
 
-def _get_patch(textures: list[np.ndarray] | SharedTextureList, idx: PatchIdx, block_size: NumPixels) -> np.ndarray:
-    texture_index = idx[0]
-    py, px = idx[1], idx[2]
-    block_coords = np.s_[py:py + block_size, px:px + block_size]
-    return textures[texture_index][block_coords]
-
-
 def _paste_fromproxy(target: np.ndarray,
                      proxy_data_item: ProxyPatch, pp: CircularPatchParams,
                      source_textures: SharedTextureList | list[np.ndarray] ) -> None:
     patch_idx, mask, tx, ty = proxy_data_item   # tx, ty -> the patch center coordinate on the target texture
+
+    def _get_patch(textures, idx, block_size) -> np.ndarray:
+        texture_index = idx[0]
+        py, px = idx[1], idx[2]
+        block_coords = np.s_[py:py + block_size, px:px + block_size]
+        return textures[texture_index][block_coords]
+
     patch = _get_patch(source_textures, patch_idx, pp.block_size)
     target_idx = get_bbox_idx(tx, ty, pp)
     region = target[target_idx]
