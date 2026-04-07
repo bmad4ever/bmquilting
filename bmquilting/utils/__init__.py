@@ -22,6 +22,7 @@ from .texture import (
     get_texture_variants,
     get_texture_rotated_variants,
     add_salt_and_pepper,
+    set_invalid_texture_area,
 )
 
 __all__ = [
@@ -41,4 +42,5 @@ __all__ = [
     "get_texture_variants",
     "get_texture_rotated_variants",
     "add_salt_and_pepper",
+    "set_invalid_texture_area",
 ]

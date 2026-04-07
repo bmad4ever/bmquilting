@@ -213,3 +213,18 @@ def add_salt_and_pepper(image: np.ndarray, amount: float = 0.05, salt_vs_pepper:
     out[tuple(coords)] = 0
 
     return out
+
+
+def set_invalid_texture_area(src: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """
+    Invalidate an area in the src texture so that no patch can be fetched from it.
+    If the source is of integer type (except for signed int8), the values in the returned array will be divided by 255.
+    :param src: will not be edited, the output is a new numpy array.
+    :param mask: zeroes will be set as invalid
+    :return: a copy of src with the invalid texture area set to np.inf
+    """
+    res = np.float32(src)
+    if src.dtype in [np.uint8, np.uint16, np.uint32, np.uint64, np.int16, np.int32, np.int64]:
+        res /= 255.0
+    res[mask == 0] = np.inf
+    return res
