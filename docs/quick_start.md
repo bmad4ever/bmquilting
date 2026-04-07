@@ -235,7 +235,7 @@ total_patches = generate_cphl6p.predict_steps(
 print(f"Expected patches: {total_patches}")
 ```
 
-For more details on integrating with a GUI, see the [UICD Demo](../../extras/demos/uicd_demo.py).
+For more details on integrating with a GUI, see the [UICD Demo](../../extras/demos/uicd.py).
 
 ---
 
