@@ -176,7 +176,7 @@ class SharedTextureList:
         return np.dtype(self.metadata.global_dtype)
 
     @classmethod
-    def from_list(cls, texture_list: list[np.ndarray], patch_kernel: np.ndarray | None = None) -> SharedTextureList:
+    def from_list(cls, texture_list: list[np.ndarray], patch_kernel: np.ndarray | None) -> SharedTextureList:
         """
         Alternative constructor that creates the shared file on disk and
         returns a SharedTextureList instance to access it.
@@ -201,6 +201,8 @@ class SharedTextureList:
         current_offset_bytes = 0
         total_bytes_written = 0
 
+        if patch_kernel is None:
+            logger.info(f"{cls.__name__}: No kernel provided; points should all be valid.")
         logger.info(f"{cls.__name__}: Writing raw data to {filename}...")
 
         # Write all raw data sequentially to the file

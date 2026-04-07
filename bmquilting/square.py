@@ -15,11 +15,14 @@ from ._internal.seams_blur import (
     _circular_kernel, _get_max_possible_gradient_diff, _get_radii_limiter
 )
 
+from ._internal.common import (
+    TextureList, ValidatedTexturesIterator,
+    NumPixels, _2D_Slice, PatchIdx,
+    apply_mask, _get_random_valid_block
+)
 from ._internal.decorators import clear_cache_post_exec, step_predictor, auto_uint8_to_float32
-from ._internal.common import NumPixels, _2D_Slice, PatchIdx
 from .utils.ui_coord import handle_ui_interrupts, UiCoordData, check_ui
 from ._internal.shmem_utils import SharedTextureList
-from ._internal.common import apply_mask
 from .utils.texture import quick_checksum
 
 from joblib.externals.loky import get_reusable_executor
@@ -43,7 +46,7 @@ logger.addHandler(logging.NullHandler())
 type RetOnInterrupt = tuple[None, None]
 ret_val_on_interrupt = (None, None)
 
-type _FindPatchFunc = Callable[[np.ndarray, list[np.ndarray] | SharedTextureList, SquarePatchingConfig, np.random.Generator], np.ndarray]
+type _FindPatchFunc = Callable[[np.ndarray, ValidatedTexturesIterator, SquarePatchingConfig, np.random.Generator], np.ndarray]
 type _MinCutFunc = Callable[[np.ndarray, np.ndarray, SquarePatchingConfig], np.ndarray]
 """Method variant (hor, vert, both) that computes the seam. Its arguments are: ref_block, patch_block, patching_config."""
 
@@ -69,7 +72,7 @@ def child_seed(root_seed: SeedSequence, spawn_key: int):
 
 
 def process_block(text_view: np.ndarray, seams_view: np.ndarray,
-                  lookup_textures: list[np.ndarray] | SharedTextureList,
+                  lookup_textures: ValidatedTexturesIterator,
                   block_idx: _2D_Slice,
                   find_patch_func: _FindPatchFunc, get_min_cut_func: _MinCutFunc,
                   patching_config: SquarePatchingConfig, rng: np.random.Generator,
@@ -84,7 +87,7 @@ def process_block(text_view: np.ndarray, seams_view: np.ndarray,
 
 
 @handle_ui_interrupts(auto_close=True, re_raise=True)
-def _pfill_column(lookup_textures: list[np.ndarray] | SharedTextureList,
+def _pfill_column(lookup_textures: ValidatedTexturesIterator,
                   initial_block, patching_config: SquarePatchingConfig, rows: int, seed: SeedSequence,
                   initial_block_seams: np.ndarray = None, uicd: UiCoordData | None = None
                   ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
@@ -111,7 +114,7 @@ def _pfill_column(lookup_textures: list[np.ndarray] | SharedTextureList,
 
 
 def _fill_column_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
-                         lookup_textures: list[np.ndarray] | SharedTextureList,
+                         lookup_textures: TextureList | SharedTextureList,
                          patching_config: SquarePatchingConfig, rng: np.random.Generator, uicd: UiCoordData | None = None):
     find_patch_below = get_find_patch_below_method()
     b, o = patching_config.block_size, patching_config.overlap
@@ -123,7 +126,7 @@ def _fill_column_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarra
 
 
 @handle_ui_interrupts(auto_close=True, re_raise=True)
-def _pfill_row(lookup_textures: list[np.ndarray] | SharedTextureList,
+def _pfill_row(lookup_textures: TextureList | SharedTextureList,
                initial_block, patching_config: SquarePatchingConfig, columns: int, seed: SeedSequence,
                initial_block_seams: np.ndarray = None, uicd: UiCoordData | None = None
                ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
@@ -150,7 +153,7 @@ def _pfill_row(lookup_textures: list[np.ndarray] | SharedTextureList,
 
 
 def _fill_row_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
-                      lookup_textures: list[np.ndarray] | SharedTextureList,
+                      lookup_textures: ValidatedTexturesIterator,
                       patching_config: SquarePatchingConfig, rng: np.random.Generator, uicd: UiCoordData | None = None):
     find_patch_to_the_right = get_find_patch_to_the_right_method()
     b, o = patching_config.block_size, patching_config.overlap
@@ -163,7 +166,7 @@ def _fill_row_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
 
 @handle_ui_interrupts(auto_close=True, re_raise=True)
 def _pfill_quad(patching_config: SquarePatchingConfig, texture_map, seams_map,
-                lookup_textures: list[np.ndarray] | SharedTextureList,
+                lookup_textures: TextureList | SharedTextureList,
                 seed: SeedSequence, uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """note: requires the 1st row and column of blocks to be already filled"""
     find_patch_both = get_find_patch_both_method()
@@ -179,7 +182,7 @@ def _pfill_quad(patching_config: SquarePatchingConfig, texture_map, seams_map,
 
 
 def _fill_quad_purist(patching_config: SquarePatchingConfig, texture_map, seams_map,
-                      lookup_textures: list[np.ndarray] | SharedTextureList,
+                      lookup_textures: ValidatedTexturesIterator,
                       rng: np.random.Generator, uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray]:
     """
         Only requires the first Row already filled.
@@ -239,12 +242,7 @@ def generate_texture_parallel(
     seeds = iter(SeedSequence(seed).spawn(1 + 4*2)) # 1 + 1 per stripe & quad
     _rng = np.random.default_rng(seed=next(seeds))
 
-    # select random image for the starting block
-    image = src_textures[_rng.integers(len(src_textures))]
-    num_channels = image.shape[2]
-    src_dtype = image.dtype
-
-    del image  # access textures list instead after this point
+    shm_ltxts = SharedTextureList.from_list(src_textures, patching_config.get_patch_kernel())
 
     # Get flipped textures to build the quadrants
     hi_ltxts: list[np.ndarray] = []
@@ -264,9 +262,8 @@ def generate_texture_parallel(
 
     # init stuff that will have to be released eventually
     parallel = Parallel(n_jobs=4, backend="loky", timeout=None, verbose=0)
-    shm_ltxts = SharedTextureList.from_list(src_textures)
-    shm_hi_ltxts = shm_ltxts if hi_eq_src else SharedTextureList.from_list(hi_ltxts)
-    shm_vi_ltxts = shm_ltxts if vi_eq_src else SharedTextureList.from_list(vi_ltxts)
+    shm_hi_ltxts = shm_ltxts if hi_eq_src else SharedTextureList.from_list(hi_ltxts, patching_config.get_patch_kernel())
+    shm_vi_ltxts = shm_ltxts if vi_eq_src else SharedTextureList.from_list(vi_ltxts, patching_config.get_patch_kernel())
 
     try:
         # auxiliary variables
@@ -278,7 +275,7 @@ def generate_texture_parallel(
 
         # Patch the central area containing the central block shared by in all the stripes
         gen_res = _generate_texture(
-            src_textures,
+            shm_ltxts,
             patching_config,
             block_size + 2 * (block_size - overlap),  # 2*overlap would suffice, but seams would have an offset
             block_size + 2 * (block_size - overlap),
@@ -335,8 +332,8 @@ def generate_texture_parallel(
         tq1, tq2, tq3, tq4 = text_quads
         sq1, sq2, sq3, sq4 = smap_quads
 
-        texture = np.empty((tq1.shape[0] * 2 - block_size, tq1.shape[1] * 2 - block_size, num_channels),
-                           dtype=src_dtype)  # empty here is fine, it won't be passed to any func that computes stuff
+        texture = np.empty((tq1.shape[0] * 2 - block_size, tq1.shape[1] * 2 - block_size, shm_ltxts.global_channel_count),
+                           dtype=shm_ltxts.global_dtype)  # empty here is fine, it won't be passed to any func that computes stuff
         seams_map = np.zeros((texture.shape[0], texture.shape[1]), dtype=vis.dtype)
 
         bmo = block_size - overlap
@@ -350,7 +347,7 @@ def generate_texture_parallel(
         seams_map[tq1.shape[0] - bmo:, :tq1.shape[1] - bmo] = sq4[overlap:, :tq1.shape[1] - bmo]
         seams_map[tq1.shape[0] - bmo:, tq1.shape[1] - bmo:] = sq3[overlap:, overlap:]
 
-        # fix overvalues due to seams overlap
+        # fix potential overvalues due to seams overlap ( technically unneeded; but works as a safety measure)
         np.clip(seams_map, 0, 1, out=seams_map)
 
         return texture[:out_h, :out_w], seams_map[:out_h, :out_w]
@@ -430,7 +427,7 @@ def _run_fill_quad(rows, columns, patching_configs, texture, seams_map,
             _pfill_quad_ps(rows, columns, patching_configs, shm_text.name, shm_smap.name,
                            ltxts, p_strips, seed, uicd)
         else:
-            with SharedTextureList.from_list(ltxts) as shm_ltxts:
+            with SharedTextureList.from_list(ltxts, patching_configs.get_patch_kernel()) as shm_ltxts:
                 _pfill_quad_ps(rows, columns, patching_configs, shm_text.name, shm_smap.name,
                                shm_ltxts, p_strips, seed, uicd)
                 get_reusable_executor().shutdown(wait=True)
@@ -707,7 +704,7 @@ def _generate_texture_step_predictor(patching_config: SquarePatchingConfig, out_
     return (n_h + 1) * (n_w + 1)
 
 
-def _generate_texture(src_textures: list[np.ndarray],
+def _generate_texture(src_textures: ValidatedTexturesIterator,
                      patching_config: SquarePatchingConfig,
                      out_h: NumPixels, out_w: NumPixels,
                      rng: np.random.Generator,
@@ -717,26 +714,17 @@ def _generate_texture(src_textures: list[np.ndarray],
     n_h = int(ceil((out_h - block_size) / (block_size - overlap)))
     n_w = int(ceil((out_w - block_size) / (block_size - overlap)))
 
-    # select random image for the starting block
-    image = src_textures[rng.integers(len(src_textures))]
-
     texture_map = np.zeros(
         ((block_size + n_h * (block_size - overlap)),
          (block_size + n_w * (block_size - overlap)),
-         image.shape[2]), dtype=image.dtype)
+         src_textures.global_channel_count), dtype=src_textures.global_dtype)
 
     seams_map = np.zeros(texture_map.shape[:2], dtype=np.float32)
 
-    # Starting index and block
-    h, w = image.shape[:2]
-    rand_h = rng.integers(h - block_size)
-    rand_w = rng.integers(w - block_size)
-
-    start_block = image[rand_h:rand_h + block_size, rand_w:rand_w + block_size]
-    texture_map[:block_size, :block_size, :] = start_block
+    # Set starting block
+    _, starting_block = _get_random_valid_block(block_size, src_textures, rng)
+    texture_map[:block_size, :block_size, :] = starting_block
     check_ui(uicd, to_add=1)
-
-    del image  # access texture list instead after this point
 
     # --- "Purist" generation: fill only the 1st row and then the rest ---
     _fill_row_inplace(texture_map[:block_size, :], seams_map[:block_size, :], src_textures, patching_config, rng, uicd)
@@ -763,6 +751,7 @@ def generate_texture(src_textures: list[np.ndarray],
     :param out_w: output's width in pixels
     """
     rng = np.random.default_rng(seed=seed)
+    src_textures = TextureList(src_textures, patching_config.get_patch_kernel())
     return _generate_texture(src_textures, patching_config, out_h, out_w, rng, uicd)
 
 
@@ -782,6 +771,7 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
     assert o * 2 < b
 
     rng = np.random.default_rng(seed=seed)
+    src_textures = TextureList(src_textures, patching_config.get_patch_kernel())
 
     bm2o = b - 2 * o
     _n_h = n_h = ceil(out_h / bm2o)
@@ -794,24 +784,19 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
     n_d = min(_n_h, _n_w)  # number of diagonal iterations
 
     # select random image for the starting block
-    image = src_textures[rng.integers(len(src_textures))]
+    #image = src_textures[rng.integers(len(src_textures))]
 
     # texture needs to be generated w/ an overlap sized offset due to the auxiliary functions receiving a block sized
     #  patch instead of just the overlap section
     # mind that we need to over-estimate the size of the texture to make room for the adjacent patches to be filled
     # in rows that may not be aligned
-    texture_map = np.zeros((o + b * 2 + n_h * bm2o, o + b * 2 + n_w * bm2o, image.shape[2]), dtype=image.dtype)
+    texture_map = np.zeros((o + b * 2 + n_h * bm2o, o + b * 2 + n_w * bm2o, src_textures.global_channel_count),
+                           dtype=src_textures.global_dtype)
     seams_map = np.zeros(texture_map.shape[:2], dtype=np.float32)
 
-    # Starting index and block
-    h, w = image.shape[:2]
-    rand_h = rng.integers(h - b)
-    rand_w = rng.integers(w - b)
-
-    start_block = image[rand_h:rand_h + b, rand_w:rand_w + b]
-    texture_map[o:o + b, o:o + b, :] = start_block
-
-    del image
+    # Set starting block
+    _, starting_block = _get_random_valid_block(b, src_textures, rng)
+    texture_map[o:o + b, o:o + b, :] = starting_block
 
     # --- generation ----
     d_ixd = o  # texture offset ( both for x & y )
@@ -864,20 +849,18 @@ def _compute_synthesis_map(
         3rd item: generated proxy texture
         4th item: proxy texture's seams map
     """
+    proxy_textures = TextureList(proxy_textures, patching_config.get_patch_kernel())
+
     b, o = patching_config.block_size, patching_config.overlap
     bmo = b - o
 
     n_h = int(ceil((out_h - b) / (b - o)))
     n_w = int(ceil((out_w - b) / (b - o)))
 
-    # select random image for the starting block
-    rand_tex_idx = rng.integers(len(proxy_textures))
-    image = proxy_textures[rand_tex_idx]
-
     texture_map = np.zeros(
         ((b + n_h * bmo),
          (b + n_w * bmo),
-         image.shape[2]), dtype=image.dtype)
+         proxy_textures.global_channel_count), dtype=proxy_textures.global_dtype)
 
     patch_indices: list[PatchIdx] = []  # text index, row, column
     total_blocks = (n_h + 1) * (n_w + 1)
@@ -891,18 +874,12 @@ def _compute_synthesis_map(
 
     seams_map = np.zeros(texture_map.shape[:2], dtype=np.float32)
 
-    # Starting index and block
-    h, w = image.shape[:2]
-    rand_h = rng.integers(h - b)
-    rand_w = rng.integers(w - b)
+    # Set & Store starting block
+    starting_block_idx, starting_block = _get_random_valid_block(b, proxy_textures, rng)
+    texture_map[:b, :b, :] = starting_block
 
-    start_block = image[rand_h:rand_h + b, rand_w:rand_w + b]
-    texture_map[:b, :b, :] = start_block
-
-    patch_indices.append((int(rand_tex_idx), int(rand_h), int(rand_w)))
+    patch_indices.append(starting_block_idx)
     store_patch_mask(np.zeros((b, b), dtype=np.float32))
-
-    del image, rand_tex_idx, rand_h, rand_w  # access texture list instead after this point
 
     def get_block(text_idx, y, x):
         winning_texture = proxy_textures[text_idx]
@@ -1070,9 +1047,11 @@ def get_numb_of_blocks_to_fill_stripe(block_size, overlap, dim_length):
 
 
 def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchingConfig, rng: np.random.Generator,
-                               lookup_textures: list[np.ndarray] = None, seams_map: np.ndarray | None = None,
+                               lookup_textures: list[np.ndarray] | TextureList = None, seams_map: np.ndarray | None = None,
                                uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray]:
     lookup_textures = [image] if lookup_textures is None else lookup_textures
+    if not isinstance(lookup_textures, TextureList):
+        lookup_textures = TextureList(lookup_textures, patching_config.get_patch_kernel())
     if seams_map is None:
         seams_map = np.zeros(image.shape[:2], dtype=np.float32)
 
@@ -1183,17 +1162,21 @@ def seamless_both_multi(image, patching_config: SquarePatchingConfig, seed: int,
 
     # patch the texture in both directions. the last stripe's endpoints won't loop yet.
     texture, seams = _seamless_vertical_multi(image, patching_config, rng, lookup_textures=lookup_textures, uicd=uicd)
-    if texture is not None:
-        for m in [texture, seams]:
-            m[:] = np.roll(m, -block_size // 2, axis=0)  # center future seam at stripes interception
-        texture, seams = _seamless_horizontal_multi(
-            texture, patching_config, rng,
-            lookup_textures=lookup_textures,
-            seams_map=seams,
-            uicd=uicd)
 
     if texture is None:
         return ret_val_on_interrupt
+
+    # center future seam at stripes interception
+    for m in [texture, seams]:
+        m[:] = np.roll(m, -block_size // 2, axis=0)
+
+    lookup_textures = TextureList(lookup_textures, patching_config.get_patch_kernel())
+
+    texture, seams = _seamless_horizontal_multi(
+        texture, patching_config, rng,
+        lookup_textures=lookup_textures,
+        seams_map=seams,
+        uicd=uicd)
 
     # center the area to patch 1st, this will make the rolls in the next step easier
     for m in [texture, seams]:
@@ -1203,7 +1186,7 @@ def seamless_both_multi(image, patching_config: SquarePatchingConfig, seed: int,
     return _patch_horizontal_seam(texture, seams, lookup_textures, patching_config, rng, uicd=uicd)
 
 
-def _patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, lookup_textures: list[np.ndarray],
+def _patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, lookup_textures: TextureList,
                            patching_config: SquarePatchingConfig, rng: np.random.Generator, uicd: UiCoordData | None = None):
     """Patches the artificial seam at the center of the texture when using make seamless both. """
     block_size, overlap = patching_config.bo
@@ -1366,7 +1349,8 @@ def seamless_both_single(image: np.ndarray, lookup_texture: np.ndarray,
     for m in [texture, seams]:
         m[:] = np.roll(m, texture.shape[0] // 2, axis=0)
         m[:] = np.roll(m, texture.shape[1] // 2 - block_size // 2, axis=1)
-    texture, seams = _patch_horizontal_seam(texture, seams, [lookup_texture], patching_config, rng, uicd)
+    lookup_texture = TextureList([lookup_texture], None)
+    texture, seams = _patch_horizontal_seam(texture, seams, lookup_texture, patching_config, rng, uicd)
 
     # fix overvalues due to seams overlap
     np.clip(seams, 0, 1, out=seams)

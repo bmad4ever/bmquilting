@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from .seams_blur import BlendConfig, gradients_differences_at_the_seam, create_adaptive_blend_mask, _get_radii_limiter
 from .common import (
-    NumPixels, PatchIdx, Percentage, avg_squared_diff, adjust_errors_for_pystar2d_inplace,
+    ValidatedTexturesIterator, NumPixels, PatchIdx, Percentage, avg_squared_diff, adjust_errors_for_pystar2d_inplace,
     blend_with_mask, _filter_candidate_patches, _select_a_random_patch
 )
 from .shmem_utils import SharedTextureList
@@ -190,7 +190,7 @@ class SquarePatchingConfig:
         if self.match_template_method == cv.TM_SQDIFF:
             adjuster = lambda e: e
         elif self.match_template_method == cv.TM_CCOEFF_NORMED:  # [-1, 1] , where 1 is the best possible match
-            adjuster = lambda e: 1 - e  # adjust to only positive values where smaller values mean a better match
+            adjuster = lambda e: np.subtract(1, e, out=e)  # adjust to only positive values where smaller values mean a better match
         else:
             raise ValueError(f"{self.match_template_method = } is not supported.\n"
                              f"Only TM_SQDIFF and TM_CCOEFF_NORMED are supported.")
@@ -226,7 +226,7 @@ def find_patch_vx(overlaps_left: bool,
                   overlaps_top: bool,
                   overlaps_bottom: bool,
                   ref_block: np.ndarray,  # gen. texture view at the patch to generate location
-                  lookup_textures: list[np.ndarray] | SharedTextureList,
+                  lookup_textures: ValidatedTexturesIterator,
                   patching_config: SquarePatchingConfig,
                   rng: np.random.Generator
                   ) -> np.ndarray:
@@ -288,7 +288,7 @@ def find_patch_vx_idx(overlaps_left: bool,
                       overlaps_top: bool,
                       overlaps_bottom: bool,
                       ref_block: np.ndarray,  # gen. texture view at the patch to generate location
-                      lookup_textures: list[np.ndarray] | SharedTextureList,
+                      lookup_textures: ValidatedTexturesIterator,
                       patching_config: SquarePatchingConfig,
                       rng: np.random.Generator
                       ) -> PatchIdx:
@@ -323,7 +323,7 @@ def find_patch_vx_idx(overlaps_left: bool,
     )
 
     # --- PASS 1: Compute errors for each texture & find the absolute global minimum error ---
-    for texture in lookup_textures:
+    for idx, texture in enumerate(lookup_textures):
 
         # Skip if texture is too small for a block
         if texture.shape[0] < block_size or texture.shape[1] < block_size:
@@ -331,12 +331,13 @@ def find_patch_vx_idx(overlaps_left: bool,
             continue
 
         errs = cv.matchTemplate(image=texture, templ=ref_block, method=patching_config.match_template_method, mask=mask)
-
-        # Adjust errors
-        if patching_config.match_template_method == cv.TM_CCOEFF_NORMED:
-            errs = 1.0 - errs
+        patching_config._mt_error_adjust(errs)
 
         errs = np.maximum(errs, 1e-8)  # clip floor to zero
+        if lookup_textures.has_mask(idx):
+            invalid_mask = lookup_textures.get_mask(idx)
+            errs[invalid_mask] = np.inf
+
         err_mats.append(errs)
 
         # Update global minimum

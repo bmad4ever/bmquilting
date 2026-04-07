@@ -80,12 +80,18 @@ class TextureList:
     texs: list[np.ndarray]
     masks: list[np.ndarray|None]
 
-    def __init__(self, texs: list[np.ndarray], patch_kernel: np.ndarray):
+    def __init__(self, texs: list[np.ndarray], patch_kernel: np.ndarray | None):
         """
         :param texs: textures
         :param patch_kernel: mask with the shape of the full patch
         """
         self._dtype, self._number_of_channels = is_valid_texture_list(texs)
+
+        if patch_kernel is None:
+            logger.info(f"{self.__class__.__name__}: No kernel provided; points should all be valid.")
+            self.texs = texs
+            self.masks = [None] * len(texs)
+            return
 
         self.texs = []
         self.masks = []
