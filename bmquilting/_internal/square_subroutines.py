@@ -5,7 +5,6 @@ from .common import (
     ValidatedTexturesIterator, NumPixels, PatchIdx, Percentage, avg_squared_diff, adjust_errors_for_pystar2d_inplace,
     blend_with_mask, _filter_candidate_patches, _select_a_random_patch
 )
-from .shmem_utils import SharedTextureList
 
 from dataclasses import dataclass, field, asdict
 from collections.abc import Callable
@@ -274,12 +273,13 @@ def _get_vignetted_overlap_mask(block_size: NumPixels, overlap: NumPixels,
         overlaps_top,
         overlaps_bottom
     )
-
     mask = .5 - mask  # mind that the above mask can't be edited directly because it is cached
     mask *= 2.0
-    np.clip(mask, 0.0, 1.0, out=mask)
+    np.abs(mask, out=mask)
     np.subtract(1.0, mask, out=mask)
+    np.add(0.1, mask, out=mask)  # minding the following clip, will also increase the ceiling area
     mask *= overlap_mask
+    np.clip(mask, 0.0, 1.0, out=mask)
     return mask
 
 
@@ -549,7 +549,6 @@ def get_seam_mask_horizontal_min_cut(ref_block, patch_block, block_size: NumPixe
 def update_seams_map_view(seams_map_view: np.ndarray, patch_weights: np.ndarray, blends_into_patch: bool):
     seam_map_block = get_seam_mask_from_patch_weights(patch_weights, blends_into_patch)
     clear_seam_overlapped_by_patch(seams_map_view, patch_weights)
-    #seams_map_view += seam_map_block
     np.maximum(seams_map_view, seam_map_block, out=seams_map_view)
 
 
