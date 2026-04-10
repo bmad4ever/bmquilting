@@ -263,7 +263,7 @@ def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
     polar_errors, polar_roi = (
         cv2.warpPolar(i, (pp.radius, warped_len), center, f_radius, warp_flags)
         for i in [errors, roi])
-    mask = _min_cut_circ(polar_errors, polar_roi, pp.non_overlap_radius)
+    mask = _compute_seam(polar_errors, polar_roi, pp.non_overlap_radius)
 
     # Warp mask back to cartesian coords & Compute patched result
     mask = cv2.warpPolar(mask, roi.shape[:2], center, f_radius, cv2.WARP_INVERSE_MAP | warp_flags)
@@ -378,7 +378,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
 
 # region "Min Cut" Related Functions  ____START
 
-def _min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPixels,
+def _compute_seam(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPixels,
                   heur_override:pyastar2d.Heuristic=0) -> np.ndarray:
     """
     @param errors: warped matrix with the pre-computed errors
@@ -395,7 +395,7 @@ def _min_cut_circ(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPi
     else:
         # NO 2 adjacent all-0s rows exist
         # search for the cut endpoints at the top & bottom so that the path is not broken
-        start_x, end_x = _find_min_cut_circ_endpoints(errors, roi, heur_override)
+        start_x, end_x = _find_seam_endpoints(errors, roi, heur_override)
 
     errors[:, -1] = roi[:, -1] * errors[:, -1] + (1 - roi[:, -1])  # bottom holes escape path
     errors[:, :-1][roi[:, :-1] == 0] = np.inf  # don't travel outside the mask, unless via the escape path
@@ -436,7 +436,7 @@ def _x_squared_distance_1d(a_1d: np.ndarray, b_1d: np.ndarray) -> np.ndarray:
     return squared_dist_matrix
 
 
-def _find_min_cut_circ_endpoints(errors: np.ndarray, roi: np.ndarray, heur_override: pyastar2d.Heuristic=0) -> tuple[int, int]:
+def _find_seam_endpoints(errors: np.ndarray, roi: np.ndarray, heur_override: pyastar2d.Heuristic=0) -> tuple[int, int]:
     """
     Consider the roi as the following sections: | A | B | C | D |
     This functions rolls & crops it to get the section: | D | A |

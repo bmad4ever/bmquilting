@@ -375,7 +375,7 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
 def gradients_differences_at_the_seam(
         sobel_ksize: int, cut_mask_overlap: np.ndarray,
         source_overlap: np.ndarray, patch_overlap: np.ndarray, patched_overlap: np.ndarray,
-        grand_diff_func: Callable,
+        grad_diff_func: Callable,
         _tmp: np.ndarray=None) -> np.ndarray:
     """
     This function does the following, albeit minimizing mem. allocations (thus being harder to read).
@@ -439,8 +439,8 @@ def gradients_differences_at_the_seam(
 
     # Take maximum across channels
     if diff_source.ndim == 3:
-        max_diffs_source = grand_diff_func(diff_source, axis=2, out=diff_source[:, :, 0])
-        max_diffs_patch = grand_diff_func(diff_patch, axis=2, out=diff_patch[:, :, 0])
+        max_diffs_source = grad_diff_func(diff_source, axis=2, out=diff_source[:, :, 0])
+        max_diffs_patch = grad_diff_func(diff_patch, axis=2, out=diff_patch[:, :, 0])
     else:
         # suppose shape == 2
         max_diffs_source = diff_source
