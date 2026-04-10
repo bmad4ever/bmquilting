@@ -165,9 +165,9 @@ def _fill_row_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
 
 
 @handle_ui_interrupts(auto_close=True, re_raise=True)
-def _pfill_quad(patching_config: SquarePatchingConfig, texture_map, seams_map,
-                lookup_textures: TextureList | SharedTextureList,
-                seed: SeedSequence, uicd: UiCoordData | None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+def _pfill_quad_inplace(patching_config: SquarePatchingConfig, texture_map, seams_map,
+                lookup_textures: ValidatedTexturesIterator,
+                seed: SeedSequence, uicd: UiCoordData | None):
     """note: requires the 1st row and column of blocks to be already filled"""
     find_patch_both = get_find_patch_both_method()
     b, o = patching_config.bo
@@ -178,7 +178,6 @@ def _pfill_quad(patching_config: SquarePatchingConfig, texture_map, seams_map,
             block_idx = np.s_[blk_y:(blk_y + b), blk_x:(blk_x + b)]
             process_block(texture_map, seams_map, lookup_textures, block_idx,
                           find_patch_both, get_seam_patched_both, patching_config, rng, uicd)
-    return texture_map, seams_map
 
 
 def _fill_quad_purist(patching_config: SquarePatchingConfig, texture_map, seams_map,
@@ -242,28 +241,33 @@ def generate_texture_parallel(
     seeds = iter(SeedSequence(seed).spawn(1 + 4*2)) # 1 + 1 per stripe & quad
     _rng = np.random.default_rng(seed=next(seeds))
 
-    shm_ltxts = SharedTextureList.from_list(src_textures, patching_config.get_patch_kernel())
-
     # Get flipped textures to build the quadrants
     hi_ltxts: list[np.ndarray] = []
     vi_ltxts: list[np.ndarray] = []
+    vhi_ltxts: list[np.ndarray] = []
     for ltxt in src_textures:
-        hi_ltxts.append(np.fliplr(ltxt))
+        hi = np.fliplr(ltxt)
+        hi_ltxts.append(hi)
         vi_ltxts.append(np.flipud(ltxt))
+        vhi_ltxts.append(np.flipud(hi))
     # note: inverted both ways is computed later when filling the top-left quadrant/section
 
     # check if lists match; if so there is no need to use a separate SharedTextureList
     src_txt_ids: set[int] = {quick_checksum(txt) for txt in src_textures}
     hi_txt_ids: set[int] = {quick_checksum(txt) for txt in hi_ltxts}
     vi_txt_ids: set[int] = {quick_checksum(txt) for txt in vi_ltxts}
+    vhi_txt_ids: set[int] = {quick_checksum(txt) for txt in vhi_ltxts}
     hi_eq_src = src_txt_ids == hi_txt_ids
     vi_eq_src = src_txt_ids == vi_txt_ids
-    del src_txt_ids, hi_txt_ids, vi_txt_ids
+    vhi_eq_src = src_txt_ids == vhi_txt_ids
+    del src_txt_ids, hi_txt_ids, vi_txt_ids, vhi_txt_ids
 
     # init stuff that will have to be released eventually
     parallel = Parallel(n_jobs=4, backend="loky", timeout=None, verbose=0)
+    shm_ltxts = SharedTextureList.from_list(src_textures, patching_config.get_patch_kernel())
     shm_hi_ltxts = shm_ltxts if hi_eq_src else SharedTextureList.from_list(hi_ltxts, patching_config.get_patch_kernel())
     shm_vi_ltxts = shm_ltxts if vi_eq_src else SharedTextureList.from_list(vi_ltxts, patching_config.get_patch_kernel())
+    shm_vhi_ltxts = shm_ltxts if vhi_eq_src else SharedTextureList.from_list(vhi_ltxts, patching_config.get_patch_kernel())
 
     try:
         # auxiliary variables
@@ -320,7 +324,7 @@ def generate_texture_parallel(
 
         # generate the 4 sections (quadrants)
         args = [
-            (vis, his, shm_hi_ltxts, rows_per_quad, cols_per_quad, patching_config, nps, next(seeds), sm_vis, sm_his, uicd),
+            (vis, his, shm_vhi_ltxts, rows_per_quad, cols_per_quad, patching_config, nps, next(seeds), sm_vis, sm_his, uicd),
             (vis, hs, shm_vi_ltxts, rows_per_quad, cols_per_quad, patching_config, nps, next(seeds), sm_vis, sm_hs, uicd),
             (vs, hs, shm_ltxts, rows_per_quad, cols_per_quad, patching_config, nps, next(seeds), sm_vs, sm_hs, uicd),
             (vs, his, shm_hi_ltxts, rows_per_quad, cols_per_quad, patching_config, nps, next(seeds), sm_vs, sm_his, uicd)
@@ -415,33 +419,24 @@ def _shm_pair(h: int, w: int, channels: int, dtype: np.dtype, use_shm: bool):
 
 
 def _run_fill_quad(rows, columns, patching_configs, texture, seams_map,
-                   ltxts: list[np.ndarray] | SharedTextureList,
+                   ltxts: SharedTextureList,
                    p_strips, seed: SeedSequence, shm_text: SharedMemory | None, shm_smap: SharedMemory | None,
                    uicd: UiCoordData | None):
     """
-    Call fill_quad_ps (when using SHM for p_strips > 1) or fill_quad (when not).
-    :return: the (texture, seams_map) pair.
+    Call fill_quad_ps (when using SHM for p_strips > 1) or _pfill_quad_inplace (when not).
+    :return: (texture, seams_map)
     """
     if p_strips > 1:
-        if isinstance(ltxts, SharedTextureList):
-            _pfill_quad_ps(rows, columns, patching_configs, shm_text.name, shm_smap.name,
-                           ltxts, p_strips, seed, uicd)
-        else:
-            with SharedTextureList.from_list(ltxts, patching_configs.get_patch_kernel()) as shm_ltxts:
-                _pfill_quad_ps(rows, columns, patching_configs, shm_text.name, shm_smap.name,
-                               shm_ltxts, p_strips, seed, uicd)
-                get_reusable_executor().shutdown(wait=True)
-        return texture, seams_map
+        _pfill_quad_ps(rows, columns, patching_configs, shm_text.name, shm_smap.name, ltxts, p_strips, seed, uicd)
     else:  # if p_strips == 1
-        # fill_quad returns (texture, seams_map)
-        return _pfill_quad(patching_configs, texture, seams_map, ltxts, seed, uicd)
-
+        _pfill_quad_inplace(patching_configs, texture, seams_map, ltxts, seed, uicd)
+    return texture, seams_map
 
 # endregion     sub-routines for quadX functions
 
 
 def _quad1(vis, his,
-           hi_ltxts: list[np.ndarray] | SharedTextureList,
+           vhi_ltxts: SharedTextureList,
            rows: int, columns: int, patching_configs: SquarePatchingConfig, p_strips, seed: SeedSequence,
            sm_vis: np.ndarray, sm_his: np.ndarray,
            uicd: UiCoordData | None):
@@ -450,15 +445,13 @@ def _quad1(vis, his,
     :param his: horizontal inverted stripe
     :param sm_vis: vertical inverted seams map of the computed stripe
     :param sm_his: horizontal inverted seams map of the computed stripe
-    :param hi_ltxts: horizontal inverted lookup textures
+    :param vhi_ltxts: vertical horizontal inverted lookup textures
     :param rows: number of blocks to compute per row
     :param columns: number of blocks to compute per columns
     :param p_strips: number of processes for building the quadrant (not accounting for the other quadrants)
     """
     vi_hi_s = np.ascontiguousarray(np.flipud(his))  # vertical inversion of the horizontal inverted stripe
     hi_vi_s = np.ascontiguousarray(np.fliplr(vis))
-
-    vhi_ltxts = [np.ascontiguousarray(np.flipud(txt)) for txt in hi_ltxts]
 
     sm_vi_hi_s = np.ascontiguousarray(np.flipud(sm_his))
     sm_hi_vi_s = np.ascontiguousarray(np.fliplr(sm_vis))
@@ -489,7 +482,7 @@ def _quad1(vis, his,
 
 
 def _quad2(vis, hs,
-           vi_ltxts: list[np.ndarray] | SharedTextureList,
+           vi_ltxts: SharedTextureList,
            rows: int, columns: int, patching_configs: SquarePatchingConfig, p_strips, seed: SeedSequence,
            sm_vis: np.ndarray, sm_hs: np.ndarray,
            uicd: UiCoordData | None):
@@ -520,7 +513,7 @@ def _quad2(vis, hs,
 
 
 def _quad4(vs, his,
-           hi_ltxts: list[np.ndarray] | SharedTextureList,
+           hi_ltxts: SharedTextureList,
            rows: int, columns: int, patching_configs: SquarePatchingConfig, p_strips, seed: SeedSequence,
            sm_vs: np.ndarray, sm_his: np.ndarray,
            uicd: UiCoordData | None):
@@ -552,7 +545,7 @@ def _quad4(vs, his,
 
 
 def _quad3(vs, hs,
-           ltxts: list[np.ndarray] | SharedTextureList,
+           ltxts: SharedTextureList,
            rows: int, columns: int, patching_config: SquarePatchingConfig, p_strips, seed: SeedSequence,
            sm_vs: np.ndarray, sm_hs: np.ndarray,
            uicd: UiCoordData | None):
