@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from collections.abc import Callable
-from functools import lru_cache
+from functools import cache
 import numpy as np
 import cv2
 
@@ -12,6 +12,11 @@ from .common import NumPixels
 
 USE_SCHARR_WHEN_KSIZE_EQUALS_3 = True
 """When cv2.Sobel is used, use ksize=cv2.FILTER_SCHARR if the provided kernel size is equal to 3."""
+
+
+def sum_squared_differences(dgx: np.ndarray, dgy: np.ndarray, dgxy: np.ndarray, out: np.ndarray=None) -> np.ndarray:
+    """to be used with gradients' differences"""
+    return np.einsum('ijkl,ijkl->jk', dgxy, dgxy, out=out)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,22 +96,18 @@ class BlendConfig:
         theoretical possible maximum defined by `max_blur_diameter`).
     """
 
-    grad_diff_func: Callable = np.amax
+    grad_diff_func: Callable = sum_squared_differences
     """
-    Reduces multi-channel gradient differences into a single-channel intensity map.
-
-    When processing sources with multiple channels (e.g., RGB), this function 
-    aggregates the values across the channel dimension. The resulting 2D matrix 
-    represents the local gradient intensity; higher values indicate a more 
-    pronounced blur effect at that specific coordinate.
-
-    Default behavior:
-        Uses `numpy.max` to select the maximum gradient difference across channels for each pixel/element.
-
-    Notes:
-        `numpy.max` can be substituted with `numpy.mean` or other reduction functions depending on the desired sensitivity.
-        The output map is normalized against the theoretical maximum possible gradient difference. 
-        The selected function must have the `out` parameter.
+    Computes a seam's "errors", i.e. how much the seam is noticeable, with respect to the gradients differences.
+    
+    The function receives the following numpy arrays as input:
+        - dgx: (H, W, C) already computed x gradients difference, per channel; view into dgxy.
+        - dgy: (H, W, C) already computed y gradients difference, per channel; view into dgxy.
+        - dgxy: (2, H, W, C) -> dgxy[0] = dgx; dgxy[1] = dgy; may be used instead of dgx and dgy.
+        - out: (H, W) pre-allocated output array; can be used for intermediate computations.
+    
+    \nDefault behavior:
+        Sum of Squared Differences (SSD), similar to L2 norm without the square root overhead.
     """
 
     use_blur_radii_limiter: bool = True
@@ -182,26 +183,29 @@ class BlendConfig:
         )
 
 
-@lru_cache(maxsize=1)
-def _get_max_possible_gradient_diff(dtype_str: str, sobel_ksize: int) -> float:
-    """
-    Calculate maximum possible gradient difference using actual OpenCV kernel.
-    Cached to avoid recomputing for the same dtype and kernel size.
+def __make__get_max_possible_gradient_diff():
+    _cache = {}
+    def _get_max_possible_gradient_diff(sobel_ksize: int, num_channels: int, norm_func: Callable) -> float:
+        key = (sobel_ksize, num_channels)  # norm_func IGNORED when caching
+        if key not in _cache:
+            _cache[key] = ___get_max_possible_gradient_diff(sobel_ksize, num_channels, norm_func)
+        return _cache[key]
+    _get_max_possible_gradient_diff.cache_clear = _cache.clear
+    return _get_max_possible_gradient_diff
 
-    :param dtype_str: String representation of numpy dtype (e.g., 'uint8', 'float32').
-        String is used instead of dtype object because dtype objects aren't hashable.
+_get_max_possible_gradient_diff = __make__get_max_possible_gradient_diff()  # cache value ignoring the passed function
+
+
+def ___get_max_possible_gradient_diff(sobel_ksize: int, num_channels: int, norm_func: Callable) -> float:
+    """
+    Calculate max possible gradient difference by simulating a maximal gradient
+    tensor and passing it through the user-defined norm function.
+
     :param sobel_ksize: Sobel kernel size
-    :return: Maximum possible value gradient difference
+    :param num_channels: Number of color channels
+    :param norm_func: A function that takes (grad_x, grad_y, grad_xy) and returns the "error" map
     """
-    # Convert string back to dtype
-    dtype = np.dtype(dtype_str)
-
-    if dtype == np.uint8:
-        max_pixel_value = 255.0
-    elif dtype in [np.float32, np.float64]:
-        max_pixel_value = 1.0
-    else:
-        max_pixel_value = float(np.iinfo(dtype).max) if np.issubdtype(dtype, np.integer) else 1.0
+    max_pixel_value = 1.0   # supposes float32
 
     # Get actual OpenCV kernel to determine scale
     if USE_SCHARR_WHEN_KSIZE_EQUALS_3 and sobel_ksize == 3:
@@ -209,22 +213,19 @@ def _get_max_possible_gradient_diff(dtype_str: str, sobel_ksize: int) -> float:
     kx, ky = cv2.getDerivKernels(1, 0, ksize=sobel_ksize, normalize=False)
     kernel_2d = np.outer(kx, ky)
 
-    # Maximum response is sum of absolute values
-    sobel_scale = np.sum(np.abs(kernel_2d)) / 2
+    sobel_scale = np.sum(np.abs(kernel_2d)) / 2     # maximum response
+    K = sobel_scale * max_pixel_value               # maximum gradient in one direction
+    max_diff_val = 2.0 * K                          # maximum possible difference for any single component (dx or dy)
 
-    # Maximum gradient in one direction
-    K = sobel_scale * max_pixel_value
+    # Dummy tensors representing the maximum possible delta
+    dummy_dgxy = np.full((2, 1, 1, num_channels), max_diff_val)
+    dummy_dgx = dummy_dgxy[0]
+    dummy_dgy = dummy_dgxy[1]
 
-    # Maximum gradient vector magnitude: sqrt(gx² + gy²)
-    max_gradient_magnitude = np.sqrt(2) * K
-
-    # Maximum difference when gradients point in opposite directions
-    max_diff = 2 * max_gradient_magnitude
-
-    return max_diff
+    return float(norm_func(dummy_dgx, dummy_dgy, dummy_dgxy))
 
 
-@lru_cache(maxsize=None)
+@cache
 def _circular_kernel(radius: int) -> np.ndarray:
     """Cached circular structuring element."""
     return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*radius + 1, 2*radius + 1))
@@ -295,7 +296,7 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
                                blend_config: BlendConfig,
                                radii_limiter_mask: np.ndarray | None = None,
                                radii_limiter: np.ndarray | None = None,
-                               dtype=np.uint8) -> np.ndarray:
+                               ) -> np.ndarray:
     """
     Create adaptive blend mask with transition width based on gradient differences.
 
@@ -313,7 +314,10 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     min_blur_diameter, max_blur_diameter = blend_config.min_blur_diameter, blend_config.max_blur_diameter
 
     # Calculate theoretical maximum (cached)
-    max_gradient_diff = _get_max_possible_gradient_diff(dtype.name, blend_config.sobel_kernel_size)
+    max_gradient_diff = _get_max_possible_gradient_diff(
+        sobel_ksize= blend_config.sobel_kernel_size,
+        num_channels=tdiff_map.shape[-1] if tdiff_map.ndim > 2 else 1,
+        norm_func=blend_config.grad_diff_func)
 
     # Normalize & map to func
     tdiff_norm = tdiff_map / max_gradient_diff  # normalize
@@ -372,11 +376,53 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     return blend_mask
 
 
+
+@cache
+def _get_buffers_for_graddiffs_computation(shape):
+    """
+    :param shape: (H, W, C)
+    :return:
+        dgxy (2, H, W, C): where gradients differences should be stored
+        dgx (H, W, C): dgxy[0]
+        dgy (H, W, C): dgxy[1]
+        tg1 (H, W, C): auxiliary array to temporary store gradients
+        tg2 (H, W, C): auxiliary array to temporary store gradients
+        ts1 (H, W): auxiliary array to store 2D data
+        ts2 (H, W): auxiliary array to store 2D data
+    """
+    _dtype = np.float32
+
+    # Compute flat sizes
+    s_dgxy = 2 * shape[0] * shape[1] * shape[2]  # (2, H, W, C)
+    s_tg12 = s_dgxy  # (2, H, W, C)
+    s_ts12 = 2 * shape[0] * shape[1]  # (2, H, W)
+
+    total = s_dgxy + s_tg12 + s_ts12
+
+    # Single contiguous allocation
+    buf = np.empty(total, dtype=_dtype)
+
+    # Carve out views — no copies, all contiguous
+    offset = 0
+    dgxy = buf[offset: offset + s_dgxy].reshape(2, *shape)
+    offset += s_dgxy
+    tg12 = buf[offset: offset + s_tg12].reshape(2, *shape)
+    offset += s_tg12
+    ts12 = buf[offset: offset + s_ts12].reshape(2, *shape[:2])
+    offset += s_ts12
+
+    dgx, dgy = dgxy[0], dgxy[1]
+    tg1, tg2 = tg12[0], tg12[1]
+    ts1, ts2 = ts12[0], ts12[1]
+
+    return dgxy, dgx, dgy, tg1, tg2, ts1, ts2
+
+
 def gradients_differences_at_the_seam(
         sobel_ksize: int, cut_mask_overlap: np.ndarray,
         source_overlap: np.ndarray, patch_overlap: np.ndarray, patched_overlap: np.ndarray,
         grad_diff_func: Callable,
-        _tmp: np.ndarray=None) -> np.ndarray:
+        ) -> np.ndarray:
     """
     This function does the following, albeit minimizing mem. allocations (thus being harder to read).
     1. Get the gradients for all provided textures (source, patch, and patched)
@@ -390,74 +436,47 @@ def gradients_differences_at_the_seam(
     :param patch_overlap: patch view of the area which overlaps with the source
     :param patched_overlap: patched view of the area where source and patch overlap
 
-    :param _tmp: If there is a patch shaped array available with no use,
-    it can be re-used here to avoid an additional allocation.
-    Provided there is no use for the patched_overlap array after this function is called,
-    it can be passed here to slightly optimize memory usage.
-
     :return: a 2D array with shape equal to grad_shape[:2] that contains the gradients differences around the seam
     """
-    assert (source_overlap.dtype == np.float32)
     if USE_SCHARR_WHEN_KSIZE_EQUALS_3 and sobel_ksize == 3:
         sobel_ksize = cv2.FILTER_SCHARR
 
     # Setup types and shape
-    grad_shape = patched_overlap.shape
     _dtype, ddepth = np.float32, cv2.CV_32F
 
-    # Allocate gradient arrays once (reuse for different images)
-    gx = np.empty(grad_shape, dtype=_dtype)
-    gy = np.empty(grad_shape, dtype=_dtype)
+    ## Allocate arrays once (except for tg2)
+    dgxy, dgx, dgy, tg1, tg2, ts1, ts2 =  _get_buffers_for_graddiffs_computation(patched_overlap.shape)
 
     # Compute gradients for patched_overlap
-    cv2.Sobel(patched_overlap, ddepth, 1, 0, dst=gx, ksize=sobel_ksize)
-    cv2.Sobel(patched_overlap, ddepth, 0, 1, dst=gy, ksize=sobel_ksize)
+    cv2.Sobel(patched_overlap, ddepth, 1, 0, dst=tg1, ksize=sobel_ksize)    # tg1 -> ∇x(patched)
+    cv2.Sobel(patched_overlap, ddepth, 0, 1, dst=tg2, ksize=sobel_ksize)    # tg2 -> ∇y(patched)
 
-    # Pre-allocate diff array (will reuse)
-    diff_source = np.empty(grad_shape, dtype=_dtype) if _tmp is None else _tmp
+    # Compute ∇source - ∇patched
+    cv2.Sobel(source_overlap, ddepth, 1, 0, dst=dgx, ksize=sobel_ksize)
+    dgx -= tg1  # ∇x(source) - ∇x(patched)
+    cv2.Sobel(source_overlap, ddepth, 0, 1, dst=dgy, ksize=sobel_ksize)
+    dgy -= tg2  # ∇y(source) - ∇y(patched)
+    diffs_source = grad_diff_func(dgx, dgy, dgxy, out=ts1)
 
-    # Compute diff_source in-place
-    # diff_source = sqrt((gx_patched - gx_source)² + (gy_patched - gy_source)²)
-    cv2.Sobel(source_overlap, ddepth, 1, 0, dst=diff_source, ksize=sobel_ksize)
-    diff_source -= gx  # diff_source now has (gx_patched - gx_source)
+    # Filter values near seam for source diffs
+    inv_mask = np.subtract(1, cut_mask_overlap, out=ts2)      # ts2-> 1 - mask  (inv. mask is no longer needed afterwards)
+    tdiff_map = np.multiply(diffs_source, inv_mask, out=ts1)  # ts1-> tdiff_map (partial)
 
-    # Temporary for gy difference
-    temp_gy = np.empty(grad_shape, dtype=_dtype)
-    cv2.Sobel(source_overlap, ddepth, 0, 1, dst=temp_gy, ksize=sobel_ksize)
-    temp_gy -= gy  # (gy_patched - gy_source)
-    cv2.magnitude(diff_source, temp_gy, magnitude=diff_source)
+    # Compute ∇patch - ∇patched
+    cv2.Sobel(patch_overlap, ddepth, 1, 0, dst=dgx, ksize=sobel_ksize)
+    dgx -= tg1  # ∇x(patch) - ∇x(patched)
+    cv2.Sobel(patch_overlap, ddepth, 0, 1, dst=dgy, ksize=sobel_ksize)
+    dgy -= tg2  # ∇y(patch) - ∇y(patched)
+    diffs_patch = grad_diff_func(dgx, dgy, dgxy, out=ts2)
 
-    # Compute diff_patch (reuse temp_gy)
-    diff_patch = temp_gy  # Reuse the allocation
-    cv2.Sobel(patch_overlap, ddepth, 1, 0, dst=diff_patch, ksize=sobel_ksize)
-    diff_patch -= gx  # (gx_patched - gx_patch)
-
-    # Reuse gx for temporary gy computation
-    cv2.Sobel(patch_overlap, ddepth, 0, 1, dst=gx, ksize=sobel_ksize)
-    gx -= gy  # (gy_patched - gy_patch)
-    cv2.magnitude(diff_patch, gx, magnitude=diff_patch)
-
-    # Take maximum across channels
-    if diff_source.ndim == 3:
-        max_diffs_source = grad_diff_func(diff_source, axis=2, out=diff_source[:, :, 0])
-        max_diffs_patch = grad_diff_func(diff_patch, axis=2, out=diff_patch[:, :, 0])
-    else:
-        # suppose shape == 2
-        max_diffs_source = diff_source
-        max_diffs_patch = diff_patch
-
-    # Compute "transition diff. map" in-place using max_diffs_source as output buffer
-    tdiff_map = max_diffs_source  # Reuse allocation
-    np.multiply(max_diffs_source, 1 - cut_mask_overlap, out=tdiff_map)
-
-    # Use max_diffs_patch as temporary
-    np.multiply(max_diffs_patch, cut_mask_overlap, out=max_diffs_patch)
-    np.maximum(tdiff_map, max_diffs_patch, out=tdiff_map)
+    # Filter values near seam for patch diffs
+    np.multiply(diffs_patch, cut_mask_overlap, out=diffs_patch)
+    np.maximum(tdiff_map, diffs_patch, out=tdiff_map)
 
     return tdiff_map
 
 
-@lru_cache(maxsize=1)
+@cache
 def _get_radii_limiter(block_size: NumPixels, overlap: NumPixels) -> np.ndarray:
     """Blur radii limiter for standard square patches -> [[1, 2, ..., 2, 1], ...]"""
     x = np.linspace(1, overlap, overlap).reshape((1, overlap))

@@ -9,7 +9,7 @@ from ._internal.circular_subroutines import (
 )
 from ._internal.seams_blur import (
     # methods w/ cache
-    _circular_kernel, _get_max_possible_gradient_diff
+    _circular_kernel, _get_max_possible_gradient_diff, _get_buffers_for_graddiffs_computation,
 )
 
 from ._internal.decorators import clear_cache_post_exec, step_predictor, ndarray_identity_cache, auto_uint8_to_float32
@@ -44,6 +44,7 @@ type ProxyDataCPHL6S = ListProxy[ListProxy[ProxyPatch]]
 """ job id -> list of ProxyPatch """
 
 _CACHED_FUNCS = [
+    _get_buffers_for_graddiffs_computation,
     _get_max_possible_gradient_diff,
     _get_annular_mask,
     _circular_kernel,
@@ -305,6 +306,8 @@ def _generate_cphl6p(
             for x, y in points_batch:
                 result = process_patch_at_location(np_arrays[0], np_arrays[1], np_arrays[2], lookup_texts, x, y,
                                                    patching_config, rng)
+                #cv2.imshow("mask", result[1])
+                #cv2.waitKey(0)
                 shared_data["record"](job_id, result + (x, y))
                 check_ui(job_uicd, 1)
 
@@ -362,7 +365,7 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
 
     if margin_x is None: margin_x = (extended_w - out_w) // 2
     if margin_y is None: margin_y = (extended_h - out_h) // 2
-    lookup_texts = SharedTextureList.from_list(source_textures)
+    lookup_texts = SharedTextureList.from_list(source_textures, None)
     del source_textures  # ignore, from here & use lookup_texts
 
     texture_shm, texture_meta = _shm_mem_array(

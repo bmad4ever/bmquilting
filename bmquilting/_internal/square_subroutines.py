@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import cv2
+
 from .seams_blur import BlendConfig, gradients_differences_at_the_seam, create_adaptive_blend_mask, _get_radii_limiter
 from .common import (
     ValidatedTexturesIterator, NumPixels, PatchIdx, Percentage, avg_squared_diff, adjust_errors_for_pystar2d_inplace,
@@ -371,14 +373,14 @@ def get_4way_seam_patched(
     """
 
     block_size, overlap = patching_config.bo
-    masks_max = np.zeros(patch_block.shape[:2], dtype=np.float32)
+    masks_min = np.ones(patch_block.shape[:2], dtype=np.float32)
 
     def process_block(mask):
         if patching_config.blend_into_patch and patching_config.blend_config.use_vignette:
             vignette = _patch_blending_vignette(
                 block_size, overlap, overlaps_left, overlaps_right, overlaps_top, overlaps_bottom)
-            np.maximum(mask, vignette, out=mask)  # mind that the mask is a view that may be flipped or rotated
-        np.maximum(mask, masks_max, out=masks_max)
+            np.minimum(mask, vignette, out=mask)  # mind that the mask is a view that may be flipped or rotated
+        np.minimum(mask, masks_min, out=masks_min)
 
     if overlaps_left:
         mask = patching_config._compute_seam(ref_block, patch_block)
@@ -435,8 +437,8 @@ def get_4way_seam_patched(
         mask = np.rot90(np.fliplr(mask), 3)
         process_block(mask)
 
-    res = blend_with_mask(patch_block, ref_block, masks_max)
-    return res, np.subtract(1, masks_max, out=masks_max)
+    res = blend_with_mask(ref_block, patch_block, masks_min)
+    return res, masks_min
 
 
 @lru_cache(maxsize=4)
@@ -503,7 +505,7 @@ def _patch_blending_vignette(block_size: NumPixels, overlap: NumPixels,
         mask[overlap:block_size - overlap, -overlap:] = (np.flip(curve_top_left_corner[-1, :])
                                                          .reshape(1, -1))  # Copy the last row flipped horizontally
 
-    return np.subtract(1, mask, out=mask)
+    return mask
 
 
 def get_seam_mask_horizontal_min_cut(ref_block, patch_block, block_size: NumPixels,
@@ -540,9 +542,9 @@ def get_seam_mask_horizontal_min_cut(ref_block, patch_block, block_size: NumPixe
         path.append(min_arg)
     # Reverse to find full path
     path = path[::-1]
-    mask = np.zeros((block_size, block_size), dtype=ref_block.dtype)
+    mask = np.ones((block_size, block_size), dtype=ref_block.dtype)
     for i in range(len(path)):
-        mask[i, :path[i] + 1] = 1
+        mask[i, :path[i] + 1] = 0
     return mask
 
 
@@ -612,7 +614,7 @@ def get_seam_mask_horizontal_astar(
     end = (err.shape[0] - 1, err.shape[1] // 2)
 
     path = pyastar2d.astar_path(err, start, end, allow_diagonal=True)
-    mask = np.ones((block_size, block_size), dtype=ref_block.dtype)
+    mask = np.zeros((block_size, block_size), dtype=ref_block.dtype)
     shape_m2 = err.shape[0] - 2
 
     start_index = 0  # find start index to avoid checking 0 < i every iteration
@@ -622,11 +624,11 @@ def get_seam_mask_horizontal_astar(
             break
 
     for i, j in path[start_index:]:  # draw path
-        mask[i - 1, j + 1 + safety_radius] = 0
+        mask[i - 1, j + 1 + safety_radius] = 1
         if i >= shape_m2:
             break
 
-    cv.floodFill(mask, None, (mask.shape[0] - 1, mask.shape[1] - 1), (0,))
+    cv.floodFill(mask, None, (mask.shape[0] - 1, mask.shape[1] - 1), (1,))
     return mask
 
 
@@ -747,19 +749,19 @@ def compute_adaptive_blend_mask(source: np.ndarray, patch: np.ndarray, cut_mask:
     cut_mask_overlap = cut_mask[:block_size, :overlap]
     source_overlap = source[:block_size, :overlap]
     patch_overlap = patch[:block_size, :overlap]
-    patched_overlap = blend_with_mask(patch_overlap, source_overlap, cut_mask_overlap)
+    patched_overlap = blend_with_mask(source_overlap, patch_overlap, cut_mask_overlap)
 
     # Compute Gradients Difference & Create Adaptive Blend Mask for the overlap section
-    tdiff_map = gradients_differences_at_the_seam(sobel_ksize, cut_mask_overlap,
-                                                  source_overlap, patch_overlap, patched_overlap,
-                                                  patching_config.blend_config.grad_diff_func,
-                                                  _tmp=patched_overlap)
+    tdiff_map = gradients_differences_at_the_seam(
+        sobel_ksize, cut_mask_overlap,
+        source_overlap, patch_overlap, patched_overlap,
+        patching_config.blend_config.grad_diff_func
+    )
     blended = create_adaptive_blend_mask(
         tdiff_map=tdiff_map,
         mc_mask_overlap=cut_mask_overlap,
         blend_config=patching_config.blend_config,
         radii_limiter=_get_radii_limiter(block_size, overlap) if patching_config.blend_config.use_blur_radii_limiter else None,
-        dtype=source.dtype
     )
 
     # Update min-cut mask with adaptive blend

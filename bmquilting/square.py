@@ -12,7 +12,7 @@ from ._internal.square_subroutines import (
 )
 from ._internal.seams_blur import (
     # methods w/ cache
-    _circular_kernel, _get_max_possible_gradient_diff, _get_radii_limiter
+    _circular_kernel, _get_max_possible_gradient_diff, _get_radii_limiter, _get_buffers_for_graddiffs_computation,
 )
 
 from ._internal.common import (
@@ -52,6 +52,7 @@ type _MinCutFunc = Callable[[np.ndarray, np.ndarray, SquarePatchingConfig], np.n
 
 
 _CACHED_FUNCS = [
+    _get_buffers_for_graddiffs_computation,
     _get_max_possible_gradient_diff,
     _get_vignetted_overlap_mask,
     _patch_blending_vignette,
