@@ -596,7 +596,7 @@ def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
         :return: patch_idxs, mask
     """
     block_size = config.patch_params.block_size
-    mask = _get_circle_mask(config.patch_params)
+    mask = _get_circle_mask(config.patch_params).copy()
 
     patch_idx, start_block = _get_random_valid_block(block_size, lookup_textures, rng)
 
