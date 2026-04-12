@@ -444,7 +444,7 @@ def gradients_differences_at_the_seam(
     # Setup types and shape
     _dtype, ddepth = np.float32, cv2.CV_32F
 
-    ## Allocate arrays once (except for tg2)
+    # Get cached arrays (allocates on 1st execution)
     dgxy, dgx, dgy, tg12, tg1, tg2, ts1, ts2 =  _get_buffers_for_graddiffs_computation(patched_overlap.shape)
 
     # Compute gradients for patched_overlap
@@ -458,7 +458,7 @@ def gradients_differences_at_the_seam(
     diffs_source = grad_diff_func(dgx, dgy, dgxy, out=ts1)
 
     # Filter values near seam for source diffs
-    inv_mask  = np.subtract(1, cut_mask_overlap, out=ts2)      # ts2-> 1 - mask  (inv. mask is no longer needed afterwards)
+    inv_mask  = np.subtract(1, cut_mask_overlap, out=ts2)     # ts2-> 1 - mask  (inv. mask is no longer needed afterwards)
     tdiff_map = np.multiply(diffs_source, inv_mask, out=ts1)  # ts1-> tdiff_map (partial)
 
     # Compute norm(∇patch - ∇patched)
