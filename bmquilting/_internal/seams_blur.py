@@ -415,7 +415,7 @@ def _get_buffers_for_graddiffs_computation(shape):
     tg1, tg2 = tg12[0], tg12[1]
     ts1, ts2 = ts12[0], ts12[1]
 
-    return dgxy, dgx, dgy, tg1, tg2, ts1, ts2
+    return dgxy, dgx, dgy, tg12, tg1, tg2, ts1, ts2
 
 
 def gradients_differences_at_the_seam(
@@ -445,28 +445,26 @@ def gradients_differences_at_the_seam(
     _dtype, ddepth = np.float32, cv2.CV_32F
 
     ## Allocate arrays once (except for tg2)
-    dgxy, dgx, dgy, tg1, tg2, ts1, ts2 =  _get_buffers_for_graddiffs_computation(patched_overlap.shape)
+    dgxy, dgx, dgy, tg12, tg1, tg2, ts1, ts2 =  _get_buffers_for_graddiffs_computation(patched_overlap.shape)
 
     # Compute gradients for patched_overlap
     cv2.Sobel(patched_overlap, ddepth, 1, 0, dst=tg1, ksize=sobel_ksize)    # tg1 -> ∇x(patched)
     cv2.Sobel(patched_overlap, ddepth, 0, 1, dst=tg2, ksize=sobel_ksize)    # tg2 -> ∇y(patched)
 
-    # Compute ∇source - ∇patched
+    # Compute norm(∇source - ∇patched)
     cv2.Sobel(source_overlap, ddepth, 1, 0, dst=dgx, ksize=sobel_ksize)
-    dgx -= tg1  # ∇x(source) - ∇x(patched)
     cv2.Sobel(source_overlap, ddepth, 0, 1, dst=dgy, ksize=sobel_ksize)
-    dgy -= tg2  # ∇y(source) - ∇y(patched)
+    dgxy -= tg12
     diffs_source = grad_diff_func(dgx, dgy, dgxy, out=ts1)
 
     # Filter values near seam for source diffs
-    inv_mask = np.subtract(1, cut_mask_overlap, out=ts2)      # ts2-> 1 - mask  (inv. mask is no longer needed afterwards)
+    inv_mask  = np.subtract(1, cut_mask_overlap, out=ts2)      # ts2-> 1 - mask  (inv. mask is no longer needed afterwards)
     tdiff_map = np.multiply(diffs_source, inv_mask, out=ts1)  # ts1-> tdiff_map (partial)
 
-    # Compute ∇patch - ∇patched
+    # Compute norm(∇patch - ∇patched)
     cv2.Sobel(patch_overlap, ddepth, 1, 0, dst=dgx, ksize=sobel_ksize)
-    dgx -= tg1  # ∇x(patch) - ∇x(patched)
     cv2.Sobel(patch_overlap, ddepth, 0, 1, dst=dgy, ksize=sobel_ksize)
-    dgy -= tg2  # ∇y(patch) - ∇y(patched)
+    dgxy -= tg12
     diffs_patch = grad_diff_func(dgx, dgy, dgxy, out=ts2)
 
     # Filter values near seam for patch diffs
