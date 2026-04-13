@@ -279,9 +279,11 @@ def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
         )
 
         if circ_patching_config.blend_config.use_blur_radii_limiter:
-            radii_limiter = cv2.distanceTransform(roi.astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3,
-                                                  dstType=cv2.CV_32F)
+            radii_limiter = np.zeros((roi.shape[0] + 2, roi.shape[1] + 2), dtype=np.uint8) # mind blur at edges
+            radii_limiter[1:-1, 1:-1] = roi  # roi is not uint8 but will convert fine
+            radii_limiter = cv2.distanceTransform(radii_limiter, cv2.DIST_L2, 3, dstType=cv2.CV_32F)
             cv2.GaussianBlur(radii_limiter, (5, 5), 5, dst=radii_limiter)
+            radii_limiter = radii_limiter[1:-1, 1:-1]
             # note: alternatively, I could cache a limiter using annular mask, this would be more efficient;
             #       however, such solution may have a blur derived seam at the transition between the
             #       "filled" and "unfilled" sections of the patch.
@@ -293,7 +295,7 @@ def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
             tdiff_map=tdiff_map,
             mc_mask_overlap=mask,
             blend_config=circ_patching_config.blend_config,
-            radii_limiter_mask=radii_limiter,
+            radii_limiter=radii_limiter,
         )
     return mask
 
@@ -573,10 +575,9 @@ def _distance_to_points(points_mask: np.ndarray) -> np.ndarray:
         the closer to the points the closer to one.
     """
     np.subtract(1, points_mask, out=points_mask)
-    distance_map = cv2.distanceTransform(points_mask, cv2.DIST_L2, 5, dst=points_mask)
-    ksize = min(min(distance_map.shape)//4 + 1, 15)
-    cv2.GaussianBlur(distance_map, (ksize, ksize), sigmaX=0, sigmaY=0, dst=distance_map)
-    dst_norm = distance_map.astype(np.float32)
+    distance_map = cv2.distanceTransform(points_mask, cv2.DIST_L2, 5, dst=points_mask, dstType=cv2.CV_32F)
+    ksize = min(min(distance_map.shape) // 4, 15) | 1
+    dst_norm = cv2.GaussianBlur(distance_map, (ksize, ksize), sigmaX=0, sigmaY=0, dst=distance_map)
     cv2.normalize(dst_norm, dst_norm, 0, 1, cv2.NORM_MINMAX, dtype=cv2.CV_32F)
     np.subtract(1, dst_norm, out=dst_norm)
     return dst_norm

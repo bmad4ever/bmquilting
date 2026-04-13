@@ -143,7 +143,8 @@ class SquarePatchingConfig:
         )
 
     @classmethod
-    def advanced(cls, block_size, overlap, tolerance, blend_config,
+    def advanced(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage,
+                 blend_config: SquarePatchingBlendConfig,
                  seam_algorithm: SeamsAlgorithm = SeamsAlgorithm.ASTAR,
                  vignette_on_match_template: bool = False,
                  match_template_method=cv.TM_SQDIFF,
@@ -166,7 +167,8 @@ class SquarePatchingConfig:
         )
 
     @classmethod
-    def custom(cls, block_size, overlap, tolerance, blend_config,
+    def custom(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage,
+               blend_config: SquarePatchingBlendConfig,
                custom_func: CallableSeamsAlgorithm,
                vignette_on_match_template: bool = False,
                match_template_method=cv.TM_SQDIFF

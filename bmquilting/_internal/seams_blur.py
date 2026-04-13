@@ -138,8 +138,7 @@ class BlendConfig:
         :return: A BlendConfig instance with calculated blur bounds.
         """
         sobel_ksize = min(round(overlap / 2.0), round(block_size / 10.0))
-        if sobel_ksize % 2 == 0:
-            sobel_ksize += 1
+        sobel_ksize |= 1
 
         return cls.auto_blend_config_1(
             use_vignette=use_vignette,
@@ -294,7 +293,6 @@ def adaptive_maximum_filter(
 
 def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarray,
                                blend_config: BlendConfig,
-                               radii_limiter_mask: np.ndarray | None = None,
                                radii_limiter: np.ndarray | None = None,
                                ) -> np.ndarray:
     """
@@ -303,8 +301,6 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     :param tdiff_map: Seam gradient difference map (higher values = more difficult transition) of shape (H, W).
     :param mc_mask_overlap: Min-cut mask (0 = source side, 1 = patch side) of shape (H, W).
     :param blend_config: Params set for the generation, such as the minimum blur diameter.
-    :param radii_limiter_mask: Binary mask of shape (H, W) used to compute radii_limiter.
-        Should match overlapping area in most use cases.
     :param radii_limiter: (H, W) shaped numpy array that limits the maximum possible blur radius.
         Will be ignored if radii_limiter_mask is provided.
     :param dtype: Data type of source images (for calculating theoretical max)
@@ -319,23 +315,18 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
         num_channels=tdiff_map.shape[-1] if tdiff_map.ndim > 2 else 1,
         norm_func=blend_config.grad_diff_func)
 
-    # Normalize & map to func
-    tdiff_norm = tdiff_map / max_gradient_diff  # normalize
+    # Normalize & Adjust w/ blur_size_func
+    tdiff_norm = np.divide(tdiff_map, max_gradient_diff, out=tdiff_map)
 
     # adjusts values instead of using a linear relationship
     # the function in blend_config SHOULD clip the final values in the [0, 1] range
     blend_config.blur_size_func.inplace_func(tdiff_norm)
 
     # Map tdiff values to blend widths
-    blend_diameters = min_blur_diameter + (max_blur_diameter - min_blur_diameter) * tdiff_norm
+    blend_diameters = np.multiply(max_blur_diameter - min_blur_diameter, tdiff_norm, out=tdiff_norm)
+    blend_diameters += min_blur_diameter
     max_blur_diameter_found = round(np.max(blend_diameters))
     blend_radii = np.divide(blend_diameters, 2, out=blend_diameters)
-
-    # Limit radii with respect to the mask boundaries, to avoid having near or out bounds blur
-    if radii_limiter_mask is not None:
-        # create a radii limiter from a mask (usually should correspond to the overlapping area)
-        radii_limiter = radii_limiter_mask.astype(np.uint8, copy=True)
-        radii_limiter = cv2.distanceTransform(radii_limiter.astype(np.uint8), cv2.DIST_L2, 3).astype(np.float32)
 
     if radii_limiter is not None:
         np.minimum(radii_limiter, blend_radii, out=blend_radii)
