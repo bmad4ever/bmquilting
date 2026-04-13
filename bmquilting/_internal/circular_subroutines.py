@@ -281,7 +281,7 @@ def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
         if circ_patching_config.blend_config.use_blur_radii_limiter:
             radii_limiter = np.zeros((roi.shape[0] + 2, roi.shape[1] + 2), dtype=np.uint8) # mind blur at edges
             radii_limiter[1:-1, 1:-1] = roi  # roi is not uint8 but will convert fine
-            radii_limiter = cv2.distanceTransform(radii_limiter, cv2.DIST_L2, 3, dstType=cv2.CV_32F)
+            radii_limiter = cv2.distanceTransform(radii_limiter, cv2.DIST_L2, cv2.DIST_MASK_3, dstType=cv2.CV_32F)
             cv2.GaussianBlur(radii_limiter, (5, 5), 5, dst=radii_limiter)
             radii_limiter = radii_limiter[1:-1, 1:-1]
             # note: alternatively, I could cache a limiter using annular mask, this would be more efficient;
