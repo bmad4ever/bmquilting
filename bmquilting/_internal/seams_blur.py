@@ -343,13 +343,8 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
         cv2.GaussianBlur(blend_radii, (0, 0), sigmaX=sigma, sigmaY=sigma, dst=blend_radii)
 
     # Calculate signed distance from transition line
-    # dev note: compared 3 vs cv2.DIST_MASK_PRECISE
-    #   both performed well in terms of speed and precision so far
-    #   doesn't seem like something that needs to be further tested
-    #   as any minor details will be blured out.
-    #   I will choose simples-fastest for now
-    dist_from_source = cv2.distanceTransform((mc_mask_overlap > 0).astype(np.uint8), cv2.DIST_L2, 3)
-    dist_from_patch = cv2.distanceTransform((mc_mask_overlap <= 0).astype(np.uint8), cv2.DIST_L2, 3)
+    dist_from_source = cv2.distanceTransform((mc_mask_overlap > 0).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3)
+    dist_from_patch = cv2.distanceTransform((mc_mask_overlap <= 0).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3)
     dist_from_patch -= dist_from_source  # compute in place
     signed_distance = dist_from_patch.astype(np.float32)
     cv2.GaussianBlur(signed_distance, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=signed_distance)
