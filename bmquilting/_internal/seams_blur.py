@@ -343,10 +343,12 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
         cv2.GaussianBlur(blend_radii, (0, 0), sigmaX=sigma, sigmaY=sigma, dst=blend_radii)
 
     # Calculate signed distance from transition line
-    dist_from_source = cv2.distanceTransform((mc_mask_overlap > 0).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3)
-    dist_from_patch = cv2.distanceTransform((mc_mask_overlap <= 0).astype(np.uint8), cv2.DIST_L2, cv2.DIST_MASK_3)
-    dist_from_patch -= dist_from_source  # compute in place
-    signed_distance = dist_from_patch.astype(np.float32)
+    src_zeroes = np.empty(mc_mask_overlap.shape, dtype=np.uint8)
+    np.greater(mc_mask_overlap, 0, out=src_zeroes, casting='unsafe')
+    dist_to_source = cv2.distanceTransform(src_zeroes, cv2.DIST_L2, cv2.DIST_MASK_3, dstType=cv2.CV_32F)  # values within patch
+    pth_zeroes = cv2.bitwise_xor(src_zeroes, 1, dst=src_zeroes)
+    dist_to_patch = cv2.distanceTransform(pth_zeroes, cv2.DIST_L2, cv2.DIST_MASK_3, dstType=cv2.CV_32F) # values outside patch
+    signed_distance = np.subtract(dist_to_source, dist_to_patch, out=dist_to_source) # to seam; values outside patch are negative
     cv2.GaussianBlur(signed_distance, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=signed_distance)
 
     # Create smooth transition using sigmoid function
@@ -356,10 +358,8 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     # compute blend_mask in place
     # input and output clipping should be handled by the function
     blend_config.blur_shape_func.inplace_func(t)
-    blend_mask = t
 
-    np.subtract(1, blend_mask, out=blend_mask)
-    return blend_mask
+    return t  # blend_mask
 
 
 
