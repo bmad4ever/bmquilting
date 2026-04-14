@@ -338,6 +338,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     annulus_roi_block = _get_annular_mask(pp)
 
     roi = annulus_roi_block * roi  # confines the ROI to the annulus (overlap) region
+    np.greater(roi, .5, out=roi)
     tmpl_mask = roi                # mask used w/ template matching
 
     # (optional) Weighted Template Matching Setup
