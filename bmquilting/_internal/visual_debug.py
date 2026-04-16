@@ -6,8 +6,8 @@ seams_blur.py, circular_subroutines.py, and square_subroutines.py, displaying
 intermediate numpy array data in a single Tkinter window with dropdown selection.
 
 Arrays are categorized by size:
-  - **Block-sized** (max dimension <= 128): patch-scale intermediates
-  - **Full-sized**  (max dimension  > 128): texture-scale arrays
+  - **Block-sized** (min dimension <= 128): patch-scale intermediates
+  - **Full-sized**  (min dimension  > 128): texture-scale arrays
 
 Optionally saves debug frames to a "debug_viz" folder.
 
@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 import numpy as np
 import sys
 import cv2
@@ -55,24 +56,29 @@ _patch_arrays: list[tuple[str, np.ndarray]] = []
 # Manual line-level breakpoints for create_adaptive_blend_mask intermediates
 # ---------------------------------------------------------------------------
 _BLEND_MASK_BREAKPOINTS: dict[int, tuple[list[str], Callable]|list[str]] = {
+    # TODO consider these INVALID until version complete
     319: ["tdiff_norm"],
     323: ["tdiff_norm"],
-    326: ["blend_diameters"],
+    329: ["blend_radii"],
     332: ["blend_radii", "radii_limiter"],
-    337: ["blend_radii"],
-    343: ["blend_radii"],
+    342: ["blend_radii"],
+    346: ["blend_radii"],
     348: ["dist_to_source"],
     350: ["dist_to_patch"],
     351: ["signed_distance"],
     352: ["signed_distance"],
     355: ["t", "signed_distance", "blend_radii"],
-    356: (["t"], lambda d: np.clip(d, -1, +1)),
+    356: ["t"]
 }
 
 _ARRAY_LIKE_KEYWORDS = {"mask", "patch", "source", "block", "img", "image",
                         "texture", "result", "output", "roi", "vignette",
                         "blend", "seam", "tdiff", "radius", "distance",
                         "gradient", "err", "error", "patched"}
+
+_FNS_TO_EXCLUDE = {
+    "create_adaptive_blend_mask",   # manually check via _BLEND_MASK_BREAKPOINTS
+}
 
 _PATCH_BOUNDARY_FNS = {
     "process_patch_at_location",
@@ -115,11 +121,11 @@ class _DebugViewer:
         self._action = "next"
 
         # Categorize by size
-        self._block_arrays = [(n, a) for n, a in arrays if max(a.shape[:2]) <= _MAX_BLOCK_DIM]
-        self._full_arrays  = [(n, a) for n, a in arrays if max(a.shape[:2]) > _MAX_BLOCK_DIM]
+        self._block_arrays = [(n, a) for n, a in arrays if min(a.shape[:2]) <= _MAX_BLOCK_DIM]
+        self._full_arrays  = [(n, a) for n, a in arrays if min(a.shape[:2]) > _MAX_BLOCK_DIM]
 
         if not self._block_arrays and not self._full_arrays:
-            return
+            raise RuntimeError("Unexpected error; nothing within _block_arrays or _full_arrays.")
 
         # De-duplicate names (append index when duplicates exist)
         self._block_arrays = _dedup_names(self._block_arrays)
@@ -142,10 +148,12 @@ class _DebugViewer:
 
         # Auto-select first items
         if self._block_arrays:
-            self._block_combo.current(self._saved_combos_idx[0])
+            combo_idx = self._saved_combos_idx[0] if self._saved_combos_idx[0] < len(self._block_combo["values"]) else 0
+            self._block_combo.current(combo_idx)
             self._display_for(self._block_label, "block")
         if self._full_arrays:
-            self._full_combo.current(self._saved_combos_idx[1])
+            combo_idx = self._saved_combos_idx[1] if self._saved_combos_idx[1] < len(self._full_combo["values"]) else 0
+            self._full_combo.current(combo_idx)
             self._display_for(self._full_label, "full")
 
         # Key bindings
@@ -238,7 +246,11 @@ class _DebugViewer:
         arrays = self._block_arrays if panel == "block" else self._full_arrays
         max_px = _DISPLAY_MAX_BLOCK if panel == "block" else _DISPLAY_MAX_FULL
         _, arr = arrays[idx]
-        _set_photo(label_widget, arr, max_px)
+        # Single-channel block arrays get a heatmap + colorbar for easier reading
+        if panel == "block" and _is_single_channel(arr):
+            _set_photo_heatmap(label_widget, arr, max_px)
+        else:
+            _set_photo(label_widget, arr, max_px)
 
     def _on_advance(self, event=None):
         self._action = "next"
@@ -336,6 +348,120 @@ def _dedup_names(pairs: list[tuple[str, np.ndarray]]) -> list[tuple[str, np.ndar
     return result
 
 
+def _is_single_channel(arr: np.ndarray) -> bool:
+    """Return True when *arr* is effectively a scalar/grayscale image."""
+    return arr.ndim == 2 or (arr.ndim == 3 and arr.shape[-1] == 1)
+
+
+def _make_heatmap_with_scale(arr: np.ndarray, max_px: int) -> np.ndarray | None:
+    """Render a single-channel array as a false-colour heatmap with a colorbar.
+
+    The colorbar strip sits to the right of the image and carries three tick
+    labels: the true data maximum (top), midpoint (middle), and minimum
+    (bottom), expressed in the *original* array units (not 0-255).
+
+    Returns a uint8 BGR image that can be encoded directly with cv2.imencode.
+    """
+    if arr.ndim < 2:
+        return None
+
+    _COLORMAP = cv2.COLORMAP_TURBO
+    _HEATMAP_GAMMA = 1.5  # gamma > 1 compresses low values (similar dark colours) and stretches
+
+    data = arr[:, :, 0] if arr.ndim == 3 else arr   # always 2-D from here on
+    data = data.copy()
+
+    inf_idxs = np.isinf(data)
+    data[inf_idxs] = np.nan
+
+    if np.any(inf_idxs):
+        _COLORMAP = cv2.COLORMAP_INFERNO
+        _HEATMAP_GAMMA = .65
+
+    data[np.isnan(data)] = 0  #hi*1.25
+    lo, hi = float(data.min()), float(data.max())
+    rng = hi - lo
+
+    if np.abs(1-hi) <= .02 and lo == 0:
+        _COLORMAP = cv2.COLORMAP_BONE
+
+    if rng > 0:
+        norm = ((data - lo) / rng * 255.0).astype(np.uint8)
+    else:
+        norm = np.zeros_like(data, dtype=np.uint8)
+
+    norm = (norm.astype(np.float32) / 255.0) ** _HEATMAP_GAMMA
+    norm = (norm * 255.0).astype(np.uint8)
+    heatmap = cv2.applyColorMap(norm, _COLORMAP)  # H × W × 3 BGR
+
+    # ---- Scale heatmap to fit display box ----
+    h, w = heatmap.shape[:2]
+    scale = min(max_px / w, max_px / h, 1.0)
+    if scale < 0.99:
+        heatmap = cv2.resize(heatmap, (round(w * scale), round(h * scale)),
+                             interpolation=cv2.INTER_AREA)
+    h, w = heatmap.shape[:2]
+
+    # ---- Build colorbar ----
+    BAR_W   = 24          # width of the gradient strip (px)
+    PAD     = 6           # gap between image and gradient strip (px)
+    LABEL_W = 64          # reserved width for tick-mark text (px)
+
+    # Colormap Vertical Bar
+    gradient_1d = (np.linspace(1.0, 0.0, h, dtype=np.float32) ** _HEATMAP_GAMMA * 255).astype(np.uint8).reshape(h, 1)
+    bar_img = cv2.applyColorMap(gradient_1d, _COLORMAP)  # H × 1 × 3
+    bar_img = cv2.resize(bar_img, (BAR_W, h), interpolation=cv2.INTER_LINEAR)
+
+    # Canvas: dark background to the right of the heatmap
+    canvas_w = PAD + BAR_W + LABEL_W
+    canvas = np.full((h, canvas_w, 3), 30, dtype=np.uint8)
+    canvas[:, PAD: PAD + BAR_W] = bar_img
+
+    # Tick-mark labels: hi at top, mid in centre, lo at bottom
+    font       = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.38
+    thickness  = 1
+    txt_color  = (210, 210, 210)
+    tx         = PAD + BAR_W + 4          # x start for all labels
+
+    def _fmt(v: float) -> str:
+        # Use fixed-point when values are in a "normal" range, else sci notation
+        return f"{v:.3g}"
+
+    mid = (lo + hi) / 2.0
+    tick_specs = [
+        (0,      _fmt(hi)),
+        (h // 2, _fmt(mid)),
+        (h - 1,  _fmt(lo)),
+    ]
+    for y_anchor, text in tick_specs:
+        (_, th), _ = cv2.getTextSize(text, font, font_scale, thickness)
+        y_put = max(th + 1, min(h - 2, y_anchor + th // 2))
+        cv2.putText(canvas, text, (tx, y_put),
+                    font, font_scale, txt_color, thickness, cv2.LINE_AA)
+
+    # Thin border on the left edge of the gradient strip for clarity
+    cv2.line(canvas, (PAD, 0), (PAD, h - 1), (80, 80, 80), 1)
+    cv2.line(canvas, (PAD + BAR_W, 0), (PAD + BAR_W, h - 1), (80, 80, 80), 1)
+
+    return np.hstack([heatmap, canvas])
+
+
+def _set_photo_heatmap(label_widget, arr: np.ndarray, max_px: int) -> None:
+    """Encode a heatmap+colorbar composite and attach it to *label_widget*."""
+    viz = _make_heatmap_with_scale(arr, max_px)
+    if viz is None:
+        # Graceful fallback: use the standard renderer
+        _set_photo(label_widget, arr, max_px)
+        return
+
+    _, png_bytes = cv2.imencode(".png", viz)
+    import tkinter as tk
+    photo = tk.PhotoImage(data=png_bytes.tobytes())
+    label_widget.configure(image=photo)
+    label_widget.image = photo  # prevent GC
+
+
 def _set_photo(label_widget, arr: np.ndarray, max_px: int) -> None:
     """Render a numpy array as a Tkinter PhotoImage and attach to a label."""
     viz = _normalise_for_display(arr)
@@ -361,14 +487,12 @@ def _set_photo(label_widget, arr: np.ndarray, max_px: int) -> None:
 # ---------------------------------------------------------------------------
 
 def _normalise_for_display(arr: np.ndarray) -> np.ndarray | None:
-    """Convert any numeric array to uint8 BGR suitable for display / encoding.
-
-    Float arrays are always min-max normalized to [0, 255] so that negative
-    values and out-of-range values are visible (not clipped to black/white).
-    """
+    """Convert any numeric array to uint8 BGR suitable for display / encoding."""
     if arr.ndim < 2:
         return None
+
     arr = arr.copy()
+
     if arr.ndim > 2:
         if arr.shape[-1] == 1:
             arr = arr[:, :, 0]
@@ -377,24 +501,17 @@ def _normalise_for_display(arr: np.ndarray) -> np.ndarray | None:
         elif arr.shape[-1] > 3:
             arr = arr[:, :, :3]
 
-    # Normalize to uint8 range
-    if arr.ndim == 2 or arr.shape[-1] == 1:
-        if arr.dtype in (np.float32, np.float64):
-            lo, hi = float(arr.min()), float(arr.max())
-            rng = hi - lo
-            if rng > 0:
-                arr = ((arr - lo) / rng * 255.0).astype(np.uint8)
-            else:
-                arr = np.zeros_like(arr, dtype=np.uint8)
-        elif arr.dtype != np.uint8:
-            arr = arr.astype(np.uint8)
+    if arr.ndim == 2:
+        cv2.normalize(arr, arr, 0, 255, cv2.NORM_MINMAX)
+    elif arr.ndim == 3:
+        arr *= 255.0
+
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.uint8)
+
+    if arr.ndim == 2:
         arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
-    else:
-        if arr.dtype in (np.float32, np.float64):
-            arr *= 255.0
-            # > multi channel arrays are not normalized, unlike single channel
-        if arr.dtype != np.uint8:
-            arr = arr.astype(np.uint8)
+
     return arr
 
 
@@ -504,7 +621,7 @@ def _trace_calls(frame, event, arg):
     return None
 
 
-def _inspect_locals(locals_dict: dict[str, any], func_name: str, filename: str) -> None:
+def _inspect_locals(locals_dict: dict[str, Any], func_name: str, filename: str) -> None:
     if _call_depth > 6:
         return
     for name, val in locals_dict.items():
@@ -515,7 +632,7 @@ def _inspect_locals(locals_dict: dict[str, any], func_name: str, filename: str) 
             continue
         if val.size < 16:
             continue
-        if "create_adaptive_blend_mask" in func_name:
+        if func_name in _FNS_TO_EXCLUDE:
             continue
         _collect_array(name, val, filename, func_name)
 
