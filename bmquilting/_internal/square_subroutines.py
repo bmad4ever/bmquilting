@@ -639,7 +639,7 @@ def get_seam_mask_none(
         block_size: NumPixels, overlap: NumPixels,
         ____
 ) -> np.ndarray:
-    return np.zeros((block_size, block_size), dtype=np.float32)
+    return np.ones((block_size, block_size), dtype=np.float32)
 
 
 # endregion
