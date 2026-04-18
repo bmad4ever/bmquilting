@@ -60,7 +60,7 @@ _BLEND_MASK_BREAKPOINTS: dict[int, tuple[list[str], Callable]|list[str]] = {
     319: ["tdiff_norm"],
     323: ["tdiff_norm"],
     329: ["blend_radii"],
-    332: ["blend_radii", "radii_limiter"],
+    335: ["blend_radii", "radii_limiter"],
     342: ["blend_radii"],
     346: ["blend_radii"],
     348: ["dist_to_source"],
@@ -371,14 +371,15 @@ def _make_heatmap_with_scale(arr: np.ndarray, max_px: int) -> np.ndarray | None:
     data = arr[:, :, 0] if arr.ndim == 3 else arr   # always 2-D from here on
     data = data.copy()
 
-    inf_idxs = np.isinf(data)
-    data[inf_idxs] = np.nan
+    if data.dtype == np.float32:
+        inf_idxs = np.isinf(data)
+        data[inf_idxs] = np.nan
 
-    if np.any(inf_idxs):
-        _COLORMAP = cv2.COLORMAP_INFERNO
-        _HEATMAP_GAMMA = .65
+        if np.any(inf_idxs):
+            _COLORMAP = cv2.COLORMAP_INFERNO
+            _HEATMAP_GAMMA = .65
 
-    data[np.isnan(data)] = 0  #hi*1.25
+        data[np.isnan(data)] = 0  #hi*1.25
     lo, hi = float(data.min()), float(data.max())
     rng = hi - lo
 
