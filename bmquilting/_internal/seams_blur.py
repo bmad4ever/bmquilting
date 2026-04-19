@@ -294,6 +294,7 @@ def adaptive_maximum_filter(
 def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarray,
                                blend_config: BlendConfig,
                                radii_limiter: np.ndarray | None = None,
+                               radii_binary_limiter: np.ndarray | None = None
                                ) -> np.ndarray:
     """
     Create adaptive blend mask with transition width based on gradient differences.
@@ -301,8 +302,9 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     :param tdiff_map: Seam gradient difference map (higher values = more difficult transition) of shape (H, W).
     :param mc_mask_overlap: Min-cut mask (0 = source side, 1 = patch side) of shape (H, W).
     :param blend_config: Params set for the generation, such as the minimum blur diameter.
-    :param radii_limiter: (H, W) shaped numpy array that limits the maximum possible blur radius.
-        Will be ignored if radii_limiter_mask is provided.
+    :param radii_limiter: (H, W) shaped numpy array that limits the maximum possible blur radius; applied pre adaptive max filter.
+    :param radii_binary_limiter: (H, W) binary mask for the blur radii; applied post adaptive max filter,
+    the boundaries of the limiter are not softened.
     :param dtype: Data type of source images (for calculating theoretical max)
 
     :return: np.ndarray (H, W): Blend mask (0 = source, 1 = patch)
@@ -328,19 +330,26 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     max_blur_diameter_found = round(np.max(blend_diameters))
     blend_radii = np.divide(blend_diameters, 2, out=blend_diameters)
 
+    effective_min_blur = min_blur_diameter
     if radii_limiter is not None:
         np.minimum(radii_limiter, blend_radii, out=blend_radii)
-        blend_radii[blend_radii <= 0] = .001  # can't use zero here due to division later
+        effective_min_blur = 1.e-8
 
-    if max_blur_diameter_found > min_blur_diameter:  # if they are equal then there is nothing to dilate
+    if max_blur_diameter_found > effective_min_blur:  # if they are equal then there is nothing to dilate
         sigma = (min_blur_diameter + 1)/6
         blend_radii = adaptive_maximum_filter(
             radius_map=blend_radii,
             n_levels=blend_config.adaptive_maximum_filter_number_of_levels,
             max_radius=round(max_blur_diameter_found/2),
-            overreach=min_blur_diameter//2  # ksize 10
+            min_radius=effective_min_blur,
+            overreach=min_blur_diameter//2
         )
         cv2.GaussianBlur(blend_radii, (0, 0), sigmaX=sigma, sigmaY=sigma, dst=blend_radii)
+
+    if radii_binary_limiter is not None:
+        blend_radii *= radii_binary_limiter
+
+    np.maximum(blend_radii, 1.e-8, out=blend_radii)
 
     # Calculate signed distance from transition line
     src_zeroes = np.empty(mc_mask_overlap.shape, dtype=np.uint8)
