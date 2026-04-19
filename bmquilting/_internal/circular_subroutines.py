@@ -317,8 +317,6 @@ def _constrain_tdiff(tdiff_map: np.ndarray, filled: np.ndarray, blend_config: Bl
     """
     eroded_filled = filled.copy()
     cv2.erode(filled, _circular_kernel(blend_config.sobel_kernel_size), eroded_filled)
-    cv2.imshow("filled__", filled)
-    cv2.imshow("eroded_filled__", eroded_filled)
     tdiff_map *= eroded_filled
 
 
