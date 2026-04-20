@@ -125,6 +125,16 @@ class _DebugViewer:
 
         self._patch_num = patch_num
 
+        # Inject placeholders for missing cached combo names
+        def _inject_placeholder(arr_list, cached_name):
+            if cached_name and not any(n == cached_name for n, _ in arr_list):
+                img = np.zeros((150, 300, 3), dtype=np.uint8)
+                cv2.putText(img, "[no data]", (75, 85), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+                arr_list.append((cached_name, img))
+
+        _inject_placeholder(self._block_arrays, self._saved_combo_names[0])
+        _inject_placeholder(self._full_arrays, self._saved_combo_names[1])
+
         import tkinter as tk
         from tkinter import ttk
 
@@ -495,7 +505,7 @@ def _normalise_for_display(arr: np.ndarray) -> np.ndarray | None:
 
     if arr.ndim == 2:
         cv2.normalize(arr, arr, 0, 255, cv2.NORM_MINMAX)
-    elif arr.ndim == 3:
+    elif arr.ndim == 3 and arr.dtype != np.uint8:
         arr *= 255.0
 
     if arr.dtype != np.uint8:
