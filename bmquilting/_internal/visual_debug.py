@@ -5,9 +5,7 @@ Uses sys.settrace to intercept function calls and specific line numbers in
 seams_blur.py, circular_subroutines.py, and square_subroutines.py, displaying
 intermediate numpy array data in a single Tkinter window with dropdown selection.
 
-Arrays are categorized by size:
-  - **Block-sized** (min dimension <= 128): patch-scale intermediates
-  - **Full-sized**  (min dimension  > 128): texture-scale arrays
+Arrays are categorized by size and name.
 
 Optionally saves debug frames to a "debug_viz" folder.
 
@@ -74,7 +72,9 @@ _BLEND_MASK_BREAKPOINTS: dict[int, tuple[list[str], Callable]|list[str]] = {
 _ARRAY_LIKE_KEYWORDS = {"mask", "patch", "source", "block", "img", "image",
                         "texture", "result", "output", "roi", "vignette",
                         "blend", "seam", "tdiff", "radius", "distance",
-                        "gradient", "err", "error", "patched"}
+                        "gradient", "err", "error", "patched",
+                        "text",
+                        }
 
 _FNS_TO_EXCLUDE = {
     "create_adaptive_blend_mask",   # manually check via _BLEND_MASK_BREAKPOINTS
@@ -83,9 +83,7 @@ _FNS_TO_EXCLUDE = {
 _PATCH_BOUNDARY_FNS = {
     "process_patch_at_location",
     "set_random_patch_at_location",
-    "find_patch_vx",
-    "find_patch_vx_idx",
-    "get_4way_seam_patched",
+    "process_block",  # only as input, no output
     "_make_seamless_vertical_circular",
     "_make_seamless_horizontal_circular",
     "_make_seamless_both_circular",
@@ -121,8 +119,18 @@ class _DebugViewer:
         self._action = "next"
 
         # Categorize by size
-        self._block_arrays = [(n, a) for n, a in arrays if min(a.shape[:2]) <= _MAX_BLOCK_DIM]
-        self._full_arrays  = [(n, a) for n, a in arrays if min(a.shape[:2]) > _MAX_BLOCK_DIM]
+        def to_block_array(item) -> bool:
+            name, array = item
+            to_full_names_list = ["text_view", "seams_view", "filled"]
+            to_block_names_list = ["errors", "polar", "mask", "roi"]
+            if any(fn in name for fn in to_full_names_list):
+                return False
+            if any(fn in name for fn in to_block_names_list):
+                return True
+            return  max(array.shape[:2]) <= _MAX_BLOCK_DIM
+
+        self._block_arrays = [item for item in arrays if to_block_array(item)]
+        self._full_arrays  = [item for item in arrays if not to_block_array(item)]
 
         if not self._block_arrays and not self._full_arrays:
             raise RuntimeError("Unexpected error; nothing within _block_arrays or _full_arrays.")
@@ -146,15 +154,27 @@ class _DebugViewer:
         # Restore previous window position
         self._restore_geometry()
 
-        # Auto-select first items
+        # Auto-select item
+        def get_combo_idx(combo, cached_idx: int|None) -> int | None:
+            if combo is None or len(combo["values"]) <= 0:
+                return None
+
+            if cached_idx is not None and cached_idx < len(combo["values"]):
+                return cached_idx
+
+            return 0   # fallback in case the number of items changes
+
+
         if self._block_arrays:
-            combo_idx = self._saved_combos_idx[0] if self._saved_combos_idx[0] < len(self._block_combo["values"]) else 0
-            self._block_combo.current(combo_idx)
-            self._display_for(self._block_label, "block")
+            combo_idx = get_combo_idx(self._block_combo, self._saved_combos_idx[0])
+            if combo_idx is not None:
+                self._block_combo.current(combo_idx)
+                self._display_for(self._block_label, "block")
         if self._full_arrays:
-            combo_idx = self._saved_combos_idx[1] if self._saved_combos_idx[1] < len(self._full_combo["values"]) else 0
-            self._full_combo.current(combo_idx)
-            self._display_for(self._full_label, "full")
+            combo_idx = get_combo_idx(self._full_combo, self._saved_combos_idx[1])
+            if combo_idx is not None:
+                self._full_combo.current(combo_idx)
+                self._display_for(self._full_label, "full")
 
         # Key bindings
         self._root.bind("<Return>", self._on_advance)
@@ -256,7 +276,14 @@ class _DebugViewer:
         self._action = "next"
         if self._root and self._root.winfo_exists():
             self._saved_geometry = (self._root.winfo_x(), self._root.winfo_y())
-            self._saved_combos_idx = (self._block_combo.current(), self._full_combo.current())
+
+            # keep track of prior item by index (not ideal, by name would be better, but better than no trakcing for now)
+            def combo_exists(combo) -> bool:
+                return combo is not None and len(self._block_combo["values"]) > 0
+            _block_idx = self._block_combo.current() if combo_exists(self._block_combo) else None
+            _full_idx  = self._full_combo.current() if combo_exists(self._full_combo) else None
+            self._saved_combos_idx = (_block_idx, _full_idx)
+
             self._root.quit()
             self._root.destroy()
         self._root = None
@@ -671,8 +698,9 @@ def enable_visual_debug(save_frames: bool = False) -> None:
     import bmquilting._internal.seams_blur as sb
     import bmquilting._internal.circular_subroutines as cs
     import bmquilting._internal.square_subroutines as sq
+    import bmquilting.square as s
 
-    _target_modules = {sb.__file__, cs.__file__, sq.__file__}
+    _target_modules = {sb.__file__, cs.__file__, sq.__file__, s.__file__}
 
     sys.settrace(_trace_calls)
     _tracing_enabled = True
