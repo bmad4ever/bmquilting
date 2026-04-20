@@ -1,6 +1,5 @@
 """
 Visual debugging module for subroutines.
-
 Uses sys.settrace to intercept function calls and specific line numbers in
 seams_blur.py, circular_subroutines.py, and square_subroutines.py, displaying
 intermediate numpy array data in a single Tkinter window with dropdown selection.
@@ -16,17 +15,13 @@ Usage:
     # ... run your quilting code ...
     disable_visual_debug()
 """
-
 from __future__ import annotations
-
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 import numpy as np
 import sys
 import cv2
-
-
 
 # ---------------------------------------------------------------------------
 # Thresholds
@@ -44,27 +39,27 @@ _frame_counter = 0
 _debug_viz_dir: Path | None = None
 _target_modules: set[str] = set()
 _call_depth = 0
-_in_patch = False
+_patch_depth = 0  # Tracks nested patch-boundary functions
 _patch_count = 0
-
+_skip_mode = [False]
 # Per-patch array buffer: list of (display_name, numpy_array)
 _patch_arrays: list[tuple[str, np.ndarray]] = []
 
 # ---------------------------------------------------------------------------
 # Manual line-level breakpoints for create_adaptive_blend_mask intermediates
 # ---------------------------------------------------------------------------
-_BLEND_MASK_BREAKPOINTS: dict[int, tuple[list[str], Callable]|list[str]] = {
-    # TODO consider these INVALID until version complete
-    319: ["tdiff_norm"],
-    323: ["tdiff_norm"],
-    329: ["blend_radii"],
-    335: ["blend_radii", "radii_limiter"],
+_BLEND_MASK_BREAKPOINTS: dict[int, tuple[list[str], Callable] | list[str]] = {
+    # TODO consider invalid for now
+    #319: ["tdiff_norm"],
+    326: ["tdiff_norm"],
+    332: ["blend_radii"],
+    336: ["blend_radii", "radii_limiter"],
     342: ["blend_radii"],
-    346: ["blend_radii"],
-    348: ["dist_to_source"],
-    350: ["dist_to_patch"],
-    351: ["signed_distance"],
-    352: ["signed_distance"],
+    #348: ["blend_radii"],
+    #348: ["dist_to_source"],
+    #350: ["dist_to_patch"],
+    #351: ["signed_distance"],
+    #362: ["signed_distance"],
     355: ["t", "signed_distance", "blend_radii"],
     356: ["t"]
 }
@@ -72,18 +67,16 @@ _BLEND_MASK_BREAKPOINTS: dict[int, tuple[list[str], Callable]|list[str]] = {
 _ARRAY_LIKE_KEYWORDS = {"mask", "patch", "source", "block", "img", "image",
                         "texture", "result", "output", "roi", "vignette",
                         "blend", "seam", "tdiff", "radius", "distance",
-                        "gradient", "err", "error", "patched",
-                        "text",
-                        }
+                        "gradient", "err", "error", "patched", "text"}
 
 _FNS_TO_EXCLUDE = {
-    "create_adaptive_blend_mask",   # manually check via _BLEND_MASK_BREAKPOINTS
+    "create_adaptive_blend_mask",
 }
 
 _PATCH_BOUNDARY_FNS = {
     "process_patch_at_location",
     "set_random_patch_at_location",
-    "process_block",  # only as input, no output
+    "process_block",
     "_make_seamless_vertical_circular",
     "_make_seamless_horizontal_circular",
     "_make_seamless_both_circular",
@@ -92,10 +85,8 @@ _PATCH_BOUNDARY_FNS = {
 # ---------------------------------------------------------------------------
 # Tkinter debug viewer (single window, dropdown-driven)
 # ---------------------------------------------------------------------------
-
 class _DebugViewer:
     """Singleton Tkinter viewer for patch-level debug arrays."""
-
     def __init__(self):
         self._root = None
         self._patch_num: int = 0
@@ -105,20 +96,14 @@ class _DebugViewer:
         self._full_combo = None
         self._block_label = None
         self._full_label = None
-        self._saved_geometry: tuple[int, int] | None = None  # (x, y) screen position
-        self._saved_combos_idx: tuple[int, int] = (0, 0)
-        self._action: str = "next"  # "next" | "stop"
+        self._saved_geometry: tuple[int, int] | None = None
+        self._saved_combo_names: tuple[str | None, str | None] = (None, None)
+        self._action: str = "next"
 
     def show_patch(self, patch_num: int, arrays: list[tuple[str, np.ndarray]]) -> str:
-        """Blocking call: displays all arrays in a single window with dropdowns.
-
-        Returns the user action:
-          - "next" : advance to the next patch (default keypress)
-          - "stop" : stop debugging, disable trace
-        """
+        """Blocking call: displays all arrays in a single window with dropdowns."""
         self._action = "next"
 
-        # Categorize by size
         def to_block_array(item) -> bool:
             name, array = item
             to_full_names_list = ["text_view", "seams_view", "filled"]
@@ -127,15 +112,14 @@ class _DebugViewer:
                 return False
             if any(fn in name for fn in to_block_names_list):
                 return True
-            return  max(array.shape[:2]) <= _MAX_BLOCK_DIM
+            return max(array.shape[:2]) <= _MAX_BLOCK_DIM
 
         self._block_arrays = [item for item in arrays if to_block_array(item)]
-        self._full_arrays  = [item for item in arrays if not to_block_array(item)]
+        self._full_arrays = [item for item in arrays if not to_block_array(item)]
 
         if not self._block_arrays and not self._full_arrays:
             raise RuntimeError("Unexpected error; nothing within _block_arrays or _full_arrays.")
 
-        # De-duplicate names (append index when duplicates exist)
         self._block_arrays = _dedup_names(self._block_arrays)
         self._full_arrays = _dedup_names(self._full_arrays)
 
@@ -145,38 +129,30 @@ class _DebugViewer:
         from tkinter import ttk
 
         self._root = tk.Tk()
-        self._root.title(f"Patch #{patch_num}  –  bmquilting debug viewer")
+        self._root.title(f"Patch #{patch_num} – bmquilting debug viewer")
         self._root.protocol("WM_DELETE_WINDOW", self._on_stop)
         self._root.resizable(True, True)
 
         self._build_ui(ttk)
-
-        # Restore previous window position
         self._restore_geometry()
 
-        # Auto-select item
-        def get_combo_idx(combo, cached_idx: int|None) -> int | None:
+        # Auto-select item by name
+        def get_combo_idx_by_name(combo, cached_name: str | None) -> int:
             if combo is None or len(combo["values"]) <= 0:
-                return None
-
-            if cached_idx is not None and cached_idx < len(combo["values"]):
-                return cached_idx
-
-            return 0   # fallback in case the number of items changes
-
+                return 0
+            if cached_name is not None and cached_name in combo["values"]:
+                return combo["values"].index(cached_name)
+            return 0  # fallback to first item
 
         if self._block_arrays:
-            combo_idx = get_combo_idx(self._block_combo, self._saved_combos_idx[0])
-            if combo_idx is not None:
-                self._block_combo.current(combo_idx)
-                self._display_for(self._block_label, "block")
+            combo_idx = get_combo_idx_by_name(self._block_combo, self._saved_combo_names[0])
+            self._block_combo.current(combo_idx)
+            self._display_for(self._block_label, "block")
         if self._full_arrays:
-            combo_idx = get_combo_idx(self._full_combo, self._saved_combos_idx[1])
-            if combo_idx is not None:
-                self._full_combo.current(combo_idx)
-                self._display_for(self._full_label, "full")
+            combo_idx = get_combo_idx_by_name(self._full_combo, self._saved_combo_names[1])
+            self._full_combo.current(combo_idx)
+            self._display_for(self._full_label, "full")
 
-        # Key bindings
         self._root.bind("<Return>", self._on_advance)
         self._root.bind("<space>", self._on_advance)
         self._root.bind("<Escape>", self._on_stop)
@@ -184,25 +160,19 @@ class _DebugViewer:
         self._root.mainloop()
         return self._action
 
-    # ---- UI construction ----
-
     def _build_ui(self, ttk):
         main = ttk.Frame(self._root, padding=10)
         main.pack(fill="both", expand=True)
 
-        # Title bar
         ttk.Label(main, text="Use the dropdowns to inspect each intermediate array.").pack(anchor="w")
 
-        # Two-column layout
         content = ttk.Frame(main)
         content.pack(fill="both", expand=True, pady=8)
 
-        # --- Block-sized column ---
         if self._block_arrays:
-            left = ttk.LabelFrame(content, text=f"Block-sized  ({len(self._block_arrays)})", padding=6)
+            left = ttk.LabelFrame(content, text=f"Block-sized ({len(self._block_arrays)})", padding=6)
             left.pack(side="left", fill="both", expand=True, padx=4)
 
-            # Dropdown row
             row_top = ttk.Frame(left)
             row_top.pack(fill="x")
 
@@ -212,18 +182,16 @@ class _DebugViewer:
             self._block_combo.bind("<<ComboboxSelected>>",
                                    lambda e: self._display_for(self._block_label, "block"))
 
-            ttk.Button(row_top, text="Save \u2192", width=8,
+            ttk.Button(row_top, text="Save →", width=8,
                        command=lambda: self._save_selected("block")).pack(side="left", padx=(4, 0))
 
             self._block_label = ttk.Label(left, relief="sunken", anchor="center")
             self._block_label.pack(fill="both", expand=True, pady=5)
 
-        # --- Full-sized column ---
         if self._full_arrays:
-            right = ttk.LabelFrame(content, text=f"Full-sized  ({len(self._full_arrays)})", padding=6)
+            right = ttk.LabelFrame(content, text=f"Full-sized ({len(self._full_arrays)})", padding=6)
             right.pack(side="left", fill="both", expand=True, padx=4)
 
-            # Dropdown row
             row_top = ttk.Frame(right)
             row_top.pack(fill="x")
 
@@ -233,31 +201,26 @@ class _DebugViewer:
             self._full_combo.bind("<<ComboboxSelected>>",
                                   lambda e: self._display_for(self._full_label, "full"))
 
-            ttk.Button(row_top, text="Save \u2192", width=8,
+            ttk.Button(row_top, text="Save →", width=8,
                        command=lambda: self._save_selected("full")).pack(side="left", padx=(4, 0))
 
             self._full_label = ttk.Label(right, relief="sunken", anchor="center")
             self._full_label.pack(fill="both", expand=True, pady=5)
 
-        # Bottom bar
         bottom = ttk.Frame(main)
         bottom.pack(fill="x")
 
-        # Left side: label + Stop button
         left_bar = ttk.Frame(bottom)
         left_bar.pack(side="left")
-        ttk.Label(left_bar, text="Space / Enter \u2192 next patch").pack(side="left")
+        ttk.Label(left_bar, text="Space / Enter → next patch").pack(side="left")
         ttk.Button(left_bar, text="Stop Debugging", command=self._on_stop,
                    style="TButton").pack(side="left", padx=8)
 
-        # Right side: action buttons
         btn_row = ttk.Frame(bottom)
         btn_row.pack(side="right")
         ttk.Button(btn_row, text="Save All (Patch)",
                    command=self._save_all_patch).pack(side="right", padx=(0, 6))
-        ttk.Button(btn_row, text="Next Patch \u2192", command=self._on_advance).pack(side="right")
-
-    # ---- Display helpers ----
+        ttk.Button(btn_row, text="Next Patch →", command=self._on_advance).pack(side="right")
 
     def _display_for(self, label_widget, panel):
         idx = (self._block_combo if panel == "block" else self._full_combo).current()
@@ -266,7 +229,6 @@ class _DebugViewer:
         arrays = self._block_arrays if panel == "block" else self._full_arrays
         max_px = _DISPLAY_MAX_BLOCK if panel == "block" else _DISPLAY_MAX_FULL
         _, arr = arrays[idx]
-        # Single-channel block arrays get a heatmap + colorbar for easier reading
         if panel == "block" and _is_single_channel(arr):
             _set_photo_heatmap(label_widget, arr, max_px)
         else:
@@ -277,12 +239,12 @@ class _DebugViewer:
         if self._root and self._root.winfo_exists():
             self._saved_geometry = (self._root.winfo_x(), self._root.winfo_y())
 
-            # keep track of prior item by index (not ideal, by name would be better, but better than no trakcing for now)
-            def combo_exists(combo) -> bool:
-                return combo is not None and len(self._block_combo["values"]) > 0
-            _block_idx = self._block_combo.current() if combo_exists(self._block_combo) else None
-            _full_idx  = self._full_combo.current() if combo_exists(self._full_combo) else None
-            self._saved_combos_idx = (_block_idx, _full_idx)
+            def get_combo_name(combo) -> str | None:
+                if combo is not None and len(combo["values"]) > 0:
+                    name = combo.get()
+                    return name if name in combo["values"] else None
+                return None
+            self._saved_combo_names = (get_combo_name(self._block_combo), get_combo_name(self._full_combo))
 
             self._root.quit()
             self._root.destroy()
@@ -292,6 +254,14 @@ class _DebugViewer:
         self._action = "stop"
         if self._root and self._root.winfo_exists():
             self._saved_geometry = (self._root.winfo_x(), self._root.winfo_y())
+
+            def get_combo_name(combo) -> str | None:
+                if combo is not None and len(combo["values"]) > 0:
+                    name = combo.get()
+                    return name if name in combo["values"] else None
+                return None
+            self._saved_combo_names = (get_combo_name(self._block_combo), get_combo_name(self._full_combo))
+
             self._root.quit()
             self._root.destroy()
         self._root = None
@@ -301,15 +271,11 @@ class _DebugViewer:
             x, y = self._saved_geometry
             self._root.geometry(f"+{x}+{y}")
 
-    # ---- Save helpers ----
-
     def _get_panel_arrays(self, panel: str) -> list[tuple[str, np.ndarray]]:
         return self._block_arrays if panel == "block" else self._full_arrays
 
     def _save_selected(self, panel: str) -> None:
-        """Save currently selected array from the dropdown as .npy and .png."""
         from tkinter import filedialog
-
         idx = (self._block_combo if panel == "block" else self._full_combo).current()
         if idx < 0:
             return
@@ -348,7 +314,7 @@ class _DebugViewer:
         save_dir.mkdir(parents=True, exist_ok=True)
 
         for name, arr in all_arrays:
-            safe_name = name.replace(" ", "_").replace("[", "").replace("]", "").replace(",", "")[:120]
+            safe_name = name.replace(" ", "_").replace("[", " ").replace("]", " ").replace(",", " ")[:120]
             np.save(save_dir / f"{safe_name}.npy", arr)
             viz = _normalise_for_display(arr)
             if viz is not None:
@@ -368,7 +334,7 @@ def _dedup_names(pairs: list[tuple[str, np.ndarray]]) -> list[tuple[str, np.ndar
     for name, arr in pairs:
         if name in seen:
             seen[name] += 1
-            result.append((f"{name}  (#{seen[name]})", arr))
+            result.append((f"{name} (#{seen[name]})", arr))
         else:
             seen[name] = 0
             result.append((name, arr))
@@ -378,7 +344,6 @@ def _dedup_names(pairs: list[tuple[str, np.ndarray]]) -> list[tuple[str, np.ndar
 def _is_single_channel(arr: np.ndarray) -> bool:
     """Return True when *arr* is effectively a scalar/grayscale image."""
     return arr.ndim == 2 or (arr.ndim == 3 and arr.shape[-1] == 1)
-
 
 def _make_heatmap_with_scale(arr: np.ndarray, max_px: int) -> np.ndarray | None:
     """Render a single-channel array as a false-colour heatmap with a colorbar.
@@ -391,7 +356,6 @@ def _make_heatmap_with_scale(arr: np.ndarray, max_px: int) -> np.ndarray | None:
     """
     if arr.ndim < 2:
         return None
-
     _COLORMAP = cv2.COLORMAP_TURBO
     _HEATMAP_GAMMA = 1.5  # gamma > 1 compresses low values (similar dark colours) and stretches
 
@@ -558,21 +522,19 @@ def _maybe_save_frame(arr: np.ndarray, label: str) -> None:
     cv2.imwrite(str(out_path), viz)
     _frame_counter += 1
 
-
-def _collect_array(name: str, arr: np.ndarray, filename: str, func_name: str, adjust_data_for_viz_func: Callable|None=None) -> None:
-    """Buffer a named array for the current patch (copied to freeze state)."""
+def _collect_array(name: str, arr: np.ndarray, filename: str, func_name: str, adjust_data_for_viz_func: Callable | None = None) -> None:
+    global _patch_depth
+    if _patch_depth <= 0:
+        return
     arr = arr.copy()
-    _maybe_save_frame(arr, f"{func_name}_{name}")
-
+    _maybe_save_frame(arr, f"{func_name}{name}")
     custom_viz_note = ""
     if adjust_data_for_viz_func:
         arr = adjust_data_for_viz_func(arr)
         custom_viz_note = "(vizmod)"
-
     bare = func_name.rsplit(".", 1)[-1] if "." in func_name else func_name
-    display_name = f"[{bare}]  {name}  {arr.shape} {custom_viz_note}"
+    display_name = f"[{bare}] {name} {arr.shape} {custom_viz_note}"
     _patch_arrays.append((display_name, arr))
-
 
 def _flush_arrays() -> str:
     """At patch boundary: show all buffered arrays in the viewer, then clear.
@@ -584,7 +546,7 @@ def _flush_arrays() -> str:
         return "next"
 
     _patch_count += 1
-    print(f"\n[visual_debug] === Patch #{_patch_count}  ({len(_patch_arrays)} arrays) ===")
+    print(f"\n[visual_debug] === Patch #{_patch_count} ({len(_patch_arrays)} arrays) ===")
     action = _viewer.show_patch(_patch_count, _patch_arrays)
     _patch_arrays.clear()
     return action
@@ -595,8 +557,7 @@ def _flush_arrays() -> str:
 # ---------------------------------------------------------------------------
 
 def _trace_calls(frame, event, arg):
-    global _call_depth, _in_patch
-
+    global _call_depth, _patch_depth, _skip_mode
     filename = frame.f_code.co_filename
     is_target = any(mod in filename for mod in _target_modules)
     func_name = frame.f_code.co_qualname or frame.f_code.co_name
@@ -607,7 +568,7 @@ def _trace_calls(frame, event, arg):
             return None
         _call_depth += 1
         if bare_name in _PATCH_BOUNDARY_FNS:
-            _in_patch = True
+            _patch_depth += 1
         return _trace_calls
 
     elif event == "line":
@@ -632,18 +593,15 @@ def _trace_calls(frame, event, arg):
         if _call_depth < 0:
             _call_depth = 0
 
-        # Exit from patch-boundary function → flush buffered arrays
-        if bare_name in _PATCH_BOUNDARY_FNS and _in_patch:
-            _in_patch = False
-            action = _flush_arrays()
-            if action == "stop":
-                disable_visual_debug()
-            elif action == "skip_end":
-                # Drop all intermediate arrays from here onward until generation ends
-                _patch_arrays.clear()
-                # Still collect arrays from the very last patch by tracking a flag
-                _skip_mode[0] = True
-
+        if bare_name in _PATCH_BOUNDARY_FNS:
+            _patch_depth -= 1
+            if _patch_depth == 0:
+                action = _flush_arrays()
+                if action == "stop":
+                    disable_visual_debug()
+                elif action == "skip_end":
+                    _patch_arrays.clear()
+                    _skip_mode[0] = True
         return _trace_calls
 
     return None
@@ -677,7 +635,7 @@ def enable_visual_debug(save_frames: bool = False) -> None:
         into a folder called "debug_viz" in the current working directory.
     """
     global _tracing_enabled, _save_frames, _frame_counter, _debug_viz_dir, \
-           _target_modules, _patch_arrays, _patch_count, _in_patch, _call_depth, _skip_mode
+           _target_modules, _patch_arrays, _patch_count, _call_depth, _patch_depth, _skip_mode
 
     if _tracing_enabled:
         print("[visual_debug] Already enabled. Call disable_visual_debug() first.")
@@ -687,8 +645,9 @@ def enable_visual_debug(save_frames: bool = False) -> None:
     _frame_counter = 0
     _patch_arrays = []
     _patch_count = 0
-    _in_patch = False
     _call_depth = 0
+    _patch_depth = 0
+    _skip_mode[0] = False
 
     if save_frames:
         _debug_viz_dir = Path.cwd() / "debug_viz"
@@ -704,9 +663,8 @@ def enable_visual_debug(save_frames: bool = False) -> None:
 
     sys.settrace(_trace_calls)
     _tracing_enabled = True
-    print("[visual_debug] Enabled.  A single Tkinter window with dropdowns will appear"
-          " at each patch boundary.  Press Space/Enter/Esc to advance.")
-
+    print("[visual_debug] Enabled. A single Tkinter window with dropdowns will appear "
+          "at each patch boundary. Press Space/Enter/Esc to advance.")
 
 def disable_visual_debug() -> None:
     """Deactivate visual debugging and restore normal execution."""
