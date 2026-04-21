@@ -5,7 +5,7 @@ from ._internal.square_subroutines import (
 
     get_find_patch_to_the_right_method, get_find_patch_below_method, get_find_patch_both_method,
     get_seam_patched_horizontal, get_seam_patched_vertical, get_seam_patched_both,
-    update_seams_map_view, find_patch_vx_idx, find_patch_vx, get_4way_seam_patched,
+    find_patch_vx_idx, find_patch_vx, get_4way_seam_patched,
 
     # methods w/ cache
     _get_overlap_mask, _get_vignetted_overlap_mask, _patch_blending_vignette
@@ -18,7 +18,7 @@ from ._internal.seams_blur import (
 from ._internal.common import (
     TextureList, ValidatedTexturesIterator,
     NumPixels, _2D_Slice, PatchIdx,
-    apply_mask, _get_random_valid_block
+    apply_mask, _get_random_valid_block, update_seams_map_view,
 )
 from ._internal.decorators import clear_cache_post_exec, step_predictor, auto_uint8_to_float32
 from .utils.ui_coord import handle_ui_interrupts, UiCoordData, check_ui
@@ -83,7 +83,7 @@ def process_block(text_view: np.ndarray, seams_view: np.ndarray,
     min_cut_patch, patch_weights = get_min_cut_func(ref_block, patch_block, patching_config)
     ref_block[:] = min_cut_patch
     seams_map_sub_view = seams_view[block_idx]
-    update_seams_map_view(seams_map_sub_view, patch_weights, patching_config.blend_into_patch)
+    update_seams_map_view(seams_map_sub_view, patch_weights)
     check_ui(uicd, 1)
 
 
@@ -886,7 +886,7 @@ def _compute_synthesis_map(
         store_patch_mask(patch_weights)
         ref_block[:] = min_cut_patch
         seams_map_sub_view = seams_map_view[blk_idx]
-        update_seams_map_view(seams_map_sub_view, patch_weights, patching_config.blend_into_patch)
+        update_seams_map_view(seams_map_sub_view, patch_weights)
         check_ui(uicd, 1)
 
     def fill_row_inplace_proxy():
@@ -1070,7 +1070,7 @@ def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchin
 
     ref_block[:] = min_cut_patch
 
-    update_seams_map_view(seams_map[:block_size, :block_size], patch_weights, patching_config.blend_into_patch)
+    update_seams_map_view(seams_map[:block_size, :block_size], patch_weights)
 
     check_ui(uicd, 1)
 
@@ -1086,7 +1086,7 @@ def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchin
             True, True, True, False, ref_block, patch_block, patching_config)
 
         ref_block[:] = min_cut_patch
-        update_seams_map_view(seams_map[blk_1y:blk_2y, :block_size], patch_weights, patching_config.blend_into_patch)
+        update_seams_map_view(seams_map[blk_1y:blk_2y, :block_size], patch_weights)
         check_ui(uicd, 1)
 
     # fill last block
@@ -1097,7 +1097,7 @@ def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchin
     min_cut_patch, patch_weights = get_4way_seam_patched(
         True, True, True, True, ref_block, patch_block, patching_config)
     ref_block[:] = min_cut_patch
-    update_seams_map_view(seams_map[-block_size:, :block_size], patch_weights, patching_config.blend_into_patch)
+    update_seams_map_view(seams_map[-block_size:, :block_size], patch_weights)
     check_ui(uicd, 1)
 
     # fix overvalues due to seams overlap
@@ -1195,7 +1195,7 @@ def _patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, 
     patch = find_patch_vx(True, False, True, True, ref_block, lookup_textures, patching_config, rng)
     patch, patch_weights = get_4way_seam_patched(True, False, True, True, ref_block, patch, patching_config)
     ref_block[:] = patch
-    update_seams_map_view(seams_map[ys:ye, xs - overlap:xe - overlap], patch_weights, patching_config.blend_into_patch)
+    update_seams_map_view(seams_map[ys:ye, xs - overlap:xe - overlap], patch_weights)
     check_ui(uicd, 1)
 
     # PATCH H SEAM -> RIGHT PATCH
@@ -1205,7 +1205,7 @@ def _patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, 
     patch, patch_weights = get_4way_seam_patched(True, True, True, True,
                                                  ref_block, patch, patching_config)
     ref_block[:] = patch
-    update_seams_map_view(seams_map[ys:ye, xs + overlap:xe + overlap], patch_weights, patching_config.blend_into_patch)
+    update_seams_map_view(seams_map[ys:ye, xs + overlap:xe + overlap], patch_weights)
     check_ui(uicd, 1)
 
     np.clip(seams_map, 0, 1, out=seams_map) # fix overvalues
@@ -1272,8 +1272,8 @@ def _seamless_horizontal_single(image: np.ndarray, lookup_texture: np.ndarray, p
     image[:, :block_size] = lookup_texture[y:y + image.shape[0], x:x + block_size]
     image[:, :overlap] = left_side_patch[:, :overlap]
     image[:, block_size - overlap:block_size] = right_side_patch[:, -overlap:]
-    update_seams_map_view(seams_map[:, :overlap], left_weights[:, :overlap], patching_config.blend_into_patch)
-    update_seams_map_view(seams_map[:, block_size - overlap:block_size], right_weights[:, -overlap:], patching_config.blend_into_patch)
+    update_seams_map_view(seams_map[:, :overlap], left_weights[:, :overlap])
+    update_seams_map_view(seams_map[:, block_size - overlap:block_size], right_weights[:, -overlap:])
 
     # fix overvalues due to seams overlap
     np.clip(seams_map, 0, 1, out=seams_map)

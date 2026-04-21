@@ -310,33 +310,34 @@ def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: NumPixels)
     errors *= block_len ** 2
 
 
-def update_seams_map_view(seams_map_view: np.ndarray, patch_weights: np.ndarray, blends_into_patch: bool):
-    seam_map_block = get_seam_mask_from_patch_weights(patch_weights, blends_into_patch)
+def update_seams_map_view(seams_map_view: np.ndarray, patch_weights: np.ndarray):
+    seam_map_block = get_seam_mask_from_patch_weights(patch_weights)
     clear_seam_overlapped_by_patch(seams_map_view, patch_weights)
-    #seams_map_view += seam_map_block
     np.maximum(seams_map_view, seam_map_block, out=seams_map_view)
 
 
-def get_seam_mask_from_patch_weights(patch_weights: np.ndarray, blends_into_patch: bool) -> np.ndarray:
+def get_seam_mask_from_patch_weights(patch_weights: np.ndarray) -> np.ndarray:
     """
-    Seam Mask here refers to mask containing the boundary or blending area highlighted;
-    it is not the same the mask used to merge the source with the patch.
+    Seam Mask here refers to a mask containing the boundary or blending area highlighted;
+    it is not the same as the mask used to merge the source with the patch.
     """
-    if blends_into_patch:
-        # Has blending, compute distance to 0.5
-        seam_mask = 1 - np.abs(.5 - patch_weights) * 2
-        np.clip(seam_mask, 0, 1, out=seam_mask)  # just in case
-        return seam_mask
-    else:
-        # No blending, compute gradient to find the seam
-        gx = cv2.Sobel(patch_weights, cv2.CV_32F, 1, 0, ksize=cv2.FILTER_SCHARR)
-        gy = cv2.Sobel(patch_weights, cv2.CV_32F, 0, 1, ksize=cv2.FILTER_SCHARR)
-        np.multiply(gx, gx, out=gx)
-        np.multiply(gy, gy, out=gy)
-        gx += gy
-        mags = gx / 256
-        np.clip(mags, 0, 1, out=mags)
-        return mags
+    # Soft edge component
+    # Maps 0.5 → 1.0 and 0.0 / 1.0 → 0.0.
+    seam_soft = 1.0 - np.abs(0.5 - patch_weights) * 2.0
+    np.clip(seam_soft, 0.0, 1.0, out=seam_soft)
+
+    # Hard edge component
+    # Scharr gradient magnitude highlights pixels where the mask changes sharply.
+    gx = cv2.Sobel(patch_weights, cv2.CV_32F, 1, 0, ksize=cv2.FILTER_SCHARR)
+    gy = cv2.Sobel(patch_weights, cv2.CV_32F, 0, 1, ksize=cv2.FILTER_SCHARR)
+    np.multiply(gx, gx, out=gx)
+    np.multiply(gy, gy, out=gy)
+    gx += gy
+    seam_hard = gx / 256.0           # normalise: a perfect 0→1 step edge → ≈1.0
+    np.clip(seam_hard, 0.0, 1.0, out=seam_hard)
+
+    return np.maximum(seam_soft, seam_hard)
+
 
 
 def clear_seam_overlapped_by_patch(seam_map_view: np.ndarray, patch_weights: np.ndarray):

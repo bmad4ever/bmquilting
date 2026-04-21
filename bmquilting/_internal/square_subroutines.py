@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import cv2
-
 from .seams_blur import BlendConfig, gradients_differences_at_the_seam, create_adaptive_blend_mask, _get_radii_limiter
 from .common import (
     ValidatedTexturesIterator, NumPixels, PatchIdx, Percentage, avg_squared_diff, adjust_errors_for_pystar2d_inplace,
@@ -550,12 +548,6 @@ def get_seam_mask_horizontal_min_cut(ref_block, patch_block, block_size: NumPixe
     return mask
 
 
-def update_seams_map_view(seams_map_view: np.ndarray, patch_weights: np.ndarray, blends_into_patch: bool):
-    seam_map_block = get_seam_mask_from_patch_weights(patch_weights, blends_into_patch)
-    clear_seam_overlapped_by_patch(seams_map_view, patch_weights)
-    np.maximum(seams_map_view, seam_map_block, out=seams_map_view)
-
-
 def get_seam_mask_horizontal_astar(
         ref_block, patch_block,
         block_size: NumPixels, overlap: NumPixels,
@@ -694,28 +686,6 @@ def get_seam_patched_both(ref_block, patch_block, patching_config: SquarePatchin
 
 
 # endregion
-
-
-def get_seam_mask_from_patch_weights(patch_weights: np.ndarray, blends_into_patch: bool) -> np.ndarray:
-    """
-    Seam Mask here refers to mask containing the boundary or blending area highlighted;
-    it is not the same the mask used to merge the source with the patch.
-    """
-    if blends_into_patch:
-        # Has blending, compute distance to 0.5
-        seam_mask = 1 - np.abs(.5 - patch_weights) * 2
-        np.clip(seam_mask, 0, 1, out=seam_mask)  # just in case
-        return seam_mask
-    else:
-        # No blending, find seam line
-        gx = cv.Sobel(patch_weights, cv.CV_32F, 1, 0, ksize=cv.FILTER_SCHARR)
-        gy = cv.Sobel(patch_weights, cv.CV_32F, 0, 1, ksize=cv.FILTER_SCHARR)
-        np.multiply(gx, gx, out=gx)
-        np.multiply(gy, gy, out=gy)
-        gx += gy
-        mags = gx / 256
-        np.clip(mags, 0, 1, out=mags)
-        return mags
 
 
 def clear_seam_overlapped_by_patch(seam_map_view: np.ndarray, patch_weights: np.ndarray):

@@ -390,7 +390,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
         np.minimum(mask, vignette, out=mask)
 
     # Update Seams & Filled Mask State
-    update_seams_map_view(seams, mask, config.blend_into_patch)
+    update_seams_map_view(seams, mask)
     np.maximum(mask, filled_mask[bbox_idx], out=filled_mask[bbox_idx])
 
     # Paste into the Source Image
