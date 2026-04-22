@@ -490,8 +490,13 @@ def _set_photo(label_widget, arr: np.ndarray, max_px: int) -> None:
 
 def _normalise_for_display(arr: np.ndarray) -> np.ndarray | None:
     """Convert any numeric array to uint8 BGR suitable for display / encoding."""
+    arr = arr.copy()
+
     if arr.ndim < 2:
         return None
+
+    if arr.dtype == np.bool:
+        arr = np.uint8(arr)
 
     arr = arr.copy()
 
@@ -509,6 +514,8 @@ def _normalise_for_display(arr: np.ndarray) -> np.ndarray | None:
         arr *= 255.0
 
     if arr.dtype != np.uint8:
+        arr[np.isinf(arr)] = 0
+        arr[np.isnan(arr)] = 0
         arr = arr.astype(np.uint8)
 
     if arr.ndim == 2:
@@ -532,18 +539,14 @@ def _maybe_save_frame(arr: np.ndarray, label: str) -> None:
     cv2.imwrite(str(out_path), viz)
     _frame_counter += 1
 
-def _collect_array(name: str, arr: np.ndarray, filename: str, func_name: str, adjust_data_for_viz_func: Callable | None = None) -> None:
+def _collect_array(name: str, arr: np.ndarray, filename: str, func_name: str) -> None:
     global _patch_depth
     if _patch_depth <= 0:
         return
     arr = arr.copy()
     _maybe_save_frame(arr, f"{func_name}{name}")
-    custom_viz_note = ""
-    if adjust_data_for_viz_func:
-        arr = adjust_data_for_viz_func(arr)
-        custom_viz_note = "(vizmod)"
     bare = func_name.rsplit(".", 1)[-1] if "." in func_name else func_name
-    display_name = f"[{bare}] {name} {arr.shape} {custom_viz_note}"
+    display_name = f"[{bare}] {name} {arr.shape}"
     _patch_arrays.append((display_name, arr))
 
 def _flush_arrays() -> str:
@@ -586,14 +589,12 @@ def _trace_calls(frame, event, arg):
             return _trace_calls
         lineno = frame.f_lineno
         if lineno in _BLEND_MASK_BREAKPOINTS:
-            item = _BLEND_MASK_BREAKPOINTS[lineno]
-
-            vars_list, adjust_data_for_viz_func = item if isinstance(item, tuple) else (item, None)
+            vars_list = _BLEND_MASK_BREAKPOINTS[lineno]
 
             for vname in vars_list:
                 val = frame.f_locals.get(vname)
                 if isinstance(val, np.ndarray) and val.size >= 16:
-                    _collect_array(vname, val, filename, func_name, adjust_data_for_viz_func)
+                    _collect_array(vname, val, filename, func_name)
         return _trace_calls
 
     elif event == "return":
