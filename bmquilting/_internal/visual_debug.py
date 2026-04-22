@@ -104,18 +104,8 @@ class _DebugViewer:
         """Blocking call: displays all arrays in a single window with dropdowns."""
         self._action = "next"
 
-        def to_block_array(item) -> bool:
-            name, array = item
-            to_full_names_list = ["text_view", "seams_view", "filled"]
-            to_block_names_list = ["errors", "polar", "mask", "roi"]
-            if any(fn in name for fn in to_full_names_list):
-                return False
-            if any(fn in name for fn in to_block_names_list):
-                return True
-            return max(array.shape[:2]) <= _MAX_BLOCK_DIM
-
-        self._block_arrays = [item for item in arrays if to_block_array(item)]
-        self._full_arrays = [item for item in arrays if not to_block_array(item)]
+        self._block_arrays = [item for item in arrays if _to_block_array(*item)]
+        self._full_arrays = [item for item in arrays if not _to_block_array(*item)]
 
         if not self._block_arrays and not self._full_arrays:
             raise RuntimeError("Unexpected error; nothing within _block_arrays or _full_arrays.")
@@ -309,27 +299,31 @@ class _DebugViewer:
 
         # Also save a .png for visual reference
         png_path = save_path + ".png"
-        viz = _normalise_for_display(arr)
+        viz = _make_heatmap_with_scale(arr) if panel == "block" else _normalise_for_display(arr)
         if viz is not None:
             cv2.imwrite(png_path, viz)
             print(f"[visual_debug] Saved .png → {png_path}")
 
     def _save_all_patch(self) -> None:
         """Save all arrays for the current patch into debug_viz/saved_arrays/patch_N/."""
-        all_arrays = self._block_arrays + self._full_arrays
-        if not all_arrays:
+        if not self._block_arrays and not self._full_arrays:
             return
 
         save_dir = Path.cwd() / "debug_viz" / "saved_arrays" / f"patch_{self._patch_num}"
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        for name, arr in all_arrays:
-            safe_name = name.replace(" ", "_").replace("[", " ").replace("]", " ").replace(",", " ")[:120]
-            np.save(save_dir / f"{safe_name}.npy", arr)
-            viz = _normalise_for_display(arr)
-            if viz is not None:
-                cv2.imwrite(str(save_dir / f"{safe_name}.png"), viz)
+        for array, viz_func in [
+            (self._block_arrays, _make_heatmap_with_scale),
+            (self._full_arrays, _normalise_for_display)
+        ]:
+            for name, arr in array:
+                safe_name = name.replace(" ", "_").replace("[", " ").replace("]", " ").replace(",", " ")[:120]
+                np.save(save_dir / f"{safe_name}.npy", arr)
+                viz = viz_func(arr)
+                if viz is not None:
+                    cv2.imwrite(str(save_dir / f"{safe_name}.png"), viz)
 
+        all_arrays = self._block_arrays + self._full_arrays
         print(f"[visual_debug] Saved {len(all_arrays)} arrays (.npy + .png) → {save_dir}")
 
 
@@ -355,7 +349,7 @@ def _is_single_channel(arr: np.ndarray) -> bool:
     """Return True when *arr* is effectively a scalar/grayscale image."""
     return arr.ndim == 2 or (arr.ndim == 3 and arr.shape[-1] == 1)
 
-def _make_heatmap_with_scale(arr: np.ndarray, max_px: int) -> np.ndarray | None:
+def _make_heatmap_with_scale(arr: np.ndarray, max_px: int|None = None) -> np.ndarray | None:
     """Render a single-channel array as a false-colour heatmap with a colorbar.
 
     The colorbar strip sits to the right of the image and carries three tick
@@ -398,7 +392,7 @@ def _make_heatmap_with_scale(arr: np.ndarray, max_px: int) -> np.ndarray | None:
 
     # ---- Scale heatmap to fit display box ----
     h, w = heatmap.shape[:2]
-    scale = min(max_px / w, max_px / h, 1.0)
+    scale = min(max_px / w, max_px / h, 1.0) if max_px is not None else 1
     if scale < 0.99:
         heatmap = cv2.resize(heatmap, (round(w * scale), round(h * scale)),
                              interpolation=cv2.INTER_AREA)
@@ -528,11 +522,24 @@ def _normalise_for_display(arr: np.ndarray) -> np.ndarray | None:
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _to_block_array(name, array) -> bool:
+    """:return: True for 'block', False for 'full'"""
+    #name, array = item
+    to_full_names_list = ["text_view", "seams_view", "filled"]
+    to_block_names_list = ["errors", "polar", "mask", "roi"]
+    if any(fn in name for fn in to_full_names_list):
+        return False
+    if any(fn in name for fn in to_block_names_list):
+        return True
+    return max(array.shape[:2]) <= _MAX_BLOCK_DIM
+
+
 def _maybe_save_frame(arr: np.ndarray, label: str) -> None:
     global _frame_counter
     if not _save_frames or _debug_viz_dir is None:
         return
-    viz = _normalise_for_display(arr)
+    viz = _make_heatmap_with_scale(arr) if _to_block_array(label, arr) else _normalise_for_display(arr)
+    # TODO make distinction between block & full
     if viz is None:
         return
     out_path = _debug_viz_dir / f"{_frame_counter:05d}_{label}.png"
