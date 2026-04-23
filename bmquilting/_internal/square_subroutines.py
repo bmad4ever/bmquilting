@@ -142,12 +142,17 @@ class SquarePatchingConfig:
 
     @classmethod
     def advanced(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage,
-                 blend_config: SquarePatchingBlendConfig,
+                 blend_config: SquarePatchingBlendConfig | BlendConfig,
                  seam_algorithm: SeamsAlgorithm = SeamsAlgorithm.ASTAR,
                  vignette_on_match_template: bool = False,
                  match_template_method=cv.TM_SQDIFF,
                  custom_error_func: Callable = None
                  ) -> SquarePatchingConfig:
+        if not isinstance(blend_config, SquarePatchingBlendConfig):
+            blend_config = SquarePatchingBlendConfig(
+                use_blur_radii_guess_pathfind_limiter=False,
+                **asdict(blend_config)
+            )
         seams_algo_map = {
             SeamsAlgorithm.ASTAR: get_seam_mask_horizontal_astar,
             SeamsAlgorithm.MIN_CUT: get_seam_mask_horizontal_min_cut,
@@ -166,12 +171,17 @@ class SquarePatchingConfig:
 
     @classmethod
     def custom(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage,
-               blend_config: SquarePatchingBlendConfig,
+               blend_config: SquarePatchingBlendConfig | BlendConfig,
                custom_func: CallableSeamsAlgorithm,
                vignette_on_match_template: bool = False,
                match_template_method=cv.TM_SQDIFF
                ) -> SquarePatchingConfig:
         """Create a config using a user‑supplied min‑cut function."""
+        if not isinstance(blend_config, SquarePatchingBlendConfig):
+            blend_config = SquarePatchingBlendConfig(
+                use_blur_radii_guess_pathfind_limiter=False,
+                **asdict(blend_config)
+            )
         return cls(
             block_size=block_size,
             overlap=overlap,
