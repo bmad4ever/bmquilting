@@ -435,8 +435,7 @@ def _make_heatmap_with_scale(
             roi_norm = np.zeros_like(data, dtype=np.float32)
             roi_norm[roi_mask] = ((data[roi_mask] - roi_min) / roi_rng)
             roi_norm = np.clip(roi_norm, 0, 1)
-            # Apply same gamma as main heatmap for consistency
-            roi_norm = (roi_norm ** _HEATMAP_GAMMA * 255).astype(np.uint8)
+            roi_norm = (roi_norm * 255).astype(np.uint8)
 
             # Apply same colormap to ROI values
             roi_heatmap = cv2.applyColorMap(roi_norm, _SECONDARY_COLORMAP)
@@ -509,7 +508,7 @@ def _make_heatmap_with_scale(
         roi_min, roi_max = range_of_interest
         if roi_min > roi_max:
             roi_min, roi_max = roi_max, roi_min
-        roi_cbar = _build_colorbar_canvas(h, roi_min, roi_max, _HEATMAP_GAMMA, _SECONDARY_COLORMAP)
+        roi_cbar = _build_colorbar_canvas(h, roi_min, roi_max, 1, _SECONDARY_COLORMAP)
         # Add thin separator between colorbars for visual distinction
         separator = np.full((h, 4, 3), 50, dtype=np.uint8)
         canvas_combined = np.hstack([main_cbar, separator, roi_cbar])
