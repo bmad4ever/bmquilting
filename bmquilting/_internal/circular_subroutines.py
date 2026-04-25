@@ -634,7 +634,7 @@ def set_random_patch_at_location(image: np.ndarray, filled_mask: np.ndarray,
 
 def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst: np.ndarray = None) -> np.ndarray:
     center = (patch_params.center, patch_params.center)
-    blur_k = max(3, patch_params.radius // 4 + 1)
+    blur_k = max(3, patch_params.radius // 4 ) | 1
 
     # Patch only region ( roi complement + center )
     aux = (roi>0).astype(np.uint8)      # set as uint8 for usage w/ distanceTransform
