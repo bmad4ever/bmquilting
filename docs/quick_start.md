@@ -4,48 +4,46 @@ This guide will help you get started with `bmquilting`.
 
 ## Data Types and Input Formats
 
-The core algorithms in `bmquilting` operate on **float32** numpy arrays with values in the range `[0.0, 1.0]`. This ensures compatibility with both standard images and latents.
+The core algorithms in `bmquilting` operate on **float32** NumPy arrays with values in the range `[0.0, 1.0]`. This ensures compatibility with both standard images and latents.
 
 ### Automatic `uint8` Conversion
-For convenience, the library includes a decorator that automatically handles standard image formats:
-- **Input:** If you provide a `uint8` array, it is automatically converted to `float32` and divided by `255.0`.
-- **Output:** If an automatic conversion was triggered, the output texture(s) will be converted back to `uint8`, multiplied by `255.0` and rounded.
+For convenience, the library handles standard image formats automatically:
+- **Input:** If a `uint8` array is provided, it is converted to `float32` and divided by `255.0`.
+- **Output:** If automatic conversion was triggered, the output texture(s) will be converted back to `uint8`, multiplied by `255.0`, and rounded.
 
 > [!CAUTION]
 > **Assumption of Range:** The automatic conversion assumes that all channels in a `uint8` input are interpreted in the full `[0, 255]` range. 
-> This works perfectly for **RGB/BGR**, but may lead to incorrect results for formats with different scales. In such cases, you should manually convert your data to `float32` and normalize it before calling the library functions.
+> This is appropriate for **RGB/BGR**, but may lead to incorrect results for formats with different scales. In such cases, manually convert your data to `float32` and normalise it before calling the library functions.
 
 ---
 
-## Choosing Your Method: Seams vs. Feathering (Rule of Thumb)
+## Selecting a Method: Seams vs. Feathering
 
-Selecting between Seams and Feathering depends on the "structure" of the source texture.
+Choosing between seams and feathering depends on the structure of the source texture.
 
 ### Structured Textures (Use Seams)
 **Examples:** Tiles, text, brick walls.
 
-These textures have a clear geometric shapes. 
-If you misalign a brick by even a few pixels, the human eye immediately notices the "broken" line.
-If you blur the words in a jornal page it will look unnatural. 
+These textures have clear geometric shapes. Misaligning a brick by even a few pixels is immediately noticeable. Blurring text in a journal page results in an unnatural appearance.
 
-Seam calculation finds the path of least resistance through the overlapping area, often following the natural mortar lines in the brick example.
+Seam calculation identifies the path of least resistance through the overlapping area, often following natural lines such as mortar in a brick pattern.
 
 ### Stochastic Textures (Use Feathering)
 **Examples:** Dirt, grass, granite.
 
-These textures are random or "noisy" at a local level. There is no discernible grid, and the "feel" of the texture is more important than the exact alignment of individual grains.
+These textures are random or "noisy" at a local level. There is no discernible grid, and the "feel" of the texture is more important than the precise alignment of individual grains.
 
-Feathering — a simple smooth gradient — is much faster to compute and effectively "melts" the two patches together without creating visible discontinuities.
+Feathering — a simple smooth gradient — is significantly faster to compute and effectively blends the two patches without creating visible discontinuities.
 
 ---
 
 ## 1. Square Patching
 
-Square patching is the "classic" approach where patches are arranged in a regular Cartesian grid.
+Square patching is the standard approach where patches are arranged in a regular Cartesian grid.
 
 ### Basic Generation with Seams
 
-By default, the algorithm uses A* to find optimal seams between patches, minimizing visible discontinuities.
+By default, the algorithm uses A* to find optimal seams between patches, minimising visible discontinuities.
 
 ```python
 import cv2
@@ -74,7 +72,7 @@ cv2.imwrite("out_seams.png", out_seams)
 
 ### Generation with Feathering
 
-Feathering uses a smooth gradient blend instead of calculating seams. It is faster and works well for stochastic textures.
+Feathering utilises a smooth gradient blend instead of calculating seams. It is faster and performs well for stochastic textures.
 
 ```python
 from bmquilting.square import generate_texture, SquarePatchingConfig
@@ -91,7 +89,7 @@ Circular patches are placed on a **Hexagonal Lattice**.
 
 ### Basic Generation with Seams
 
-The algorithm uses A* to create the seams in a polar unwrapped stripe of the overlaping area; unlike square patching, these seams are not necessarily optimal.
+The algorithm uses A* to create seams in a polar unwrapped stripe of the overlapping area; unlike square patching, these seams are not necessarily optimal.
 
 ```python
 import cv2
@@ -130,7 +128,7 @@ out_tex, _ = generate_cphl6p([src], config, 256, 256, 0)
 
 ## 3. Creating Seamless Textures
 
-If you have an existing image and want to make it tileable (seamless), you can patch its boundaries.
+To make an existing image tileable (seamless), its boundaries can be patched.
 
 ### Seamless Square
 ```python
@@ -144,7 +142,7 @@ seamless_img, seams_map = seamless_both_multi(src, config, seed)
 ```python
 from bmquilting.circular import seamless_both
 
-# The same applies for circular patching
+# The same applies to circular patching
 seamless_img, seams_map = seamless_both(src, config, seed)
 ```
 
@@ -152,7 +150,7 @@ seamless_img, seams_map = seamless_both(src, config, seed)
 
 ## 4. Filling Holes (Inpainting)
 
-If you have an image with missing areas (holes), you can use the `fill` functions to reconstruct those regions using source textures.
+The `fill` functions can be used to reconstruct missing areas (holes) in an image.
 
 ```python
 from bmquilting.utils import get_texture_variants, set_invalid_texture_area
@@ -166,9 +164,9 @@ logging.basicConfig(level=logging.INFO)
 target = cv2.imread("target_with_holes.png")
 mask = cv2.imread("holes_mask.png", cv2.IMREAD_GRAYSCALE)
 
-# Repurpose the target texture to be used as a source
-#  by making the hole area invalid
-#  so that no patches that overlap with it are drawn
+# Repurpose the target texture for use as a source
+# by making the hole area invalid
+# so that no patches that overlap with it are drawn
 src = set_invalid_texture_area(target, mask)
 
 # Create texture variants by rotating and mirroring the provided image
@@ -197,7 +195,7 @@ cv2.imwrite("filled_tex.png", out_tex)
 
 ## 5. Proxy Synthesis (Guided Generation)
 
-Proxy synthesis allows matching patches based on a "proxy" (e.g., a blurred or downscaled version) while reconstructing the final output with high-resolution source textures.
+Proxy synthesis allows matching patches based on a proxy (e.g. a blurred or downscaled version) while reconstructing the final output with high-resolution source textures.
 
 ```python
 from bmquilting.circular import generate_cphl6p_guided
@@ -221,7 +219,7 @@ For more details on scaling and multi-resolution guidance, see the [Proxy Synthe
 
 ## 6. Progress Tracking and Step Prediction
 
-All main generation functions are decorated with a `step_predictor`, which adds a `.predict_steps()` method to the function. This is useful for initializing progress bars in UI applications.
+All main generation functions are decorated with a `step_predictor`, which adds a `.predict_steps()` method. This is useful for initialising progress bars in UI applications.
 
 ```python
 from bmquilting.circular import generate_cphl6p, CircularPatchingConfig
@@ -243,4 +241,4 @@ For more details on integrating with a GUI, see the [UICD Demo](../extras/demos/
 
 - **Parameter Details:** See [Arguments Explained](args_explained.md).
 - **Advanced Options:** See [Advanced Configuration](advanced.md).
-- **Examples:** Check the `extras/demos/` to tinker with the methods via a GUI interface.
+- **Examples:** Check the `extras/demos/` directory to experiment with the methods via a GUI interface.
