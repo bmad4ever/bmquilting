@@ -649,7 +649,6 @@ def _setup_vignette(roi: np.ndarray, patch_params: CircularPatchParams, dst: np.
 
     # Blur vignette but keep patch only regions w/ values equal to 1
     cv2.blur(vignette, (blur_k, blur_k), dst=vignette)
-    vignette *= aux ; aux -= 1 ; vignette += aux              # result should be the same as: vignette[aux<1] = 1
-    np.clip(vignette, 0, 1, out=vignette)
+    vignette *= aux ; aux ^= 1 ; vignette += aux   # result should be the same as: vignette[aux<1] = 1
 
     return vignette
