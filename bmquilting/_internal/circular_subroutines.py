@@ -475,8 +475,6 @@ def _find_seam_endpoints(errors: np.ndarray, roi: np.ndarray, heur_override: pya
     :param roi: polar unwrapped overlap roi
     :return: a tuple containing the top and bottom row endpoints (column idx) for the min cut
     """
-    import pyastar2d
-
     err_len_div4 = errors.shape[0] // 4
     errors = np.roll(errors, -err_len_div4, axis=0)[-err_len_div4*2:, :]
     roi = np.roll(roi, -err_len_div4, axis=0)[-err_len_div4*2:, :]
