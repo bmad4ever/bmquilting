@@ -11,6 +11,12 @@ import logging
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
+try:
+    from numba import njit, prange
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+
 
 type NumPixels = int
 """the number of pixels (integer)"""
@@ -166,25 +172,40 @@ def apply_mask(src: np.ndarray, mask: np.ndarray, overwrite: bool = False):
         np.multiply(src[:, :, c_i], mask, out=output[:, :, c_i])
     return output
 
+if NUMBA_AVAILABLE:
+    @njit(cache=True, fastmath=True)
+    def _blend_kernel(fg, bg, mask, out):
+        for i in range(fg.shape[0]):
+            for j in range(fg.shape[1]):
+                m = mask[i, j]
+                for c in range(fg.shape[2]):
+                    out[i, j, c] = bg[i, j, c] + m * (fg[i, j, c] - bg[i, j, c])
+        return out
 
-def blend_with_mask(bg: np.ndarray, fg: np.ndarray, mask: np.ndarray, out: np.ndarray | None = None):
-    """
-    :param bg: "background" image  ( can NOT be used as out )
-    :param fg: "foreground" image  ( CAN BE used as out )
-    :param mask: mask with shape of length 2 (height, width)
+    def blend_with_mask(bg, fg, mask, out=None):
+        if out is None:
+            out = np.empty_like(fg)
+        return _blend_kernel(fg, bg, mask, out)
 
-    m * fg + (1 - m) * bg
+else:
+    def blend_with_mask(bg: np.ndarray, fg: np.ndarray, mask: np.ndarray, out: np.ndarray | None = None):
+        """
+        :param bg: "background" image  ( can NOT be used as out )
+        :param fg: "foreground" image  ( CAN BE used as out )
+        :param mask: mask with shape of length 2 (height, width)
 
-    Blends two buffers using the 1-pass interpolation.
-    Here it is assumed that the data is in float format, hence the use of apply_mask.
-    This is not optimal for image processing, but will accommodate alternative data inputs such as latent images.
+        m * fg + (1 - m) * bg
 
-    Note that "background" and "foreground" are merely suggestive names,
-    since zeroes are usually associated with the background.
-    """
-    diff = cv2.subtract(fg, bg, dst=out)
-    apply_mask(diff, mask, overwrite=True)
-    return cv2.add(bg, diff, dst=diff)
+        Blends two buffers using the 1-pass interpolation.
+        Here it is assumed that the data is in float format, hence the use of apply_mask.
+        This is not optimal for image processing, but will accommodate alternative data inputs such as latent images.
+
+        Note that "background" and "foreground" are merely suggestive names,
+        since zeroes are usually associated with the background.
+        """
+        diff = cv2.subtract(fg, bg, dst=out)
+        apply_mask(diff, mask, overwrite=True)
+        return cv2.add(bg, diff, dst=diff)
 
 # endregion ----- MASK UTILITIES -----
 
