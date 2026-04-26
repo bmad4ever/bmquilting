@@ -13,7 +13,11 @@ logger.addHandler(logging.NullHandler())
 
 try:
     from numba import njit
+    import numba as nb
     NUMBA_AVAILABLE = True
+    f32_2d = nb.float32[:, :]
+    f32_3d = nb.float32[:, :, :]
+    f32_3d_r = nb.types.Array(nb.float32, 3, 'A', readonly=True)
 except ImportError:
     NUMBA_AVAILABLE = False
 
@@ -161,6 +165,7 @@ def process_invalid_data(texture: np.ndarray, patch_kernel: np.ndarray) -> tuple
 
 # region    ----- MASK UTILITIES -----
 
+
 def apply_mask(src: np.ndarray, mask: np.ndarray, overwrite: bool = False):
     """
     :param src:  image or latent with shape of length 3 (height, width, channels)
@@ -173,7 +178,7 @@ def apply_mask(src: np.ndarray, mask: np.ndarray, overwrite: bool = False):
     return output
 
 if NUMBA_AVAILABLE:
-    @njit(cache=True, fastmath=True)
+    @njit(f32_3d(f32_3d_r, f32_3d_r, f32_2d, f32_3d), cache=True, fastmath=True)
     def _blend_kernel(fg, bg, mask, out):
         for i in range(fg.shape[0]):
             for j in range(fg.shape[1]):
@@ -309,60 +314,143 @@ def _select_a_random_patch(patches: list[PatchIdx], rng: Generator) -> PatchIdx:
 
 # region    ----- SEAMS AUXILIARY METHODS -----
 
-def avg_squared_diff(block1: np.ndarray, block2: np.ndarray) -> np.ndarray:
-    err = block1 - block2
-    err **= 2
-    err = err.mean(2)
-    return err
+
+if NUMBA_AVAILABLE:
+    @njit(f32_2d(f32_3d_r, f32_3d_r), cache=True, fastmath=True)
+    def avg_squared_diff(block1: np.ndarray, block2: np.ndarray) -> np.ndarray:
+        h, w, c = block1.shape
+        out = np.empty((h, w), dtype=np.float32)
+        inv_c = 1.0 / c
+
+        for i in range(h):
+            for j in range(w):
+                acc = 0.0
+                for k in range(c):
+                    d = block1[i, j, k] - block2[i, j, k]
+                    acc += d * d
+                out[i, j] = acc * inv_c
+
+        return out
 
 
-def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: NumPixels) -> None:
-    """Adjust the errors so that 1s can be used to create 'free-corridors'"""
+    @njit(nb.void(f32_2d, nb.int64), cache=True, fastmath=True)
+    def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: int) -> None:
+        scale = 255.0 * (block_len ** 2)
+        offset = float(block_len ** 2)  # added *after* the 255× scale
 
-    # scale to integer color range and offset by 1 (works for both RGB and LAB)
-    #   this is done so that the distance from 0 to the smallest possible error
-    #   keeps the same proportion relative to other error values
-    #   otherwise there would be a relative penalty mismatch for pixels with error equal to zero
-    #   when offsetting the errors, which is required for both pyastar2d (min. value accepted as weight is 1)
-    errors *= 255
-    errors += 1
-
-    # make the lowest value big enough for 1 to be negligible (paths created w/ 1s become "free-corridors")
-    errors *= block_len ** 2
+        h, w = errors.shape
+        for i in range(h):
+            for j in range(w):
+                errors[i, j] = errors[i, j] * scale + offset
 
 
-def update_seams_map_view(seams_map_view: np.ndarray, patch_weights: np.ndarray):
-    seam_map_block = get_seam_mask_from_patch_weights(patch_weights)
-    clear_seam_overlapped_by_patch(seams_map_view, patch_weights)
-    np.maximum(seams_map_view, seam_map_block, out=seams_map_view)
+    @njit(nb.void(f32_2d, f32_2d, f32_2d, f32_2d),cache=True, fastmath=True)
+    def _update_seams_kernel(
+        seams_map_view: np.ndarray,
+        patch_weights: np.ndarray,
+        gx: np.ndarray,
+        gy: np.ndarray,
+    ) -> None:
+        """
+        Fused kernel — runs all three logical steps in a single pass:
+          1. build seam_soft  (soft blending boundary)
+          2. build seam_hard  (Scharr gradient boundary, gx/gy precomputed by caller)
+          3. clear_seam_overlapped_by_patch + maximum-merge into seams_map_view
+        """
+        rows, cols = patch_weights.shape
+        for i in range(rows):
+            for j in range(cols):
+                w = patch_weights[i, j]
+
+                # --- soft edge: peaks at w=0.5, zero at w=0 and w=1 ---
+                soft = 1.0 - abs(0.5 - w) * 2.0
+                if soft < 0.0:
+                    soft = 0.0
+                # soft <= 1.0 is guaranteed by construction, no upper clip needed
+
+                # --- hard edge: Scharr gradient magnitude, normalised ---
+                gxi = gx[i, j]
+                gyi = gy[i, j]
+                hard = (gxi * gxi + gyi * gyi) / 256.0
+                if hard > 1.0:
+                    hard = 1.0
+
+                # --- seam_map_block for this pixel ---
+                block = soft if soft > hard else hard
+
+                # --- clear overlap then merge (order must match the original) ---
+                # original: view *= (1 - w)  then  view = max(view, block)
+                current = seams_map_view[i, j] * (1.0 - w)
+                seams_map_view[i, j] = current if current > block else block
+
+    def update_seams_map_view(
+        seams_map_view: np.ndarray,
+        patch_weights: np.ndarray,
+    ) -> None:
+        """
+        Precompute Scharr gradients with OpenCV (no clean Numba equivalent),
+        then hand everything else to the fused Numba kernel.
+        """
+        gx = cv2.Sobel(patch_weights, cv2.CV_32F, 1, 0, ksize=cv2.FILTER_SCHARR)
+        gy = cv2.Sobel(patch_weights, cv2.CV_32F, 0, 1, ksize=cv2.FILTER_SCHARR)
+        _update_seams_kernel(seams_map_view, patch_weights, gx, gy)
+
+else:  # ------- NUMPY IMPLEMENTATION -------
+    def avg_squared_diff(block1: np.ndarray, block2: np.ndarray) -> np.ndarray:
+        err = block1 - block2
+        err **= 2
+        err = err.mean(2)
+        return err
 
 
-def get_seam_mask_from_patch_weights(patch_weights: np.ndarray) -> np.ndarray:
-    """
-    Seam Mask here refers to a mask containing the boundary or blending area highlighted;
-    it is not the same as the mask used to merge the source with the patch.
-    """
-    # Soft edge component
-    # Maps 0.5 → 1.0 and 0.0 / 1.0 → 0.0.
-    seam_soft = 1.0 - np.abs(0.5 - patch_weights) * 2.0
-    np.clip(seam_soft, 0.0, 1.0, out=seam_soft)
+    def adjust_errors_for_pystar2d_inplace(errors: np.ndarray, block_len: NumPixels) -> None:
+        """Adjust the errors so that 1s can be used to create 'free-corridors'"""
 
-    # Hard edge component
-    # Scharr gradient magnitude highlights pixels where the mask changes sharply.
-    gx = cv2.Sobel(patch_weights, cv2.CV_32F, 1, 0, ksize=cv2.FILTER_SCHARR)
-    gy = cv2.Sobel(patch_weights, cv2.CV_32F, 0, 1, ksize=cv2.FILTER_SCHARR)
-    np.multiply(gx, gx, out=gx)
-    np.multiply(gy, gy, out=gy)
-    gx += gy
-    seam_hard = gx / 256.0           # normalise: a perfect 0→1 step edge → ≈1.0
-    np.clip(seam_hard, 0.0, 1.0, out=seam_hard)
+        # scale to integer color range and offset by 1 (works for both RGB and LAB)
+        #   this is done so that the distance from 0 to the smallest possible error
+        #   keeps the same proportion relative to other error values
+        #   otherwise there would be a relative penalty mismatch for pixels with error equal to zero
+        #   when offsetting the errors, which is required for both pyastar2d (min. value accepted as weight is 1)
+        errors *= 255
+        errors += 1
 
-    return np.maximum(seam_soft, seam_hard)
+        # make the lowest value big enough for 1 to be negligible (paths created w/ 1s become "free-corridors")
+        errors *= block_len ** 2
+
+    def update_seams_map_view(seams_map_view: np.ndarray, patch_weights: np.ndarray):
+        seam_map_block = get_seam_mask_from_patch_weights(patch_weights)
+        clear_seam_overlapped_by_patch(seams_map_view, patch_weights)
+        np.maximum(seams_map_view, seam_map_block, out=seams_map_view)
 
 
+    def get_seam_mask_from_patch_weights(patch_weights: np.ndarray) -> np.ndarray:
+        """
+        Seam Mask here refers to a mask containing the boundary or blending area highlighted;
+        it is not the same as the mask used to merge the source with the patch.
+        """
+        # Soft edge component
+        # Maps 0.5 → 1.0 and 0.0 / 1.0 → 0.0.
+        seam_soft = 1.0 - np.abs(0.5 - patch_weights) * 2.0
+        np.clip(seam_soft, 0.0, 1.0, out=seam_soft)
 
-def clear_seam_overlapped_by_patch(seam_map_view: np.ndarray, patch_weights: np.ndarray):
-    seam_map_view *= 1 - patch_weights
+        # Hard edge component
+        # Scharr gradient magnitude highlights pixels where the mask changes sharply.
+        gx = cv2.Sobel(patch_weights, cv2.CV_32F, 1, 0, ksize=cv2.FILTER_SCHARR)
+        gy = cv2.Sobel(patch_weights, cv2.CV_32F, 0, 1, ksize=cv2.FILTER_SCHARR)
+        np.multiply(gx, gx, out=gx)
+        np.multiply(gy, gy, out=gy)
+        gx += gy
+        seam_hard = gx / 256.0           # normalise: a perfect 0→1 step edge → ≈1.0
+        np.clip(seam_hard, 0.0, 1.0, out=seam_hard)
+
+        return np.maximum(seam_soft, seam_hard)
+
+
+    def clear_seam_overlapped_by_patch(seam_map_view: np.ndarray, patch_weights: np.ndarray):
+        seam_map_view *= 1 - patch_weights
+
+
+
 
 # endregion    ----- SEAMS AUXILIARY METHODS -----
 
