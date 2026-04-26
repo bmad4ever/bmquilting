@@ -408,6 +408,24 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
 
 # region "Min Cut" Related Functions  ____START
 
+if NUMBA_AVAILABLE:
+    @njit(cache=True)
+    def  _setup_escape_path_and_impassable_area(errors, roi):
+        """updates errors inplace"""
+        rows, cols = errors.shape
+        last = cols - 1
+        for r in range(rows):
+            for c in range(last):
+                if roi[r, c] == 0:
+                    errors[r, c] = np.inf
+            errors[r, last] = roi[r, last] * errors[r, last] + (1 - roi[r, last])
+else:
+    def _setup_escape_path_and_impassable_area(errors: np.ndarray, roi: np.ndarray):
+        """updates errors inplace"""
+        errors[:, -1] = roi[:, -1] * errors[:, -1] + (1 - roi[:, -1])  # bottom holes escape path
+        errors[:, :-1][roi[:, :-1] == 0] = np.inf                      # don't travel outside the mask, unless via the escape path
+
+
 def _compute_seam(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPixels,
                   heur_override:pyastar2d.Heuristic=0) -> np.ndarray:
     """
@@ -427,8 +445,7 @@ def _compute_seam(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPi
         # search for the cut endpoints at the top & bottom so that the path is not broken
         start_x, end_x = _find_seam_endpoints(errors, roi, heur_override)
 
-    errors[:, -1] = roi[:, -1] * errors[:, -1] + (1 - roi[:, -1])  # bottom holes escape path
-    errors[:, :-1][roi[:, :-1] == 0] = np.inf  # don't travel outside the mask, unless via the escape path
+    _setup_escape_path_and_impassable_area(errors, roi)
 
     start = (0, start_x)
     end = (errors.shape[0] - 1, end_x)
