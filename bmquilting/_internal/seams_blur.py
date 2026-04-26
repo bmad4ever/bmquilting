@@ -20,7 +20,7 @@ USE_SCHARR_WHEN_KSIZE_EQUALS_3 = True
 """When cv2.Sobel is used, use ksize=cv2.FILTER_SCHARR if the provided kernel size is equal to 3."""
 
 
-if False:
+if NUMBA_AVAILABLE:
     @njit(cache=True, fastmath=True)
     def einsum_jk(dgxy, out):
         i, j, k, l = dgxy.shape
