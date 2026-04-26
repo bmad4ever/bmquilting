@@ -9,14 +9,36 @@ import cv2
 from ..utils.functions import FuncWrapper, LogScalingFunc, TwoNTS
 from .common import NumPixels
 
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+
 
 USE_SCHARR_WHEN_KSIZE_EQUALS_3 = True
 """When cv2.Sobel is used, use ksize=cv2.FILTER_SCHARR if the provided kernel size is equal to 3."""
 
 
-def sum_squared_differences(dgx: np.ndarray, dgy: np.ndarray, dgxy: np.ndarray, out: np.ndarray=None) -> np.ndarray:
-    """to be used with gradients' differences"""
-    return np.einsum('ijkl,ijkl->jk', dgxy, dgxy, out=out)
+if False:
+    @njit(cache=True, fastmath=True)
+    def einsum_jk(dgxy, out):
+        i, j, k, l = dgxy.shape
+        for ii in range(i):
+            for jj in range(j):
+                for kk in range(k):
+                    for ll in range(l):
+                        v = dgxy[ii, jj, kk, ll]
+                        out[jj, kk] += v * v
+        return out
+
+    def sum_squared_differences(dgx: np.ndarray, dgy: np.ndarray, dgxy: np.ndarray, out: np.ndarray):
+        return einsum_jk(dgxy, out)
+
+else:
+    def sum_squared_differences(dgx: np.ndarray, dgy: np.ndarray, dgxy: np.ndarray, out: np.ndarray) -> np.ndarray:
+        """to be used with gradients' differences"""
+        return np.einsum('ijkl,ijkl->jk', dgxy, dgxy, out=out)
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,8 +242,8 @@ def ___get_max_possible_gradient_diff(sobel_ksize: int, num_channels: int, norm_
     dummy_dgxy = np.full((2, 1, 1, num_channels), max_diff_val)
     dummy_dgx = dummy_dgxy[0]
     dummy_dgy = dummy_dgxy[1]
-
-    return float(norm_func(dummy_dgx, dummy_dgy, dummy_dgxy))
+    dummy_out = np.empty(dummy_dgx.shape[:2])
+    return float(norm_func(dummy_dgx, dummy_dgy, dummy_dgxy, dummy_out))
 
 
 @cache

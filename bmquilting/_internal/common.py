@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 try:
-    from numba import njit, prange
+    from numba import njit
     NUMBA_AVAILABLE = True
 except ImportError:
     NUMBA_AVAILABLE = False
