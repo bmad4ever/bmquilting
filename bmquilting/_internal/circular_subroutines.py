@@ -15,6 +15,12 @@ from .common import (
 from .seams_blur import BlendConfig, gradients_differences_at_the_seam, create_adaptive_blend_mask, _circular_kernel
 from .common import NumPixels, Percentage, PatchIdx
 
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+
 
 # region ==== CONFIG DATACLASSES ====
 
@@ -411,7 +417,7 @@ def _compute_seam(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPi
     adjust_errors_for_pystar2d_inplace(errors, errors.shape[0])
 
     offset_row = _find_first_2adjacent_all_zero_rows(roi[:, non_overlap_radius:])
-    if offset_row is not None:
+    if offset_row >= 0:
         # 2 adjacent all-0s rows exist
         errors = np.roll(errors, -offset_row, axis=0)
         roi = np.roll(roi, -offset_row, axis=0)
@@ -440,15 +446,31 @@ def _compute_seam(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPi
     return mask
 
 
-def _find_first_2adjacent_all_zero_rows(mask:np.ndarray) -> int | None:
-    """:return: the index of the second all zero row, or None if none found"""
-    prev = False
-    for i, row in enumerate(mask):
-        current = all(pixel == 0 for pixel in row)
-        if prev and current:
-            return i
-        prev = current
-    return None
+if NUMBA_AVAILABLE:
+    @njit(cache=True)
+    def _find_first_2adjacent_all_zero_rows(mask: np.ndarray) -> int:
+        """:return: index of the second all-zero row, or -1 if not found"""
+        prev = False
+        for i in range(mask.shape[0]):
+            current = True
+            for j in range(mask.shape[1]):
+                if mask[i, j] != 0:
+                    current = False
+                    break  # break early
+            if prev and current:
+                return i
+            prev = current
+        return -1
+else:
+    def _find_first_2adjacent_all_zero_rows(mask:np.ndarray) -> int:
+        """:return: the index of the second all zero row, or -1 if not found"""
+        prev = False
+        for i, row in enumerate(mask):
+            current = all(pixel == 0 for pixel in row)
+            if prev and current:
+                return i
+            prev = current
+        return -1
 
 
 def _x_squared_distance_1d(a_1d: np.ndarray, b_1d: np.ndarray) -> np.ndarray:
