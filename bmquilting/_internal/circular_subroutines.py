@@ -525,8 +525,7 @@ def _find_seam_endpoints(errors: np.ndarray, roi: np.ndarray, heur_override: pya
 
     maze[0, :] = 1
     maze[-1, :] = 1
-    maze[1:-1, -1] = roi[:, -1] * maze[1:-1, -1] + (1 - roi[:, -1])  # bottom holes escape path
-    maze[1:-1, :-1][roi[:, :-1] == 0] = np.inf  # don't travel outside the mask, unless via the escape path
+    _setup_escape_path_and_impassable_area(maze[1:-1], roi)
 
     start = (0, maze.shape[1] - 1)
     end = (maze.shape[0] - 1, maze.shape[1] - 1)
