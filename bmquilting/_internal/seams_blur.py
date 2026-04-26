@@ -21,7 +21,11 @@ USE_SCHARR_WHEN_KSIZE_EQUALS_3 = True
 
 
 if NUMBA_AVAILABLE:
-    @njit(cache=True, fastmath=True)
+    import numba as nb
+    f32_2d = nb.float32[:, :]
+    f32_4d = nb.float32[:, :, :, :]
+
+    @njit(f32_2d(f32_4d, f32_2d), cache=True, fastmath=True)
     def einsum_jk(dgxy, out):
         i, j, k, l = dgxy.shape
         for ii in range(i):
@@ -239,10 +243,10 @@ def ___get_max_possible_gradient_diff(sobel_ksize: int, num_channels: int, norm_
     max_diff_val = 2.0 * K                          # maximum possible difference for any single component (dx or dy)
 
     # Dummy tensors representing the maximum possible delta
-    dummy_dgxy = np.full((2, 1, 1, num_channels), max_diff_val)
+    dummy_dgxy = np.full((2, 1, 1, num_channels), max_diff_val, dtype=np.float32)
     dummy_dgx = dummy_dgxy[0]
     dummy_dgy = dummy_dgxy[1]
-    dummy_out = np.empty(dummy_dgx.shape[:2])
+    dummy_out = np.empty(dummy_dgx.shape[:2], dtype=np.float32)
     return float(norm_func(dummy_dgx, dummy_dgy, dummy_dgxy, dummy_out))
 
 

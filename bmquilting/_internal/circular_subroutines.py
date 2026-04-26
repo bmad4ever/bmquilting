@@ -409,7 +409,10 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
 # region "Min Cut" Related Functions  ____START
 
 if NUMBA_AVAILABLE:
-    @njit(cache=True)
+    import numba as nb
+    f32_2d = nb.float32[:, :]
+
+    @njit(nb.void(f32_2d, f32_2d), cache=True)
     def  _setup_escape_path_and_impassable_area(errors, roi):
         """updates errors inplace"""
         rows, cols = errors.shape
@@ -419,11 +422,36 @@ if NUMBA_AVAILABLE:
                 if roi[r, c] == 0:
                     errors[r, c] = np.inf
             errors[r, last] = roi[r, last] * errors[r, last] + (1 - roi[r, last])
-else:
+
+    @njit(nb.int64(f32_2d), cache=True)
+    def _find_first_2adjacent_all_zero_rows(mask: np.ndarray) -> int:
+        """:return: index of the second all-zero row, or -1 if not found"""
+        prev = False
+        for i in range(mask.shape[0]):
+            current = True
+            for j in range(mask.shape[1]):
+                if mask[i, j] != 0:
+                    current = False
+                    break  # break early
+            if prev and current:
+                return i
+            prev = current
+        return -1
+else:   # ------- NUMPY IMPLEMENTATION -------
     def _setup_escape_path_and_impassable_area(errors: np.ndarray, roi: np.ndarray):
         """updates errors inplace"""
         errors[:, -1] = roi[:, -1] * errors[:, -1] + (1 - roi[:, -1])  # bottom holes escape path
         errors[:, :-1][roi[:, :-1] == 0] = np.inf                      # don't travel outside the mask, unless via the escape path
+
+    def _find_first_2adjacent_all_zero_rows(mask:np.ndarray) -> int:
+        """:return: the index of the second all zero row, or -1 if not found"""
+        prev = False
+        for i, row in enumerate(mask):
+            current = all(pixel == 0 for pixel in row)
+            if prev and current:
+                return i
+            prev = current
+        return -1
 
 
 def _compute_seam(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPixels,
@@ -461,33 +489,6 @@ def _compute_seam(errors: np.ndarray, roi: np.ndarray, non_overlap_radius: NumPi
         mask = np.roll(mask, offset_row, axis=0)
 
     return mask
-
-
-if NUMBA_AVAILABLE:
-    @njit(cache=True)
-    def _find_first_2adjacent_all_zero_rows(mask: np.ndarray) -> int:
-        """:return: index of the second all-zero row, or -1 if not found"""
-        prev = False
-        for i in range(mask.shape[0]):
-            current = True
-            for j in range(mask.shape[1]):
-                if mask[i, j] != 0:
-                    current = False
-                    break  # break early
-            if prev and current:
-                return i
-            prev = current
-        return -1
-else:
-    def _find_first_2adjacent_all_zero_rows(mask:np.ndarray) -> int:
-        """:return: the index of the second all zero row, or -1 if not found"""
-        prev = False
-        for i, row in enumerate(mask):
-            current = all(pixel == 0 for pixel in row)
-            if prev and current:
-                return i
-            prev = current
-        return -1
 
 
 def _x_squared_distance_1d(a_1d: np.ndarray, b_1d: np.ndarray) -> np.ndarray:
