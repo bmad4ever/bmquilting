@@ -433,7 +433,7 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
 
 # region -- step predictor methods --
 
-def _generate_chlp6p_step_predictor(patching_config: CircularPatchingConfig, out_h: NumPixels, out_w: NumPixels):
+def _generate_cphl6p_step_predictor(patching_config: CircularPatchingConfig, out_h: NumPixels, out_w: NumPixels):
     pp = patching_config.patch_params
     extended_h, extended_w = _get_extended_size(pp.block_size, out_h), _get_extended_size(pp.block_size, out_w)
     margin_x, margin_y = (extended_w - out_w) // 2, (extended_h - out_h) // 2
@@ -448,13 +448,13 @@ def _generate_chlp6p_step_predictor(patching_config: CircularPatchingConfig, out
 
 
 def _generate_guided_chlp6p_step_predictor(patching_config: CircularPatchingConfig, out_h: int, out_w: int):
-    return _generate_chlp6p_step_predictor(patching_config, out_h, out_w) * 2
+    return _generate_cphl6p_step_predictor(patching_config, out_h, out_w) * 2
 
 
 # endregion -- step predictor methods --
 
 
-@step_predictor(_generate_chlp6p_step_predictor)
+@step_predictor(_generate_cphl6p_step_predictor)
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
