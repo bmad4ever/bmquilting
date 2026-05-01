@@ -146,9 +146,9 @@ def process_invalid_data(texture: np.ndarray, patch_kernel: np.ndarray) -> tuple
     """
     valid_mask = np.isfinite(texture)
     if np.all(valid_mask):
-        return texture, None
+        return np.ascontiguousarray(texture), None
 
-    processed_texture = np.copy(texture)
+    processed_texture = np.copy(texture, order='C')
     invalid_mask = np.logical_not(valid_mask, out=valid_mask)
     processed_texture[invalid_mask] = FAKE_OUTLIER
 
