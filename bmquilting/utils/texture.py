@@ -56,7 +56,7 @@ def get_texture_variants(
         texture_variants.append(np.flipud(np.fliplr(transposed)))
 
     for idx, tex in enumerate(texture_variants):
-        texture_variants[idx] = tex.copy()
+        texture_variants[idx] = np.ascontiguousarray(tex)
 
     return texture_variants
 
