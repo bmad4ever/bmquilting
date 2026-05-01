@@ -102,7 +102,7 @@ def _periodic_resize(src: np.ndarray, dsize: tuple[int, int], interpolation=cv2.
 
     # Extract the center
     off_w, off_h = pad * scale_w, pad * scale_h
-    return resized_padded[off_h:off_h + dsize[1], off_w:off_w + dsize[0]].copy()
+    return resized_padded[off_h:off_h + dsize[1], off_w:off_w + dsize[0]].copy(order="C")
 
 def _get_proxy_configs(source_config: CircularPatchingConfig, scale: int) -> tuple[
     CircularPatchingConfig, CircularPatchingConfig]:
@@ -807,7 +807,7 @@ def _make_seamless_vertical_circular(
         lookup_textures = [target]
 
     row = target.shape[0]//2
-    target = np.roll(target, row, axis=0).copy()
+    target = np.ascontiguousarray(np.roll(target, row, axis=0))
     return _fill_hline(
         y=row, x_bounds=None,
         target=target, source_textures=lookup_textures,
@@ -823,11 +823,12 @@ def _make_seamless_horizontal_circular(
         _record: Callable[[ProxyPatch], None] = lambda _: None,
 ) -> tuple[np.ndarray, np.ndarray]:
     texture, seams = _make_seamless_vertical_circular(
-        target=np.rot90(target).copy(), _seams=None if _seams is None else np.rot90(_seams),
-        lookup_textures=None if not lookup_textures else [np.rot90(t).copy() for t in lookup_textures],
+        # views are copied into C contiguous arrays later; no need to redo the operation here
+        target=np.rot90(target), _seams=None if _seams is None else np.rot90(_seams),
+        lookup_textures=None if not lookup_textures else [np.rot90(t) for t in lookup_textures],
         patching_config=patching_config,
         seed=seed, uicd=uicd, _record=_record)
-    return np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy()
+    return np.rot90(texture, -1).copy(order="C"), np.rot90(seams, -1).copy(order="C")
 
 def _adjust_seamboth_seams(
         arrays2adjust: list[np.ndarray],
@@ -841,7 +842,7 @@ def _adjust_seamboth_seams(
     if roll_amount is None:
         radius = patching_config.patch_params.radius
         roll_amount = round(-radius * 1.1)
-    return [np.roll(a, roll_amount, axis=0) for a in arrays2adjust]
+    return [np.ascontiguousarray(np.roll(a, roll_amount, axis=0)) for a in arrays2adjust]
 
 def _patch_hseam(
         texture: np.ndarray, seams: np.ndarray,
@@ -870,15 +871,15 @@ def _patch_hseam(
 def _guided_make_seamless_vertical(
         proxy_target: np.ndarray, target: np.ndarray,
         proxy_textures: list[np.ndarray] | None, source_textures: list[np.ndarray] | None,
-        patching_config: CircularPatchingConfig,
+        scale: int,
+        adj_source_config: CircularPatchingConfig,
+        proxy_config: CircularPatchingConfig,
         seed: int | SeedSequence, uicd: UiCoordData | None = None,
         _proxy_seams: np.ndarray | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """:param scale: pre-computed source/proxy"""
     source_textures = source_textures if source_textures else [target]
     proxy_textures = proxy_textures if proxy_textures else [proxy_target]
-
-    scale = _get_scale_factor(proxy_textures, source_textures)
-    adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
 
     proxy_data = []
     def record(idx_mask_tuple: ProxyPatch):
@@ -922,21 +923,23 @@ def _guided_make_seamless_vertical(
 def _guided_make_seamless_horizontal(
         proxy_target: np.ndarray, target: np.ndarray,
         proxy_textures: list[np.ndarray] | None, source_textures: list[np.ndarray] | None,
-        patching_config: CircularPatchingConfig,
+        scale: int,
+        adj_source_config: CircularPatchingConfig,
+        proxy_config: CircularPatchingConfig,
         seed: int | SeedSequence, uicd: UiCoordData | None = None,
         _proxy_seams: np.ndarray | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    # _make_seamless method copy the arrays, no need to copy them here
     texture, seams, proxy, p_seams = _guided_make_seamless_vertical(
-        proxy_target=np.rot90(proxy_target).copy(),
+        # arrays are made contiguous further down the line
+        proxy_target=np.rot90(proxy_target),
         target=np.rot90(target),
-        proxy_textures=None if not proxy_textures else [np.rot90(t).copy() for t in proxy_textures],
+        proxy_textures=None if not proxy_textures else [np.rot90(t) for t in proxy_textures],
         source_textures=None if not source_textures else [np.rot90(t) for t in source_textures],
-        patching_config=patching_config,
+        scale=scale, adj_source_config=adj_source_config, proxy_config=proxy_config,
         seed=seed, uicd=uicd, _proxy_seams=None if _proxy_seams is None else np.rot90(_proxy_seams)
     )
-    return (np.rot90(texture, -1).copy(), np.rot90(seams, -1).copy(),
-            np.rot90(proxy, -1).copy(), np.rot90(p_seams, -1).copy())
+    return (np.rot90(texture, -1).copy(order="C"), np.rot90(seams, -1).copy(order="C"),
+            np.rot90(proxy, -1).copy(order="C"), np.rot90(p_seams, -1).copy(order="C"))
 
 
 # region  -- step predictor methods --
@@ -1012,7 +1015,7 @@ def seamless_both(
     texture, seams = _patch_hseam(texture, seams, lookup_textures, patching_config, next(seed_iterator), uicd)
 
     texture, seams = _adjust_seamboth_seams([texture, seams], patching_config)
-    return texture.copy(), seams.copy()
+    return texture, seams
 
 
 @step_predictor(_guided_make_seamless_horizontal_circular_steps)
@@ -1041,10 +1044,12 @@ def seamless_both_guided(
 
     # Vertical pass; then Horizontal pass
     texture, seams, proxy, p_seams = _guided_make_seamless_vertical(
-        proxy_target, target, proxy_textures, source_textures, adj_source_config, next(seed_iterator), uicd)
+        proxy_target, target, proxy_textures, source_textures,
+        scale, adj_source_config, proxy_config, next(seed_iterator), uicd)
 
     texture, seams, proxy, p_seams = _guided_make_seamless_horizontal(
-        proxy, texture, proxy_textures, source_textures, adj_source_config, next(seed_iterator), uicd, _proxy_seams=p_seams)
+        proxy, texture, proxy_textures, source_textures,
+        scale, adj_source_config, proxy_config, next(seed_iterator), uicd, _proxy_seams=p_seams)
 
     # Calculate synchronized rolls based on proxy scale
     y_proxy = proxy.shape[0] // 2
@@ -1083,7 +1088,7 @@ def seamless_both_guided(
     seams = np.roll(seams, s_adj_roll, axis=0)
     proxy = np.roll(proxy, p_adj_roll, axis=0)
 
-    return texture.copy(), seams.copy(), proxy.copy()
+    return texture, seams, proxy
 
 
 @step_predictor(_guided_make_seamless_vertical_circular_steps)
@@ -1104,9 +1109,9 @@ def seamless_vertical_guided(
     (radius and spacing) may be auto-adjusted to ensure perfect grid alignment and prevent spatial drift.
     """
     scale = _get_scale_factor(proxy_textures, source_textures)
-    adj_source_config, _ = _get_proxy_configs(patching_config, scale)
+    adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
     return _guided_make_seamless_vertical(
-        proxy_target, target, proxy_textures, source_textures, adj_source_config, seed, uicd)[:3]
+        proxy_target, target, proxy_textures, source_textures, scale, adj_source_config, proxy_config, seed, uicd)[:3]
 
 
 @step_predictor(_guided_make_seamless_horizontal_circular_steps)
@@ -1127,9 +1132,9 @@ def seamless_horizontal_guided(
     (radius and spacing) may be auto-adjusted to ensure perfect grid alignment and prevent spatial drift.
     """
     scale = _get_scale_factor(proxy_textures, source_textures)
-    adj_source_config, _ = _get_proxy_configs(patching_config, scale)
+    adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
     return _guided_make_seamless_horizontal(
-        proxy_target, target, proxy_textures, source_textures, adj_source_config, seed, uicd)[:3]
+        proxy_target, target, proxy_textures, source_textures, scale, adj_source_config, proxy_config, seed, uicd)[:3]
 
 # endregion ===== MAKE SEAMLESS FUNCTIONS =====
 
