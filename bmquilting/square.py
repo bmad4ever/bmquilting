@@ -88,16 +88,12 @@ def process_block(text_view: np.ndarray, seams_view: np.ndarray,
 
 
 @handle_ui_interrupts(auto_close=True, re_raise=True)
-def _pfill_column(lookup_textures: ValidatedTexturesIterator,
+def _pfill_column(lookup_textures: SharedTextureList,
                   initial_block, patching_config: SquarePatchingConfig, rows: int, seed: SeedSequence,
                   initial_block_seams: np.ndarray = None, uicd: UiCoordData | None = None
                   ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     block_size, overlap = patching_config.block_size, patching_config.overlap
-
-    if isinstance(lookup_textures, SharedTextureList):
-        num_channels, dtype = lookup_textures.metadata.global_number_of_channels, lookup_textures.metadata.global_dtype
-    else:
-        num_channels, dtype = lookup_textures[0].shape, lookup_textures[0].dtype
+    num_channels, dtype = lookup_textures.metadata.global_number_of_channels, lookup_textures.metadata.global_dtype
 
     texture_map = np.zeros(((initial_block.shape[0] + rows * (block_size - overlap)), block_size, num_channels),
                            dtype=dtype)
@@ -115,7 +111,7 @@ def _pfill_column(lookup_textures: ValidatedTexturesIterator,
 
 
 def _fill_column_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarray,
-                         lookup_textures: TextureList | SharedTextureList,
+                         lookup_textures: ValidatedTexturesIterator,
                          patching_config: SquarePatchingConfig, rng: np.random.Generator, uicd: UiCoordData | None = None):
     find_patch_below = get_find_patch_below_method()
     b, o = patching_config.block_size, patching_config.overlap
@@ -127,16 +123,12 @@ def _fill_column_inplace(texture_map_view: np.ndarray, seams_map_view: np.ndarra
 
 
 @handle_ui_interrupts(auto_close=True, re_raise=True)
-def _pfill_row(lookup_textures: TextureList | SharedTextureList,
+def _pfill_row(lookup_textures: SharedTextureList,
                initial_block, patching_config: SquarePatchingConfig, columns: int, seed: SeedSequence,
                initial_block_seams: np.ndarray = None, uicd: UiCoordData | None = None
                ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     block_size, overlap = patching_config.block_size, patching_config.overlap
-
-    if isinstance(lookup_textures, SharedTextureList):
-        num_channels, dtype = lookup_textures.metadata.global_number_of_channels, lookup_textures.metadata.global_dtype
-    else:
-        num_channels, dtype = lookup_textures[0].shape, lookup_textures[0].dtype
+    num_channels, dtype = lookup_textures.metadata.global_number_of_channels, lookup_textures.metadata.global_dtype
 
     texture_map = np.zeros((block_size, (initial_block.shape[1] + columns * (block_size - overlap)), num_channels),
                            dtype=dtype)
