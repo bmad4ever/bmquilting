@@ -15,9 +15,6 @@ setup(
     ],
     extras_require={
         'fast': ['numba>=0.62.1'],
-        'extras': [
-            'bmq-extras @ git+https://github.com/bmad4ever/bmquilting.git#egg=bmq-extras&subdirectory=extras'
-        ],
     }
 )
 
