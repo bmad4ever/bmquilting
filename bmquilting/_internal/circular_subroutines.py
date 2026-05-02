@@ -257,6 +257,10 @@ def _get_circle_mask(patch_params: CircularPatchParams) -> np.ndarray:
 def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
                               roi: np.ndarray, block: np.ndarray, patch: np.ndarray, filled: np.ndarray,
                               _tmp: np.ndarray) -> np.ndarray:
+    """
+    :param _tmp: used to computed patched, should have the same shape as block & patch.
+    """
+
     pp = circ_patching_config.patch_params
 
     # Compute Errors prior to warping
@@ -392,7 +396,7 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
 
     # (optional) Apply Vignette
     if config.blend_into_patch and config.blend_config.use_vignette:
-        vignette = _setup_vignette(roi, pp, dst=aux.reshape(aux.shape[0], -1))
+        vignette = _setup_vignette(roi, pp)
         np.minimum(mask, vignette, out=mask)
 
     # Update Seams & Filled Mask State
@@ -526,7 +530,6 @@ def _find_seam_endpoints(errors: np.ndarray, roi: np.ndarray, heur_override: pya
     maze[0, :] = 1
     maze[-1, :] = 1
     _setup_escape_path_and_impassable_area(maze[1:-1], roi)
-
     start = (0, maze.shape[1] - 1)
     end = (maze.shape[0] - 1, maze.shape[1] - 1)
 
