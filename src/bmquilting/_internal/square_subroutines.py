@@ -141,6 +141,22 @@ class SquarePatchingConfig:
         )
 
     @classmethod
+    def with_hybrid(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage) -> SquarePatchingConfig:
+        blend_config = BlendConfig.auto_blend_config_2(block_size, overlap, True)
+        blend_config = SquarePatchingBlendConfig(**asdict(blend_config))
+
+        return cls(
+            block_size=block_size,
+            overlap=overlap,
+            tolerance=tolerance,
+            blend_config=blend_config,
+            vignette_on_match_template=False,
+            match_template_method=cv.TM_SQDIFF,
+            _compute_seam_callable=get_seam_mask_horizontal_astar,
+            _error_func=avg_squared_diff
+        )
+
+    @classmethod
     def advanced(cls, block_size: NumPixels, overlap: NumPixels, tolerance: Percentage,
                  blend_config: SquarePatchingBlendConfig | BlendConfig,
                  seam_algorithm: SeamsAlgorithm = SeamsAlgorithm.ASTAR,
