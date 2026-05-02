@@ -179,6 +179,24 @@ class CircularPatchingConfig:
         )
 
     @classmethod
+    def with_hybrid(cls, diameter: NumPixels, overlap_ratio: Percentage,
+                   tolerance: Percentage, spacing_factor: Percentage) -> CircularPatchingConfig:
+        patch_params = CircularPatchParams(diameter=diameter, overlap_ratio=overlap_ratio)
+        blend_config = BlendConfig.auto_blend_config_2(
+            patch_params.block_size,
+            patch_params.overlap_radius,
+            True)
+        return cls(
+            patch_params=patch_params,
+            blend_config=blend_config,
+            tolerance=tolerance,
+            outer_corners_weighted_template_matching=False,
+            spacing_factor=spacing_factor,
+            astar_heur=pyastar2d.Heuristic.DEFAULT,
+            _error_func=avg_squared_diff
+        )
+
+    @classmethod
     def advanced(cls, diameter: NumPixels, overlap_ratio: Percentage,
                  blend_config: BlendConfig,
                  tolerance: Percentage, spacing_factor: Percentage,
