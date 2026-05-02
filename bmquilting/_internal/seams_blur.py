@@ -320,7 +320,8 @@ def adaptive_maximum_filter(
 def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarray,
                                blend_config: BlendConfig,
                                radii_limiter: np.ndarray | None = None,
-                               radii_binary_limiter: np.ndarray | None = None
+                               radii_binary_limiter: np.ndarray | None = None,
+                               dst: np.ndarray | None = None
                                ) -> np.ndarray:
     """
     Create adaptive blend mask with transition width based on gradient differences.
@@ -387,7 +388,7 @@ def create_adaptive_blend_mask(tdiff_map: np.ndarray, mc_mask_overlap: np.ndarra
     cv2.GaussianBlur(signed_distance, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=signed_distance)
 
     # Create smooth transition using sigmoid function
-    t = signed_distance / blend_radii  # min should be min_diameter, never zero
+    t = np.divide(signed_distance, blend_radii, out=dst)  # min should be min_diameter, never zero
     cv2.GaussianBlur(t, (0, 0), sigmaX=1.0, sigmaY=1.0, dst=t)
 
     # compute blend_mask in place

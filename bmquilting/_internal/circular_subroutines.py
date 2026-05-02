@@ -274,7 +274,7 @@ def _get_circle_mask(patch_params: CircularPatchParams) -> np.ndarray:
 
 def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
                               roi: np.ndarray, block: np.ndarray, patch: np.ndarray, filled: np.ndarray,
-                              _tmp: np.ndarray) -> np.ndarray:
+                              dst:np.ndarray, _tmp: np.ndarray) -> None:
     """
     :param _tmp: used to computed patched, should have the same shape as block & patch.
     """
@@ -294,7 +294,7 @@ def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
     mask = _compute_seam(polar_errors, polar_roi, pp.non_overlap_radius)
 
     # Warp mask back to cartesian coords & Compute patched result
-    mask = cv2.warpPolar(mask, roi.shape[:2], pp.center_2d_f, pp.f_radius, cv2.WARP_INVERSE_MAP | warp_flags)
+    mask = cv2.warpPolar(mask, roi.shape[:2], pp.center_2d_f, pp.f_radius, cv2.WARP_INVERSE_MAP | warp_flags, dst=dst)
     patched = blend_with_mask(block, patch, mask, out=_tmp)
     # mind that even if blend into patch option is not set, patched variable is re-used for the vignette later
 
@@ -323,14 +323,14 @@ def _compute_radial_seam_mask(circ_patching_config: CircularPatchingConfig,
             # NOT INTENDED TO BE USED OTHER THAN FOR TESTING/DEBUG PURPOSES
             radii_limiter = None
 
-        mask = create_adaptive_blend_mask(
+        create_adaptive_blend_mask(
             tdiff_map=tdiff_map,
             mc_mask_overlap=mask,
             blend_config=circ_patching_config.blend_config,
             radii_limiter=radii_limiter,
             radii_binary_limiter=filled,
+            dst=dst
         )
-    return mask
 
 
 def _constrain_tdiff(tdiff_map: np.ndarray, filled: np.ndarray, blend_config: BlendConfig) -> None:
@@ -351,6 +351,30 @@ def _constrain_tdiff(tdiff_map: np.ndarray, filled: np.ndarray, blend_config: Bl
 def get_bbox_idx(x: int, y: int, patch_params: CircularPatchParams) -> tuple[slice, slice]:
     radius = patch_params.radius
     return np.s_[y - radius:y + radius + 1, x - radius:x + radius + 1]
+
+
+def allocate_auxiliary_buffer(h: int, w: int, c: int):
+    """
+    Allocates a single contiguous buffer sized H*W*C and exposes three views:
+
+      hwc    : (H, W, C)  — full patch in C-order layout
+      mask_a : (H, W)     — first  2-D plane  [0      .. H*W)
+      mask_b : (H, W)     — second 2-D plane  [H*W    .. 2*H*W)
+
+    writing to mask_a/mask_b clobbers the first/second H*W elements of buf,
+    which interleave across all channels of the first H*W pixels of hwc in C-order.
+    """
+    alloc_c = max(2, c)  # ensure memory for the 2 masks in the event it is a single channel source
+
+    # ── single contiguous allocation ────────────────────────────────────────
+    buf = np.empty(h * w * alloc_c, dtype=np.float32)
+
+    # ── views ────────────────────────────────────────────────────────────────
+    hwc    = buf            .reshape(h, w, c)   # full (h,w,c) in C order
+    mask_a = buf[:h*w]      .reshape(h, w)      # plane 0  →  elements [0,   h*w)
+    mask_b = buf[h*w:2*h*w] .reshape(h, w)      # plane 1  →  elements [h*w, 2*h*w)
+
+    return hwc, mask_a, mask_b
 
 
 def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_map: np.ndarray,
@@ -402,19 +426,17 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
     best_text_idx, best_y, best_x = _find_circular_patch(lookup_textures, block, tmpl_mask, config, rng)
     patch: np.ndarray = lookup_textures[best_text_idx][best_y:best_y+pp.block_size, best_x:best_x+pp.block_size]
 
-    # AUX may be used for the patched block (w/ raw seam, no blending) and for the vignette
-    #   no seams + no vignette is not an expected option combination; it only makes sense for debug purposes
-    #   so the is no need prevent the allocation with a conditional here
-    aux = np.empty_like(patch)
+    # aux stores patched when using seams; mask and vignetted are contained within (or adjacent) to it
+    aux, mask, vignette = allocate_auxiliary_buffer(*patch.shape)
 
     # Get mask to blend source and patch (pre vignette)
-    mask = _compute_radial_seam_mask(config, roi, block, patch, filled, _tmp=aux) if config.use_seams \
-      else _get_circle_mask(pp).copy()
+    _compute_radial_seam_mask(config, roi, block, patch, filled, dst=mask, _tmp=aux) if config.use_seams \
+      else np.copyto(dst=mask, src=_get_circle_mask(pp))
 
 
     # (optional) Apply Vignette
     if config.blend_into_patch and config.blend_config.use_vignette:
-        vignette = _setup_vignette(roi, pp)
+        _setup_vignette(roi, pp, dst=vignette)
         np.minimum(mask, vignette, out=mask)
 
     # Update Seams & Filled Mask State
