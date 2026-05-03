@@ -75,10 +75,16 @@ cv2.imwrite("out_seams.png", out_seams)
 Feathering utilises a smooth gradient blend instead of calculating seams. It is faster and performs well for stochastic textures.
 
 ```python
-from bmquilting.square import generate_texture, SquarePatchingConfig
-
 config = SquarePatchingConfig.with_feathering(block_size=50, overlap=20, tolerance=0.1)
-out_tex, _ = generate_texture([src], config, 256, 256, 42)
+```
+
+### Generation with Hybrid (Seams + Feathering)
+
+The `with_hybrid` option integrates both seams and feathering approaches.
+The applied feathering is independant from the computed seam; it's application is the same as the `with_feathering` setting, so, depending on the seam shape, it might not yield a seamless transition. 
+
+```python
+config = SquarePatchingConfig.with_hybrid(block_size=50, overlap=20, tolerance=0.1)
 ```
 
 ---
@@ -118,10 +124,13 @@ cv2.imwrite("out_circ_seams.png", out_seams)
 ### Generation with Feathering
 
 ```python
-from bmquilting.circular import generate_cphl6p, CircularPatchingConfig
-
 config = CircularPatchingConfig.with_feathering(diameter=55, overlap_ratio=.5, tolerance=0.1, spacing_factor=1.13)
-out_tex, _ = generate_cphl6p([src], config, 256, 256, 0)
+```
+
+### Generation with Hybrid (Seams + Feathering)
+
+```python
+config = CircularPatchingConfig.with_feathering(diameter=55, overlap_ratio=.5, tolerance=0.1, spacing_factor=1.13)
 ```
 
 ---
@@ -146,11 +155,28 @@ from bmquilting.circular import seamless_both
 seamless_img, seams_map = seamless_both(src, config, seed)
 ```
 
+### Creating Variants
+
+Providing additional texture variations besides the original source may improve the quality of the output.
+
+This can be done by generating a larger texture using the available generation methods, or by using the methods `get_texture_variants` and `get_texture_rotated_variants` which can be imported from `bmquilting.utils`.
+
+The lookup textures can be provided in the following manner:
+```python
+seamless_img, seams_map = seamless_both(
+        target=src,
+        lookup_textures=[src, mirrored_src, extended_src],
+        patching_config=config,
+        seed=0
+    )
+```
+
+
 ---
 
 ## 4. Filling Holes (Inpainting)
 
-The `fill` functions can be used to reconstruct missing areas (holes) in an image.
+The `fill` functions can be used to reconstruct missing areas (holes) in an image using source textures.
 
 ```python
 from bmquilting.utils import get_texture_variants, set_invalid_texture_area
