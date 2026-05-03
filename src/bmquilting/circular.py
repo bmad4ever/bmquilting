@@ -212,7 +212,7 @@ def _get_extended_size(block_size: NumPixels, size: NumPixels) -> NumPixels:
     return (size // block_size + 3) * block_size
 
 
-# region ===== GENERATE FUNCTIONS =====
+# region ===== GENERATE 6P STRAT FUNCTIONS =====
 
 def _validate_cphl6p_args(n_processes: int, patching_config: CircularPatchingConfig):
     if n_processes <= 0 or n_processes > 6:
@@ -561,20 +561,24 @@ def generate_cphl6p_guided(
     return out_tex, out_seams, proxy_out_tex
 
 
-# endregion ===== GENERATE FUNCTIONS =====
+# endregion ===== GENERATE 6P STRAT FUNCTIONS =====
 
 
 # region ===== FILL FUNCTIONS =====
+
+def _extend4filling_dims(height: int, width: int, pp: CircularPatchParams, only_horizontally: bool = False):
+    extended_height = _get_extended_size(height, pp.block_size)
+    extended_width = _get_extended_size(width, pp.block_size)
+    margin_y = (extended_height - height) // 2 if not only_horizontally else 0
+    margin_x = (extended_width - width) // 2
+    return extended_height, extended_width, margin_y, margin_x
 
 @ndarray_identity_cache(array_arg_index=0)
 def _extend4filling(ndarray: np.ndarray, pp: CircularPatchParams, only_horizontally: bool = False) -> tuple[
     np.ndarray, NumPixels, NumPixels]:
     """:return: extended_mask, margin_y, margin_x"""
-    height, width = ndarray.shape[:2]
-    extended_height = _get_extended_size(height, pp.block_size)
-    extended_width = _get_extended_size(width, pp.block_size)
-    margin_y = (extended_height - height) // 2 if not only_horizontally else 0
-    margin_x = (extended_width - width) // 2
+    extended_height, extended_width, margin_y, margin_x = _extend4filling_dims(
+        ndarray.shape[0], ndarray.shape[1], pp, only_horizontally)
 
     # note that BORDER_REPLICATE is required here in order to fill holes near the edges
     extended_ndarray = cv2.copyMakeBorder(ndarray, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
@@ -595,24 +599,37 @@ def _fill_cphl_step_predictor(mask: np.ndarray, patching_config: CircularPatchin
 def _fill_cphl(
         target: np.ndarray,
         mask: np.ndarray,
-        source_textures: list[np.ndarray],
+        source_textures: list[np.ndarray] | TextureList,
         patching_config: CircularPatchingConfig,
-        seed: int,
+        seed: int | SeedSequence,
         uicd: UiCoordData | None = None,
         _record: Callable[[ProxyPatch], None] = lambda _: None,
         _seams: np.ndarray | None = None,
+        _custom_fill: np.ndarray | None = False,
+        _broadcast_zero_mask: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     if target.shape[0] != mask.shape[0] or target.shape[1] != mask.shape[1]:
         raise ValueError("target and mask must have the same size")
 
+    if not isinstance(source_textures, TextureList):
+        source_textures = TextureList(source_textures, patching_config.get_patch_kernel())
+
     pp = patching_config.patch_params
     rng = np.random.default_rng(seed)
+    height, width = mask.shape[:2]
 
     # setup extended target & mask in case the mask has holes near the edges
     extended_holes_mask, margin_y, margin_x = _extend4filling(mask, pp)
+    extended_filled_mask = extended_holes_mask.copy()
+    ret_idx = np.s_[margin_y:height + margin_y, margin_x:width + margin_x]
+
+    if _custom_fill is not None:
+        extended_filled_mask[ret_idx] = _custom_fill
+
+    if _broadcast_zero_mask:
+        extended_holes_mask = np.broadcast_to(np.float32(0.0), extended_holes_mask.shape)
 
     extended_target = cv2.copyMakeBorder(target, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
-    extended_filled_mask = extended_holes_mask.copy()
     extended_seams = (
         np.zeros_like(extended_holes_mask)
         if _seams is None
@@ -627,7 +644,6 @@ def _fill_cphl(
     extended_holes_mask = cv2.erode(extended_holes_mask, kernel, iterations=1)
 
     # setup iterator
-    height, width = mask.shape[:2]
     hexa_iter = HexagonalLatticeIterator(
         min_x=margin_x // 2, min_y=margin_y // 2,
         max_x=width + margin_x + margin_x // 2, max_y=height + margin_y + margin_y // 2,
@@ -635,7 +651,6 @@ def _fill_cphl(
     )
 
     # fill the holes
-    source_textures = TextureList(source_textures, patching_config.get_patch_kernel())
     for x, y in hexa_iter.iterate_row_major(extended_holes_mask):
         result = process_patch_at_location(
             extended_target, extended_filled_mask, extended_seams,
@@ -644,7 +659,6 @@ def _fill_cphl(
         check_ui(uicd, 1)
         _record(result + (x, y))
 
-    ret_idx = np.s_[margin_y:height + margin_y, margin_x:width + margin_x]
     return extended_target[ret_idx], extended_seams[ret_idx]
 
 
@@ -762,8 +776,94 @@ def fill_cphl_guided(
 
     return result, seams, proxy_result
 
+# TODO @step_predictor(_refill_cphl_step_predictor)
+@auto_uint8_to_float32
+@clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
+def refill_cphl(
+        target: np.ndarray,
+        source_textures: list[np.ndarray],
+        patching_config: CircularPatchingConfig,
+        seed: int,
+        uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """:return: texture, seams"""
+    mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
+    filled = np.broadcast_to(np.float32(1.0), target.shape[:2])
+    return _fill_cphl(target, mask, source_textures, patching_config, seed, uicd,
+                      _custom_fill=filled, _broadcast_zero_mask=True)
+
+
+# TODO @step_predictor(_refill_cphl_recursive_step_predictor)
+@auto_uint8_to_float32
+@clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
+def refill_cphl_recursive(
+        target: np.ndarray,
+        source_textures: list[np.ndarray],
+        patching_configs: list[CircularPatchingConfig],
+        seed: int,
+        uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """:return: texture, seams"""
+    seams = np.zeros(target.shape[:2], dtype=np.float32)
+    tex = target
+    mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
+    filled = np.broadcast_to(np.float32(1.0), target.shape[:2])
+    ss_iter = iter(SeedSequence(seed).spawn(len(patching_configs)))
+    for patching_config in patching_configs:
+        tex, seams = _fill_cphl(tex, mask, source_textures, patching_config, next(ss_iter), uicd,
+                          _seams=seams, _custom_fill=filled, _broadcast_zero_mask=True)
+    return tex, seams
 
 # endregion ===== FILL FUNCTIONS =====
+
+
+# region ==== MORE GENERATE FUNCTIONS ====
+
+# TODO @step_predictor(_generate_cphl_step_predictor)
+@auto_uint8_to_float32
+@clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
+def generate_cphl(
+        lookup_textures: list[np.ndarray],
+        out_h: int, out_w: int,
+        patching_config: CircularPatchingConfig,
+        seed: int,
+        uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """:return: texture, seams"""
+    texs = TextureList(lookup_textures, patching_config.get_patch_kernel())
+    target = np.zeros((out_h, out_w, texs.global_channel_count), dtype=texs.global_dtype)
+    mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
+    return _fill_cphl(target, mask, texs, patching_config, seed, uicd, _broadcast_zero_mask=True)
+
+# TODO @step_predictor(_generate_cphl_recursive_step_predictor)
+@auto_uint8_to_float32
+@clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
+def generate_cphl_recursive(
+        lookup_textures: list[np.ndarray],
+        out_h: int, out_w: int,
+        patching_configs: list[CircularPatchingConfig],
+        seed: int,
+        uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """:return: texture, seams"""
+    tex_list = TextureList(lookup_textures, patching_configs[0].get_patch_kernel())
+    target = np.zeros((out_h, out_w, tex_list.global_channel_count), dtype=tex_list.global_dtype)
+    mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
+    ss_iter = iter(SeedSequence(seed).spawn(len(patching_configs)))
+
+    tex, seams = _fill_cphl(target, mask, tex_list, patching_configs[0], next(ss_iter), uicd, _broadcast_zero_mask=True)
+
+    filled = np.broadcast_to(np.float32(1.0), target.shape[:2])
+    for patching_config in patching_configs[1:]:
+        tex, seams = _fill_cphl(tex, mask, tex_list, patching_config, next(ss_iter), uicd,
+                          _seams=seams, _custom_fill=filled, _broadcast_zero_mask=True)
+    return tex, seams
+
+# endregion ==== MORE GENERATE FUNCTIONS ====
 
 
 # region ===== MAKE SEAMLESS FUNCTIONS =====
@@ -1164,4 +1264,8 @@ __all__ = [
     "seamless_both_guided",
     "seamless_vertical_guided",
     "seamless_horizontal_guided",
+    "refill_cphl",
+    "refill_cphl_recursive",
+    "generate_cphl",
+    "generate_cphl_recursive"
 ]
