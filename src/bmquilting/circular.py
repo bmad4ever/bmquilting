@@ -694,7 +694,13 @@ def fill_cphl(
         seed: int,
         uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    """:return: texture, seams"""
+    """
+    :param mask: Binary mask.
+        If provided in float32 format the area to patch should be filled with zeroes, and the remaining area with ones.
+        If provided in uint8 format use 255 instead of 1.
+
+    :return: texture, seams
+    """
     return _fill_cphl(target, mask, source_textures, patching_config, seed, uicd)
 
 
@@ -713,6 +719,12 @@ def fill_cphl_guided(
 
     When using proxy textures with a different size than the source, the patching parameters
     (radius and spacing) may be auto-adjusted to ensure perfect grid alignment and prevent spatial drift.
+
+    :param mask: Binary mask.
+        If provided in float32 format the area to patch should be filled with zeroes, and the remaining area with ones.
+        If provided in uint8 format use 255 instead of 1.
+
+    :return: texture, seams, synthesised_proxy
     """
     scale = _get_scale_factor(proxy_textures, source_textures)
     adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
