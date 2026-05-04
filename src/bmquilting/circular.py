@@ -776,7 +776,12 @@ def fill_cphl_guided(
 
     return result, seams, proxy_result
 
-# TODO @step_predictor(_refill_cphl_step_predictor)
+
+def _refill_cphl_step_predictor(target: np.ndarray, patching_config: CircularPatchingConfig):
+    mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
+    return _fill_cphl_step_predictor(mask, patching_config)
+
+@step_predictor(_refill_cphl_step_predictor)
 @auto_uint8_to_float32
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
@@ -794,7 +799,11 @@ def refill_cphl(
                       _custom_fill=filled, _broadcast_zero_mask=True)
 
 
-# TODO @step_predictor(_refill_cphl_recursive_step_predictor)
+def _refill_cphl_recursive_step_predictor(target: np.ndarray, patching_configs: list[CircularPatchingConfig]):
+    mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
+    return sum((_fill_cphl_step_predictor(mask, config) for config in patching_configs))
+
+@step_predictor(_refill_cphl_recursive_step_predictor)
 @auto_uint8_to_float32
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
@@ -821,7 +830,11 @@ def refill_cphl_recursive(
 
 # region ==== MORE GENERATE FUNCTIONS ====
 
-# TODO @step_predictor(_generate_cphl_step_predictor)
+def _generate_cphl_step_predictor(out_h: int, out_w: int, patching_config: CircularPatchingConfig):
+    mask = np.broadcast_to(np.float32(0.0), (out_h, out_w))
+    return _fill_cphl_step_predictor(mask, patching_config)
+
+@step_predictor(_generate_cphl_step_predictor)
 @auto_uint8_to_float32
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
@@ -838,7 +851,12 @@ def generate_cphl(
     mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
     return _fill_cphl(target, mask, texs, patching_config, seed, uicd, _broadcast_zero_mask=True)
 
-# TODO @step_predictor(_generate_cphl_recursive_step_predictor)
+
+def _generate_cphl_recursive_step_predictor(out_h: int, out_w: int, patching_configs: list[CircularPatchingConfig]):
+    mask = np.broadcast_to(np.float32(0.0), (out_h, out_w))
+    return sum((_fill_cphl_step_predictor(mask, config) for config in patching_configs))
+
+@step_predictor(_generate_cphl_recursive_step_predictor)
 @auto_uint8_to_float32
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
