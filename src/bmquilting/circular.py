@@ -233,7 +233,9 @@ def _generate_cphl6p(
         seed: int,
         n_processes: int = 1,
         uicd: UiCoordData | None = None,
-        _record: Callable[[JobID, ProxyPatch], None] = lambda jid, pp: None
+        _record: Callable[[JobID, ProxyPatch], None] = lambda jid, pp: None,
+        _refill_target: np.ndarray|None=None,
+        _refill_seams: np.ndarray|None=None,
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
     Circular Patches on a Hexagonal Lattice with 6 Partitions (CPHL6P)
@@ -257,6 +259,7 @@ def _generate_cphl6p(
     extended_h, extended_w = _get_extended_size(pp.block_size, out_h), _get_extended_size(pp.block_size, out_w)
 
     margin_x, margin_y = (extended_w - out_w) // 2, (extended_h - out_h) // 2
+    ret_idx = np.s_[margin_y:out_h + margin_y, margin_x:out_w + margin_x]
     lookup_texts = SharedTextureList.from_list(source_textures, patching_config.get_patch_kernel())
     del source_textures  # ignore, from here & use lookup_texts
 
@@ -265,6 +268,21 @@ def _generate_cphl6p(
         lookup_texts.metadata.global_dtype)
     seams_shm, seams_meta = _shm_mem_array((extended_h, extended_w), "float32")
     filled_shm, filled_meta = _shm_mem_array((extended_h, extended_w), "float32")
+
+    if _refill_target is not None:
+        # Handle Special Option where the generation is done on top of an existing texture
+        filled_array = np.ndarray(filled_meta["shape"], filled_meta["dtype"], buffer=filled_shm.buf)
+        filled_array[ret_idx] = 1
+        texture_array = np.ndarray(texture_meta["shape"], texture_meta["dtype"], buffer=texture_shm.buf)
+        texture_array[ret_idx] = _refill_target
+        del filled_array, texture_array
+    if _refill_seams is not None:
+        # Handle Special Option where the generation is done on top of an existing texture
+        seams_array = np.ndarray(seams_meta["shape"], seams_meta["dtype"], buffer=seams_shm.buf)
+        seams_array[ret_idx] = _refill_seams
+        del seams_array
+
+
     shm_metadata = {
         "texture": texture_meta,
         "seams": seams_meta,
@@ -306,8 +324,6 @@ def _generate_cphl6p(
             for x, y in points_batch:
                 result = process_patch_at_location(np_arrays[0], np_arrays[1], np_arrays[2], lookup_texts, x, y,
                                                    patching_config, rng)
-                #cv2.imshow("mask", result[1])
-                #cv2.waitKey(0)
                 shared_data["record"](job_id, result + (x, y))
                 check_ui(job_uicd, 1)
 
@@ -336,7 +352,6 @@ def _generate_cphl6p(
         texture = np.ndarray(texture_meta['shape'], dtype=texture_meta['dtype'], buffer=texture_shm.buf).copy()
         seams = np.ndarray(seams_meta['shape'], dtype=seams_meta['dtype'], buffer=seams_shm.buf).copy()
         np.clip(seams, 0, 1, out=seams)
-        ret_idx = np.s_[margin_y:out_h + margin_y, margin_x:out_w + margin_x]
 
         return texture[ret_idx], seams[ret_idx]
     finally:
@@ -359,7 +374,6 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
                                 margin_x: int | None = None
                                 ) -> np.ndarray | RetOnInterrupt:
     pp: CircularPatchParams = patching_config.patch_params
-    block_size = pp.block_size
     if extended_h is None: extended_h = _get_extended_size(pp.block_size, out_h)
     if extended_w is None: extended_w = _get_extended_size(pp.block_size, out_w)
 
@@ -447,6 +461,17 @@ def _generate_cphl6p_step_predictor(patching_config: CircularPatchingConfig, out
     return sum(1 for inner in hexa_iter.iterate_spiral() for _ in inner)
 
 
+def _refill_cphl6p_step_predictor(target: np.ndarray, patching_config: CircularPatchingConfig):
+    return _generate_cphl6p_step_predictor(patching_config, target.shape[0], target.shape[1])
+
+def _refill_cphl6p_recursive_step_predictor(target: np.ndarray, patching_configs: list[CircularPatchingConfig]):
+    return _generate_cphl6p_recursive_step_predictor(patching_configs, target.shape[0], target.shape[1])
+
+def _generate_cphl6p_recursive_step_predictor(patching_configs: list[CircularPatchingConfig],
+                                              out_h: NumPixels, out_w: NumPixels):
+    return sum((_generate_cphl6p_step_predictor(conf, out_h, out_w) for conf in patching_configs))
+
+
 def _generate_guided_chlp6p_step_predictor(patching_config: CircularPatchingConfig, out_h: int, out_w: int):
     return _generate_cphl6p_step_predictor(patching_config, out_h, out_w) * 2
 
@@ -467,6 +492,61 @@ def generate_cphl6p(
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     return _generate_cphl6p(source_textures, out_h, out_w, patching_config, seed, n_processes, uicd)
+
+
+@step_predictor(_refill_cphl6p_step_predictor)
+@auto_uint8_to_float32
+@clear_cache_post_exec(*_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
+def refill_cphl6p(
+        target: np.ndarray,
+        source_textures: list[np.ndarray],
+        patching_config: CircularPatchingConfig,
+        seed: int,
+        n_processes: int = 1,
+        uicd: UiCoordData | None = None
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    out_h, out_w = target.shape[:2]
+    return _generate_cphl6p(source_textures, out_h, out_w, patching_config, seed, n_processes, uicd, _refill_target=target)
+
+
+@step_predictor(_refill_cphl6p_recursive_step_predictor)
+@auto_uint8_to_float32
+@clear_cache_post_exec(*_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
+def refill_cphl6p_recursive(
+        target: np.ndarray,
+        source_textures: list[np.ndarray],
+        patching_configs: list[CircularPatchingConfig],
+        seed: int,
+        n_processes: int = 1,
+        uicd: UiCoordData | None = None
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    out_h, out_w = target.shape[:2]
+    tex, seams = target, np.broadcast_to(np.float32(0.0), target.shape[:2])
+    for config in patching_configs:
+        tex, seams = _generate_cphl6p(source_textures, out_h, out_w, config, seed, n_processes, uicd,
+                                      _refill_target=tex, _refill_seams=seams)
+    return tex, seams
+
+
+@step_predictor(_generate_cphl6p_recursive_step_predictor)
+@auto_uint8_to_float32
+@clear_cache_post_exec(*_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
+def generate_cphl6p_recursive(
+        source_textures: list[np.ndarray],
+        patching_configs: list[CircularPatchingConfig],
+        out_h: NumPixels, out_w: NumPixels,
+        seed: int,
+        n_processes: int = 1,
+        uicd: UiCoordData | None = None
+) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    tex, seams = _generate_cphl6p(source_textures, out_h, out_w, patching_configs[0], seed, n_processes, uicd)
+    for config in patching_configs[1:]:
+        tex, seams = _generate_cphl6p(source_textures, out_h, out_w, config, seed, n_processes, uicd,
+                                      _refill_target=tex, _refill_seams=seams)
+    return tex, seams
 
 
 @step_predictor(_generate_guided_chlp6p_step_predictor)
