@@ -14,7 +14,10 @@ from ._internal.seams_blur import (
 
 from ._internal.decorators import clear_cache_post_exec, step_predictor, ndarray_identity_cache, auto_uint8_to_float32
 from .utils.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
-from ._internal.common import NumPixels, PatchIdx, blend_with_mask, TextureList
+from ._internal.common import (
+    NumPixels, PatchIdx, TextureList, Percentage, ValidatedTexturesIterator,
+    apply_mask, blend_with_mask,
+)
 from ._internal.hexagonal_lattice import HexagonalLatticeIterator, Vec2_int
 from ._internal.shmem_utils import SharedTextureList
 
@@ -679,7 +682,7 @@ def _fill_cphl_step_predictor(mask: np.ndarray, patching_config: CircularPatchin
 def _fill_cphl(
         target: np.ndarray,
         mask: np.ndarray,
-        source_textures: list[np.ndarray] | TextureList,
+        source_textures: list[np.ndarray] | ValidatedTexturesIterator,
         patching_config: CircularPatchingConfig,
         seed: int | SeedSequence,
         uicd: UiCoordData | None = None,
@@ -687,6 +690,7 @@ def _fill_cphl(
         _seams: np.ndarray | None = None,
         _custom_fill: np.ndarray | None = False,
         _broadcast_zero_mask: bool = False,
+        _transfer_tex: tuple[ValidatedTexturesIterator, np.ndarray, Percentage] | None = None, # proxies, target, alpha
 ) -> tuple[np.ndarray, np.ndarray]:
     if target.shape[0] != mask.shape[0] or target.shape[1] != mask.shape[1]:
         raise ValueError("target and mask must have the same size")
@@ -734,7 +738,12 @@ def _fill_cphl(
     for x, y in hexa_iter.iterate_row_major(extended_holes_mask):
         result = process_patch_at_location(
             extended_target, extended_filled_mask, extended_seams,
-            source_textures, x, y, patching_config, rng
+            source_textures, x, y, patching_config, rng,
+            _tex_transfer= (
+                _transfer_tex[0],
+                cv2.copyMakeBorder(_transfer_tex[1], margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE),
+                _transfer_tex[2],
+            )
         )
         check_ui(uicd, 1)
         _record(result + (x, y))
@@ -1347,6 +1356,116 @@ def seamless_horizontal_guided(
         proxy_target, target, proxy_textures, source_textures, scale, adj_source_config, proxy_config, seed, uicd)[:3]
 
 # endregion ===== MAKE SEAMLESS FUNCTIONS =====
+
+
+
+def _texture_transfer_advanced(
+    src_textures: list[np.ndarray],
+    curated_textures: list[np.ndarray],
+    curated_target: np.ndarray,
+    config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
+    seed: int,
+    # strat: str = "chpl6p", # TODO
+    target_roi: np.ndarray | None = None,
+    recompute_valid_area: bool = False,
+    uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+
+    :param proxy_textures:
+    :param src_textures:
+    :param curated_target:
+    :param config_alpha_pairs:
+    :param seed:
+    :param target_roi: binary mask, where the roi is painted with ones, and the remaining area with zeroes
+    :param uicd:
+    :return:
+    """
+    if target_roi is None:
+        target_roi = np.broadcast_to(np.float32(1.0), curated_target.shape[:2])
+        inv_target_roi = np.broadcast_to(np.float32(0.0), curated_target.shape[:2])
+    else:
+        inv_target_roi = 1 - target_roi
+
+    first_config, first_alpha = config_alpha_pairs[0]
+    src_tex_list = TextureList(src_textures, first_config.get_patch_kernel())
+    cur_tex_list = TextureList(curated_textures, first_config.get_patch_kernel())
+
+    dst_shape = (curated_target.shape[0], curated_target.shape[1], src_tex_list.global_channel_count)
+    tex = np.broadcast_to(np.float32(0.0), dst_shape)
+
+    tex, seams = _fill_cphl(tex, inv_target_roi, src_tex_list, first_config, seed, uicd,
+                            _transfer_tex=(cur_tex_list, curated_target, first_alpha))
+    filled = np.broadcast_to(np.float32(1.0), target_roi.shape)
+
+    for config, alpha in config_alpha_pairs:
+        if recompute_valid_area:
+            src_tex_list = TextureList(src_textures, config.get_patch_kernel())
+            cur_tex_list = TextureList(curated_textures, config.get_patch_kernel())
+        tex, seams = _fill_cphl(
+            tex, inv_target_roi, src_tex_list,
+            config, seed, uicd=uicd,
+            _seams=seams, _custom_fill=filled,
+            _transfer_tex=(cur_tex_list, curated_target, alpha)
+        )
+
+    # clear area outside roi
+    apply_mask(tex, target_roi, overwrite=True)
+    seams *= target_roi
+
+    return tex, seams
+
+
+@auto_uint8_to_float32
+def texture_transfer(
+    src_textures: list[np.ndarray],
+    target: np.ndarray,
+    patching_config: CircularPatchingConfig,
+    seed: int,
+    last_diameter: int | None = None,
+    alphas:list[float]|None=None,
+    target_roi: np.ndarray | None = None,
+    value_range: float = 255.0,
+    uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    import dataclasses
+
+    if alphas is None:
+        alphas = [.75, .5, .25]
+
+    if last_diameter is None:
+        last_diameter = round(patching_config.patch_params.diameter / 3.6) | 1
+
+    diameters = np.linspace(patching_config.patch_params.diameter, last_diameter, num=len(alphas), dtype=int)
+
+    config_alpha_pairs = []
+    for diam, alpha in zip(diameters, alphas):
+        new_patch_params = dataclasses.replace(patching_config.patch_params, diameter=(diam|1), overlap_ratio=.5)
+        config = dataclasses.replace(patching_config, patch_params=new_patch_params)
+        config_alpha_pairs.append((config, alpha))
+
+    def curate_texture(tex: np.ndarray) -> np.ndarray:
+        new_tex = None
+        if tex.ndim > 3:
+            raise ValueError("Texture dimension is too large")
+        if tex.ndim == 3 and tex.shape[-1] > 1:
+            new_tex = cv2.cvtColor(tex, cv2.COLOR_BGR2GRAY) if tex.shape[-1] == 3 else tex.mean(axis=-1)
+        if new_tex is None:
+            new_tex = tex.copy()
+        cv2.GaussianBlur(new_tex, (5, 5), 1, dst=new_tex)
+        tile_grid_size = (tex.shape[0]//10, tex.shape[1]//10)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=tile_grid_size)
+        new_tex = clahe.apply(np.uint8(new_tex*value_range))
+        new_tex = cv2.equalizeHist(new_tex).astype(np.float32)
+        new_tex /= value_range
+        new_tex = new_tex[:, :, np.newaxis]
+        return new_tex
+
+    curated_textures = [curate_texture(t) for t in src_textures]
+    curated_target = curate_texture(target)
+    return _texture_transfer_advanced(
+        src_textures, curated_textures, curated_target, config_alpha_pairs, seed, target_roi,
+        recompute_valid_area=False, uicd=uicd)
 
 
 __all__ = [

@@ -381,7 +381,9 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
                               lookup_textures: ValidatedTexturesIterator,
                               x: int, y: int,
                               config: CircularPatchingConfig,
-                              rng: np.random.Generator) -> tuple[PatchIdx, np.ndarray]:
+                              rng: np.random.Generator,
+                              _tex_transfer: tuple[ValidatedTexturesIterator, np.ndarray, Percentage] | None = None #proxies, target, alpha
+                              ) -> tuple[PatchIdx, np.ndarray]:
     """
     Finds and applies a single circular patch at location (x, y).
     Updates image, filled_mask, and seams_map arrays.
@@ -423,7 +425,9 @@ def process_patch_at_location(image: np.ndarray, filled_mask: np.ndarray, seams_
         del corners_mask
 
     # Find the best matching patch from the lookup texture
-    best_text_idx, best_y, best_x = _find_circular_patch(lookup_textures, block, tmpl_mask, config, rng)
+    best_text_idx, best_y, best_x = _find_circular_patch(
+        lookup_textures, block, tmpl_mask, config, rng,
+        _tex_transfer=None if _tex_transfer is None else (_tex_transfer[0], _tex_transfer[1][bbox_idx], _tex_transfer[2]))
     patch: np.ndarray = lookup_textures[best_text_idx][best_y:best_y+pp.block_size, best_x:best_x+pp.block_size]
 
     # aux stores patched when using seams; mask and vignetted are contained within (or adjacent) to it
@@ -593,7 +597,9 @@ def _find_seam_endpoints(errors: np.ndarray, roi: np.ndarray, heur_override: pya
 
 def _find_circular_patch(lookup_textures: ValidatedTexturesIterator,
                          block: np.ndarray, mask: np.ndarray,
-                         params: CircularPatchingConfig, rng: np.random.Generator) -> PatchIdx:
+                         params: CircularPatchingConfig, rng: np.random.Generator,
+                         _tex_transfer: tuple[ValidatedTexturesIterator, np.ndarray, float], #proxies, target_bbox, alpha
+                         ) -> PatchIdx:
     """
 
     :param lookup_textures: textures used for patch searching.
@@ -619,6 +625,15 @@ def _find_circular_patch(lookup_textures: ValidatedTexturesIterator,
         # Compute errors & add to errors list
         # notes: only TM_SQDIFF and TM_CCORR_NORMED accept a mask, which is required even if not weighted
         err_mat = cv2.matchTemplate(image=texture, templ=block, mask=mask, method=cv2.TM_SQDIFF)
+
+        if _tex_transfer is not None:
+            proxy, target, alpha = _tex_transfer[0][idx], _tex_transfer[1], _tex_transfer[2]
+            kernel_area_mask = params.get_patch_kernel(dtype=np.float32)
+            err_mat_transfer = cv2.matchTemplate(image=proxy, templ=target, mask=kernel_area_mask, method=cv2.TM_SQDIFF)
+            err_mat_transfer*=alpha
+            err_mat*=(1-alpha)
+            err_mat+=err_mat_transfer
+
         err_mat = np.maximum(err_mat, 1e-8)  # clip floor to zero
 
         if lookup_textures.has_mask(idx):
