@@ -630,9 +630,7 @@ def _find_circular_patch(lookup_textures: ValidatedTexturesIterator,
             proxy, target, alpha = _tex_transfer[0][idx], _tex_transfer[1], _tex_transfer[2]
             kernel_area_mask = params.get_patch_kernel(dtype=np.float32)
             err_mat_transfer = cv2.matchTemplate(image=proxy, templ=target, mask=kernel_area_mask, method=cv2.TM_SQDIFF)
-            err_mat_transfer*=alpha
-            err_mat*=(1-alpha)
-            err_mat+=err_mat_transfer
+            cv2.addWeighted(err_mat_transfer, alpha, err_mat, 1-alpha, gamma=0, dst=err_mat)
 
         err_mat = np.maximum(err_mat, 1e-8)  # clip floor to zero
 
