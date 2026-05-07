@@ -1393,7 +1393,6 @@ def _texture_transfer_advanced(
 
     dst_shape = (curated_target.shape[0], curated_target.shape[1], src_tex_list.global_channel_count)
     tex = np.broadcast_to(np.float32(0.0), dst_shape)
-
     tex, seams = _fill_cphl(tex, inv_target_roi, src_tex_list, first_config, seed, uicd,
                             _transfer_tex=(cur_tex_list, curated_target, first_alpha))
     filled = np.broadcast_to(np.float32(1.0), target_roi.shape)
@@ -1424,6 +1423,7 @@ def texture_transfer(
     seed: int,
     last_diameter: int | None = None,
     alphas:list[float]|None=None,
+    downscale_factor: int | None = None,
     target_roi: np.ndarray | None = None,
     value_range: float = 255.0,
     uicd: UiCoordData | None = None,
@@ -1461,11 +1461,125 @@ def texture_transfer(
         new_tex = new_tex[:, :, np.newaxis]
         return new_tex
 
+    if downscale_factor is not None and downscale_factor > 1:
+        resized_target = cv2.resize(target, (target.shape[1]//downscale_factor, target.shape[0]//downscale_factor))
+        resized_src_texs = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
+        proxy_textures = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
+        curated_rsz_textures = [curate_texture(t) for t in resized_src_texs]
+        curated_rsz_target = curate_texture(resized_target)
+        cv2.imshow("cr_s", curated_rsz_textures[0])
+        cv2.imshow("cr_target", curated_rsz_target)
+        cv2.waitKey(0)
+        return _texture_transfer_guided_advanced(
+            src_textures=src_textures,
+            proxy_textures=proxy_textures,
+            curated_proxy_textures=curated_rsz_textures,
+            curated_proxy_target=curated_rsz_target,
+            config_alpha_pairs=config_alpha_pairs,
+            seed=seed,
+            target_roi=target_roi,
+            recompute_valid_area=False,
+            uicd=uicd,
+        )[:2]
+
     curated_textures = [curate_texture(t) for t in src_textures]
     curated_target = curate_texture(target)
     return _texture_transfer_advanced(
         src_textures, curated_textures, curated_target, config_alpha_pairs, seed, target_roi,
         recompute_valid_area=False, uicd=uicd)
+
+
+def _texture_transfer_guided_advanced(
+    src_textures: list[np.ndarray],
+    proxy_textures: list[np.ndarray],
+    curated_proxy_textures: list[np.ndarray],
+    curated_proxy_target: np.ndarray,
+    config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
+    seed: int,
+    # strat: str = "chpl6p", # TODO
+    target_roi: np.ndarray | None = None,  # should be proxy sized
+    recompute_valid_area: bool = False,
+    uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+
+    # DEV NOTE:
+    # initially I though of only using the last proxy iteration for reconstructing the texture;
+    # however, the reconstruction may have noticeable seams at the edges of a patch,
+    # so all the proxy synthesis are recorded and applied.
+
+
+    if target_roi is None:
+        target_roi = np.broadcast_to(np.float32(1.0), curated_proxy_target.shape[:2])
+        inv_target_roi = np.broadcast_to(np.float32(0.0), curated_proxy_target.shape[:2])
+    else:
+        inv_target_roi = 1 - target_roi
+
+    # --- "data" & func used for reconstruction ---
+    scale = _get_scale_factor(proxy_textures, src_textures)
+    dst_shape = (curated_proxy_target.shape[0]*scale, curated_proxy_target.shape[1]*scale, src_textures[0].shape[2])
+    texture = np.broadcast_to(np.float32(0.0), dst_shape)
+    mask = cv2.resize(inv_target_roi, dst_shape[:2][::-1])
+
+    proxy_data = []
+    def record(idx_mask_tuple: ProxyPatch):
+        proxy_data.append(idx_mask_tuple)
+
+    def apply_recording(adj_src_conf: CircularPatchingConfig, proxy_conf:CircularPatchingConfig):
+        nonlocal proxy_data, texture, mask, src_textures, scale
+
+        p_pp = proxy_conf.patch_params
+        _, p_margin_y, p_margin_x = _extend4filling(inv_target_roi, p_pp)
+
+        # reconstruct using the original texture
+        _scale_proxy_patch_list(proxy_data, scale, adj_src_conf.patch_params.block_size)
+        texture = _reconstruct_fill_cphl(
+            target=texture, mask=mask, source_textures=src_textures, proxy_data=proxy_data,
+            patching_config=adj_src_conf, uicd=uicd,
+            margin_y=p_margin_y * scale,
+            margin_x=p_margin_x * scale
+        )
+        proxy_data = []  # clear proxy data for future application
+
+
+    # --- execute and reconstruct 1st synthesis -----------------------------
+    first_config, first_alpha = config_alpha_pairs[0]
+    adjust_config, proxy_config = _get_proxy_configs(first_config, scale)
+    pxy_tex_list = TextureList(proxy_textures, proxy_config.get_patch_kernel())
+    cur_tex_list = TextureList(curated_proxy_textures, proxy_config.get_patch_kernel())
+
+    pxy_dst_shape = (curated_proxy_target.shape[0], curated_proxy_target.shape[1], pxy_tex_list.global_channel_count)
+    prx_tex = np.broadcast_to(np.float32(0.0), pxy_dst_shape)
+
+    prx_tex, seams = _fill_cphl(prx_tex, inv_target_roi, pxy_tex_list, proxy_config, seed, uicd,
+                            _transfer_tex=(cur_tex_list, curated_proxy_target, first_alpha),
+                            _record=record)
+    apply_recording(adjust_config, proxy_config)
+
+    # --- execute and reconstruct remaining synthesis -----------------------
+    filled = np.broadcast_to(np.float32(1.0), target_roi.shape)
+    for config, alpha in config_alpha_pairs[1:]:
+        adjust_config, proxy_config = _get_proxy_configs(config, scale)
+        if recompute_valid_area:
+            pxy_tex_list = TextureList(proxy_textures, proxy_config.get_patch_kernel())
+            cur_tex_list = TextureList(curated_proxy_textures, proxy_config.get_patch_kernel())
+        prx_tex, seams = _fill_cphl(
+            prx_tex, inv_target_roi, pxy_tex_list,
+            proxy_config, seed, uicd=uicd,
+            _seams=seams, _custom_fill=filled,
+            _transfer_tex=(cur_tex_list, curated_proxy_target, alpha),
+            _record=record
+        )
+        apply_recording(adjust_config, proxy_config)
+
+    if scale > 1:
+        seams = cv2.resize(seams, (texture.shape[1], texture.shape[0]), interpolation=cv2.INTER_LINEAR)
+
+    # clear area outside roi
+    np.subtract(1, mask, out=mask)
+    apply_mask(texture, mask, overwrite=True)
+    seams *= mask
+    return texture, seams, proxy_result
+
 
 
 __all__ = [
