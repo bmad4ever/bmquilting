@@ -1398,7 +1398,7 @@ def _texture_transfer_advanced(
                             _transfer_tex=(cur_tex_list, curated_target, first_alpha))
     filled = np.broadcast_to(np.float32(1.0), target_roi.shape)
 
-    for config, alpha in config_alpha_pairs:
+    for config, alpha in config_alpha_pairs[1:]:
         if recompute_valid_area:
             src_tex_list = TextureList(src_textures, config.get_patch_kernel())
             cur_tex_list = TextureList(curated_textures, config.get_patch_kernel())
