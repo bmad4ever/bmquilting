@@ -156,7 +156,7 @@ def process_invalid_data(texture: np.ndarray, patch_kernel: np.ndarray) -> tuple
     if invalid_mask.ndim == 3:
         invalid_mask = invalid_mask.any(axis=-1)
 
-    invalid_uint8 = np.uint8(invalid_mask)
+    invalid_uint8 = np.ascontiguousarray(np.uint8(invalid_mask))
     cv2.dilate(invalid_uint8, patch_kernel, anchor=(0, 0), dst=invalid_uint8)
     mask = invalid_uint8 > 0
 
