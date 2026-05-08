@@ -63,8 +63,7 @@ _INTERP_PAD = {
 
 
 def _get_scale_factor(proxy_textures: list[np.ndarray], source_textures: list[np.ndarray]) -> int:
-    if not proxy_textures or not source_textures:
-        return 1
+    if not proxy_textures or not source_textures: return 1
 
     scales = []
     for pt, st in zip(proxy_textures, source_textures):
@@ -89,8 +88,7 @@ def _periodic_resize(src: np.ndarray, dsize: tuple[int, int], interpolation=cv2.
     Resizes a periodic image by adding a small wrap-around border to provide
     interpolation context, avoiding edge smearing. Much less data-intensive than 3x3 tiling.
     """
-    if src.shape[1] == dsize[0] and src.shape[0] == dsize[1]:
-        return src
+    if src.shape[1] == dsize[0] and src.shape[0] == dsize[1]: return src
 
     # Use wrap-around padding to provide context for periodic interpolation.
     pad = _INTERP_PAD[interpolation]
@@ -117,8 +115,7 @@ def _get_proxy_configs(source_config: CircularPatchingConfig, scale: int) -> tup
     :param scale: The integer scale factor (source_size / proxy_size).
     :return: (adjusted_source_config, proxy_config)
     """
-    if scale == 1:
-        return source_config, source_config
+    if scale == 1: return source_config, source_config
 
     s_pp = source_config.patch_params
     radius = s_pp.radius
@@ -126,8 +123,7 @@ def _get_proxy_configs(source_config: CircularPatchingConfig, scale: int) -> tup
     # 1. Adjust radius to be divisible by scale factor
     if radius % scale != 0:
         new_radius = int(round(radius / scale) * scale)
-        if new_radius == 0:
-            new_radius = int(scale)
+        if new_radius == 0: new_radius = int(scale)
         logger.info(f"Guided Variant: Adjusting source radius from {radius} to {new_radius} "
                     f"to be divisible by scale factor {scale}.")
         radius = new_radius
@@ -334,10 +330,8 @@ def _generate_cphl6p(
             raise JobInterrupted
 
         finally:
-            for _shm in shm_items:
-                _shm.close()
-            if job_uicd is not None:
-                job_uicd.close()
+            for _shm in shm_items: _shm.close()
+            if job_uicd is not None: job_uicd.close()
 
     try:
         # Setup lattice iterator & Synthesize
@@ -415,8 +409,7 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
             raise JobInterrupted
         finally:
             shm.close()
-            if job_uicd is not None:
-                job_uicd.close()
+            if job_uicd is not None: job_uicd.close()
 
     try:
         # Step 1: Foundation (Center + Neighbors) are always the first 7 patches in proxy_data[0]
@@ -638,8 +631,7 @@ def generate_cphl6p_guided(
         margin_x=p_margin_x * scale
     )
 
-    if scale > 1:
-        out_seams = cv2.resize(out_seams, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
+    if scale > 1: out_seams = cv2.resize(out_seams, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
 
     return out_tex, out_seams, proxy_out_tex
 
@@ -650,6 +642,7 @@ def generate_cphl6p_guided(
 # region ===== FILL FUNCTIONS =====
 
 def _extend4filling_dims(height: int, width: int, pp: CircularPatchParams, only_horizontally: bool = False):
+    """:return: extended_height, extended_width, margin_y, margin_x"""
     extended_height = _get_extended_size(height, pp.block_size)
     extended_width = _get_extended_size(width, pp.block_size)
     margin_y = (extended_height - height) // 2 if not only_horizontally else 0
@@ -707,12 +700,11 @@ def _fill_cphl(
     extended_filled_mask = extended_holes_mask.copy()
     ret_idx = np.s_[margin_y:height + margin_y, margin_x:width + margin_x]
 
-    if _custom_fill is not None:
-        extended_filled_mask[ret_idx] = _custom_fill
+    # refill related options
+    if _custom_fill is not None: extended_filled_mask[ret_idx] = _custom_fill
+    if _broadcast_zero_mask: extended_holes_mask = np.broadcast_to(np.float32(0.0), extended_holes_mask.shape)
 
-    if _broadcast_zero_mask:
-        extended_holes_mask = np.broadcast_to(np.float32(0.0), extended_holes_mask.shape)
-
+    # extend arrays so that patches can be placed at the edges
     extended_target = cv2.copyMakeBorder(target, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
     extended_seams = (
         np.zeros_like(extended_holes_mask)
@@ -739,7 +731,8 @@ def _fill_cphl(
         result = process_patch_at_location(
             extended_target, extended_filled_mask, extended_seams,
             source_textures, x, y, patching_config, rng,
-            _tex_transfer= (
+            _tex_transfer= None if _transfer_tex is None else\
+            (
                 _transfer_tex[0],
                 cv2.copyMakeBorder(_transfer_tex[1], margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE),
                 _transfer_tex[2],
@@ -753,7 +746,6 @@ def _fill_cphl(
 
 def _reconstruct_fill_cphl(
         target: np.ndarray,
-        mask: np.ndarray,
         source_textures: list[np.ndarray],
         proxy_data: list[ProxyPatch],
         patching_config: CircularPatchingConfig,
@@ -765,7 +757,8 @@ def _reconstruct_fill_cphl(
 
     # setup extended target & mask
     if margin_y is None or margin_x is None:
-        _, def_margin_y, def_margin_x = _extend4filling(mask, pp)
+        h, w = target.shape[:2]
+        _, _, def_margin_y, def_margin_x = _extend4filling_dims(h, w, pp)
         margin_y = margin_y if margin_y is not None else def_margin_y
         margin_x = margin_x if margin_x is not None else def_margin_x
 
@@ -777,8 +770,9 @@ def _reconstruct_fill_cphl(
         _paste_fromproxy(extended_target, item, pp, source_textures)
         check_ui(uicd, 1)
 
-    height, width = mask.shape[:2]
-    return extended_target[margin_y:height + margin_y, margin_x:width + margin_x]
+    height, width = target.shape[:2]
+    result = extended_target[margin_y:height + margin_y, margin_x:width + margin_x]
+    return result
 
 
 def _guided_fill_cphl_step_predictor(mask, patching_config):
@@ -854,14 +848,12 @@ def fill_cphl_guided(
     _, p_margin_y, p_margin_x = _extend4filling(mask, p_pp)
 
     result = _reconstruct_fill_cphl(
-        target=target, mask=mask, source_textures=source_textures, proxy_data=proxy_data,
+        target=target, source_textures=source_textures, proxy_data=proxy_data,
         patching_config=adj_source_config, uicd=uicd,
-        margin_y=p_margin_y * scale,
-        margin_x=p_margin_x * scale
+        margin_y=p_margin_y * scale, margin_x=p_margin_x * scale
     )
 
-    if scale > 1:
-        seams = cv2.resize(seams, (target.shape[1], target.shape[0]), interpolation=cv2.INTER_LINEAR)
+    if scale > 1: seams = cv2.resize(seams, (target.shape[1], target.shape[0]), interpolation=cv2.INTER_LINEAR)
 
     return result, seams, proxy_result
 
@@ -996,8 +988,7 @@ def _fill_hline(
         else cv2.copyMakeBorder(_seams, 0, 0, margin_x, margin_x, cv2.BORDER_CONSTANT)
     )
 
-    if x_bounds is None:
-        x_bounds = (pp.radius, extended_target.shape[1]-pp.radius)
+    if x_bounds is None: x_bounds = (pp.radius, extended_target.shape[1]-pp.radius)
 
     # fill line
     source_textures = TextureList(source_textures, patching_config.get_patch_kernel())
@@ -1022,8 +1013,7 @@ def _make_seamless_vertical_circular(
 ) -> tuple[np.ndarray, np.ndarray]:
     """:return: (texture, seams)"""
 
-    if not lookup_textures:
-        lookup_textures = [target]
+    if not lookup_textures: lookup_textures = [target]
 
     row = target.shape[0]//2
     target = np.ascontiguousarray(np.roll(target, row, axis=0))
@@ -1430,11 +1420,9 @@ def texture_transfer(
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
     import dataclasses
 
-    if alphas is None:
-        alphas = [.75, .5, .25]
+    if alphas is None: alphas = [.75, .5, .25]
 
-    if last_diameter is None:
-        last_diameter = round(patching_config.patch_params.diameter / 3.6) | 1
+    if last_diameter is None: last_diameter = round(patching_config.patch_params.diameter / 3.6) | 1
 
     diameters = np.linspace(patching_config.patch_params.diameter, last_diameter, num=len(alphas), dtype=int)
 
@@ -1446,12 +1434,12 @@ def texture_transfer(
 
     def curate_texture(tex: np.ndarray) -> np.ndarray:
         new_tex = None
-        if tex.ndim > 3:
-            raise ValueError("Texture dimension is too large")
+
+        if tex.ndim > 3: raise ValueError("Texture dimension is too large")
         if tex.ndim == 3 and tex.shape[-1] > 1:
             new_tex = cv2.cvtColor(tex, cv2.COLOR_BGR2GRAY) if tex.shape[-1] == 3 else tex.mean(axis=-1)
-        if new_tex is None:
-            new_tex = tex.copy()
+        if new_tex is None: new_tex = tex.copy()
+
         cv2.GaussianBlur(new_tex, (5, 5), 1, dst=new_tex)
         tile_grid_size = (tex.shape[0]//10, tex.shape[1]//10)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=tile_grid_size)
@@ -1533,10 +1521,9 @@ def _texture_transfer_guided_advanced(
         # reconstruct using the original texture
         _scale_proxy_patch_list(proxy_data, scale, adj_src_conf.patch_params.block_size)
         texture = _reconstruct_fill_cphl(
-            target=texture, mask=mask, source_textures=src_textures, proxy_data=proxy_data,
+            target=texture, source_textures=src_textures, proxy_data=proxy_data,
             patching_config=adj_src_conf, uicd=uicd,
-            margin_y=p_margin_y * scale,
-            margin_x=p_margin_x * scale
+            margin_y=p_margin_y * scale, margin_x=p_margin_x * scale
         )
         proxy_data = []  # clear proxy data for future application
 
@@ -1571,14 +1558,13 @@ def _texture_transfer_guided_advanced(
         )
         apply_recording(adjust_config, proxy_config)
 
-    if scale > 1:
-        seams = cv2.resize(seams, (texture.shape[1], texture.shape[0]), interpolation=cv2.INTER_LINEAR)
+    if scale > 1: seams = cv2.resize(seams, (texture.shape[1], texture.shape[0]), interpolation=cv2.INTER_LINEAR)
 
     # clear area outside roi
     np.subtract(1, mask, out=mask)
     apply_mask(texture, mask, overwrite=True)
     seams *= mask
-    return texture, seams, proxy_result
+    return texture, seams, prx_tex
 
 
 
