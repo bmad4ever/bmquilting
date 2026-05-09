@@ -353,9 +353,7 @@ def _generate_cphl6p(
         return texture[ret_idx], seams[ret_idx]
     finally:
         get_reusable_executor().shutdown(wait=True)
-        for shm in [texture_shm, seams_shm, filled_shm]:
-            shm.close()
-            shm.unlink()
+        for shm in [texture_shm, seams_shm, filled_shm]: shm.close(); shm.unlink()
         lookup_texts.release()
 
 
@@ -435,9 +433,7 @@ def _reconstruct_texture_cphl6p(source_textures: list[np.ndarray],
         return texture[ret_idx]
     finally:
         get_reusable_executor().shutdown(wait=True)
-        for shm in [texture_shm]:
-            shm.close()
-            shm.unlink()
+        for shm in [texture_shm]: shm.close(); shm.unlink()
         lookup_texts.release()
 
 
@@ -1349,27 +1345,53 @@ def seamless_horizontal_guided(
 
 
 
+
+def _texture_transfer_advanced_step_predictor(curated_target, config_alpha_pairs, target_roi):
+    mask = target_roi
+    if mask is None: mask = np.broadcast_to(np.float32(0.0), curated_target.shape[:2])
+    return sum(_fill_cphl_step_predictor(mask, cfg) for cfg, _ in config_alpha_pairs)
+
+
+def _texture_transfer_guided_advanced_step_predictor(
+        src_textures, proxy_textures, curated_proxy_target, config_alpha_pairs, target_roi):
+    mask = target_roi
+    if mask is None: mask = np.broadcast_to(np.float32(0.0), curated_proxy_target.shape[:2])
+
+    scale = _get_scale_factor(proxy_textures, src_textures)
+    total = 0
+    for config, _ in config_alpha_pairs:
+        _, proxy_config = _get_proxy_configs(config, scale)
+        total += _fill_cphl_step_predictor(mask, proxy_config) * 2  # fill + reconstruction, hence 2x
+    return total
+
+def _texture_transfer_step_predictor(src_textures, target, patching_config, alphas, last_diameter, downscale_factor, target_roi):
+    config_alpha_pairs = _texture_transfer_auto_config_alpha_pairs(patching_config, alphas, last_diameter)
+
+    if downscale_factor is None or downscale_factor == 1:
+        return _texture_transfer_advanced_step_predictor(target, config_alpha_pairs, target_roi)
+
+    # mock data so that prior step predictor can be used without actually resizing stuff
+    resized_target_shape = (target.shape[0]//downscale_factor, target.shape[1]//downscale_factor)
+    resized_proxy_shape = (src_textures[0].shape[0]//downscale_factor, src_textures[0].shape[1]//downscale_factor)
+    curated_proxy_target = np.broadcast_to(np.float32(0.0), resized_target_shape)
+    proxy_textures = [np.broadcast_to(np.float32(0.0), resized_proxy_shape)]
+
+    return _texture_transfer_guided_advanced_step_predictor(src_textures, proxy_textures, curated_proxy_target, config_alpha_pairs, target_roi)
+
+
+
 def _texture_transfer_advanced(
     src_textures: list[np.ndarray],
     curated_textures: list[np.ndarray],
     curated_target: np.ndarray,
     config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
     seed: int,
-    # strat: str = "chpl6p", # TODO
     target_roi: np.ndarray | None = None,
     recompute_valid_area: bool = False,
     uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-
-    :param proxy_textures:
-    :param src_textures:
-    :param curated_target:
-    :param config_alpha_pairs:
-    :param seed:
     :param target_roi: binary mask, where the roi is painted with ones, and the remaining area with zeroes
-    :param uicd:
-    :return:
     """
     if target_roi is None:
         target_roi = np.broadcast_to(np.float32(1.0), curated_target.shape[:2])
@@ -1405,7 +1427,30 @@ def _texture_transfer_advanced(
     return tex, seams
 
 
+def _texture_transfer_auto_config_alpha_pairs(
+        config: CircularPatchingConfig,
+        alphas:list[float]|None,
+        last_diameter:int|None
+) -> list[tuple[CircularPatchingConfig, float]]:
+    import dataclasses
+
+    if alphas is None: alphas = [.75, .5, .25]
+    if last_diameter is None: last_diameter = round(config.patch_params.diameter / 3.6) | 1
+
+    diameters = np.linspace(config.patch_params.diameter, last_diameter, num=len(alphas), dtype=int)
+    config_alpha_pairs = []
+    for diam, alpha in zip(diameters, alphas):
+        new_patch_params = dataclasses.replace(config.patch_params, diameter=(diam|1), overlap_ratio=.5)
+        config = dataclasses.replace(config, patch_params=new_patch_params)
+        config_alpha_pairs.append((config, alpha))
+
+    return config_alpha_pairs
+
+
+@step_predictor(_texture_transfer_step_predictor)
 @auto_uint8_to_float32
+@clear_cache_post_exec(*_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def texture_transfer(
     src_textures: list[np.ndarray],
     target: np.ndarray,
@@ -1418,19 +1463,8 @@ def texture_transfer(
     value_range: float = 255.0,
     uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
-    import dataclasses
 
-    if alphas is None: alphas = [.75, .5, .25]
-
-    if last_diameter is None: last_diameter = round(patching_config.patch_params.diameter / 3.6) | 1
-
-    diameters = np.linspace(patching_config.patch_params.diameter, last_diameter, num=len(alphas), dtype=int)
-
-    config_alpha_pairs = []
-    for diam, alpha in zip(diameters, alphas):
-        new_patch_params = dataclasses.replace(patching_config.patch_params, diameter=(diam|1), overlap_ratio=.5)
-        config = dataclasses.replace(patching_config, patch_params=new_patch_params)
-        config_alpha_pairs.append((config, alpha))
+    config_alpha_pairs = _texture_transfer_auto_config_alpha_pairs(patching_config, alphas, last_diameter)
 
     def curate_texture(tex: np.ndarray) -> np.ndarray:
         new_tex = None
@@ -1484,7 +1518,6 @@ def _texture_transfer_guided_advanced(
     curated_proxy_target: np.ndarray,
     config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
     seed: int,
-    # strat: str = "chpl6p", # TODO
     target_roi: np.ndarray | None = None,  # should be proxy sized
     recompute_valid_area: bool = False,
     uicd: UiCoordData | None = None,
@@ -1494,7 +1527,6 @@ def _texture_transfer_guided_advanced(
     # initially I though of only using the last proxy iteration for reconstructing the texture;
     # however, the reconstruction may have noticeable seams at the edges of a patch,
     # so all the proxy synthesis are recorded and applied.
-
 
     if target_roi is None:
         target_roi = np.broadcast_to(np.float32(1.0), curated_proxy_target.shape[:2])
@@ -1565,6 +1597,84 @@ def _texture_transfer_guided_advanced(
     apply_mask(texture, mask, overwrite=True)
     seams *= mask
     return texture, seams, prx_tex
+
+
+@step_predictor(_texture_transfer_advanced_step_predictor)
+@auto_uint8_to_float32
+@clear_cache_post_exec(*_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
+def texture_transfer_advanced(
+    src_textures: list[np.ndarray],
+    curated_textures: list[np.ndarray],
+    curated_target: np.ndarray,
+    config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
+    seed: int,
+    target_roi: np.ndarray | None = None,
+    recompute_valid_area: bool = False,
+    uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    """
+    :param curated_textures:
+        Textures processed in the same way as the target.
+        The number of channels should be the same as the target, but can differ from src.
+    :param config_alpha_pairs:
+        The settings to run in each iteration.
+        Typically, both the block sizes and alphas are decreasing.
+        Alpha is the weight given to a patch similitude to the target during patch selection:
+        if alpha=0, then only the overlap with existing data is used for patch selection;
+        if alpha=1, then only the similitude with the target, at the location, is used.
+    :param target_roi:
+        Mask with the area of interest in the target marked with 1s, and the remaining area with 0s.
+    :param recompute_valid_area:
+        When using proxies with invalid areas, in order to save on computations
+        (and because the block size is expected to decrease, otherwise an invalid patch draw could occur)
+        the patch draw-able area is obtained only once using the first configuration in config_alpha_pairs.
+        To ignore the default behavior and enforce the recomputation of the invalid areas per configuration,
+        set recompute_valid_area to True.
+
+    :return: texture, seams, proxy_texture
+    """
+    return _texture_transfer_advanced(
+        src_textures, curated_textures, curated_target,
+        config_alpha_pairs, seed,
+        target_roi, recompute_valid_area, uicd
+    )
+
+@step_predictor(_texture_transfer_guided_advanced_step_predictor)
+@auto_uint8_to_float32
+@clear_cache_post_exec(*_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
+def texture_transfer_guided_advanced(
+    src_textures: list[np.ndarray],
+    proxy_textures: list[np.ndarray],
+    curated_proxy_textures: list[np.ndarray],
+    curated_proxy_target: np.ndarray,
+    config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
+    seed: int,
+    target_roi: np.ndarray | None = None,  # should be proxy sized
+    recompute_valid_area: bool = False,
+    uicd: UiCoordData | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
+    """
+    :param curated_proxy_textures:
+        Proxy textures processed in the same way as the target.
+        The number of channels should be the same as the target, but can differ from the src & proxies.
+    :param curated_proxy_target:
+        Its resolution should be the same as the proxy textures
+    :param config_alpha_pairs:
+        The "pseudo" settings to run in each iteration.
+        The configs should be set as if they were to run at the src_textures resolution, not at the proxies resolution.
+    :param target_roi:
+        Mask with the area of interest in the target marked with 1s, and the remaining area with 0s.
+        Should have the same size and resolution as curated_proxy_target.
+
+    :return: texture, seams, proxy_texture
+    """
+    return _texture_transfer_guided_advanced(
+        src_textures, proxy_textures, curated_proxy_textures, curated_proxy_target,
+        config_alpha_pairs, seed,
+        target_roi, recompute_valid_area, uicd
+    )
 
 
 
