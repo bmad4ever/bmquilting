@@ -20,6 +20,7 @@ from ._internal.common import (
 )
 from ._internal.hexagonal_lattice import HexagonalLatticeIterator, Vec2_int
 from ._internal.shmem_utils import SharedTextureList
+from .utils.texture import curate_for_tex_transfer
 
 from joblib.externals.loky import get_reusable_executor
 from multiprocessing.shared_memory import SharedMemory
@@ -1466,29 +1467,12 @@ def texture_transfer(
 
     config_alpha_pairs = _texture_transfer_auto_config_alpha_pairs(patching_config, alphas, last_diameter)
 
-    def curate_texture(tex: np.ndarray) -> np.ndarray:
-        new_tex = None
-
-        if tex.ndim > 3: raise ValueError("Texture dimension is too large")
-        if tex.ndim == 3 and tex.shape[-1] > 1:
-            new_tex = cv2.cvtColor(tex, cv2.COLOR_BGR2GRAY) if tex.shape[-1] == 3 else tex.mean(axis=-1)
-        if new_tex is None: new_tex = tex.copy()
-
-        cv2.GaussianBlur(new_tex, (5, 5), 1, dst=new_tex)
-        tile_grid_size = (tex.shape[0]//10, tex.shape[1]//10)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=tile_grid_size)
-        new_tex = clahe.apply(np.uint8(new_tex*value_range))
-        new_tex = cv2.equalizeHist(new_tex).astype(np.float32)
-        new_tex /= value_range
-        new_tex = new_tex[:, :, np.newaxis]
-        return new_tex
-
     if downscale_factor is not None and downscale_factor > 1:
         resized_target = cv2.resize(target, (target.shape[1]//downscale_factor, target.shape[0]//downscale_factor))
         resized_src_texs = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
         proxy_textures = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
-        curated_rsz_textures = [curate_texture(t) for t in resized_src_texs]
-        curated_rsz_target = curate_texture(resized_target)
+        curated_rsz_textures = [curate_for_tex_transfer(t, value_range) for t in resized_src_texs]
+        curated_rsz_target = curate_for_tex_transfer(resized_target, value_range)
         cv2.imshow("cr_s", curated_rsz_textures[0])
         cv2.imshow("cr_target", curated_rsz_target)
         cv2.waitKey(0)
@@ -1504,8 +1488,8 @@ def texture_transfer(
             uicd=uicd,
         )[:2]
 
-    curated_textures = [curate_texture(t) for t in src_textures]
-    curated_target = curate_texture(target)
+    curated_textures = [curate_for_tex_transfer(t, value_range) for t in src_textures]
+    curated_target = curate_for_tex_transfer(target, value_range)
     return _texture_transfer_advanced(
         src_textures, curated_textures, curated_target, config_alpha_pairs, seed, target_roi,
         recompute_valid_area=False, uicd=uicd)

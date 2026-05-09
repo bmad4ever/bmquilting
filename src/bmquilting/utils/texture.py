@@ -228,3 +228,29 @@ def set_invalid_texture_area(src: np.ndarray, mask: np.ndarray) -> np.ndarray:
         res /= 255.0
     res[mask == 0] = np.inf
     return res
+
+
+def curate_for_tex_transfer(tex: np.ndarray, value_range=255.0, cvt_code: int|None = cv2.COLOR_BGR2GRAY) -> np.ndarray:
+    """
+    Converts tex to a single channels 2D array, if not already converted.
+    Applies the following operations in order: Gaussian Blur; CLAHE; Equalize Histogram.
+    :param tex: image
+    :param value_range: the  maximum possible value in the tex's format (supposes all channels have the same range)
+    :param cvt_code: if set to None, the channels' mean is used; otherwise, cv2.cvtColor(tex, cvt_code) is used.
+    :return: the "curated" texture with shape HxWx1 (ndim=3)
+    """
+    new_tex = None
+
+    if tex.ndim > 3: raise ValueError("Texture dimension is too large")
+    if tex.ndim == 3 and tex.shape[-1] > 1:
+        new_tex = cv2.cvtColor(tex, cvt_code) if cvt_code is not None else tex.mean(axis=-1)
+    if new_tex is None: new_tex = tex.copy()
+
+    cv2.GaussianBlur(new_tex, (5, 5), 1, dst=new_tex)
+    tile_grid_size = (tex.shape[0]//10, tex.shape[1]//10)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=tile_grid_size)
+    new_tex = clahe.apply(np.uint8(new_tex*value_range))
+    new_tex = cv2.equalizeHist(new_tex).astype(np.float32)
+    new_tex /= value_range
+    new_tex = new_tex[:, :, np.newaxis]
+    return new_tex
