@@ -658,9 +658,22 @@ def _extend4filling(ndarray: np.ndarray, pp: CircularPatchParams, only_horizonta
     extended_ndarray = cv2.copyMakeBorder(ndarray, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_REPLICATE)
     return extended_ndarray, margin_y, margin_x
 
+def _erode_extended_hole_mask(extended_holes_mask: np.ndarray, config: CircularPatchingConfig) -> np.ndarray:
+    """
+    Expands the mask hole so that patches properly overlap with the fill mask
+    otherwise the patch may fall near the edge of the filled section
+    and barely blend from the generated to the existing section.
+    """
+    spacing = config.spacing
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (spacing, spacing))
+    extended_holes_mask = cv2.erode(extended_holes_mask, kernel, iterations=1)
+    return extended_holes_mask
+
 
 def _fill_cphl_step_predictor(mask: np.ndarray, patching_config: CircularPatchingConfig):
     extended_mask, margin_y, margin_x = _extend4filling(mask, patching_config.patch_params)
+    extended_mask = _erode_extended_hole_mask(extended_mask, patching_config)
+
     height, width = mask.shape[:2]
     hexa_iter = HexagonalLatticeIterator(
         min_x=margin_x // 2, min_y=margin_y // 2,
@@ -710,18 +723,13 @@ def _fill_cphl(
         else cv2.copyMakeBorder(_seams, margin_y, margin_y, margin_x, margin_x, cv2.BORDER_CONSTANT)
     )
 
-    # expand mask hole so that patches properly overlap with the fill mask
-    # otherwise the patch may fall near the edge of the filled section
-    # and barely blend from the generated to the existing section
-    spacing = patching_config.spacing
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (spacing, spacing))
-    extended_holes_mask = cv2.erode(extended_holes_mask, kernel, iterations=1)
+    extended_holes_mask = _erode_extended_hole_mask(extended_holes_mask, patching_config)
 
     # setup iterator
     hexa_iter = HexagonalLatticeIterator(
         min_x=margin_x // 2, min_y=margin_y // 2,
         max_x=width + margin_x + margin_x // 2, max_y=height + margin_y + margin_y // 2,
-        spacing=spacing,
+        spacing=patching_config.spacing,
     )
 
     # fill the holes
