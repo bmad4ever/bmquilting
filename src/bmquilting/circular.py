@@ -781,8 +781,15 @@ def _reconstruct_fill_cphl(
     return result
 
 
-def _guided_fill_cphl_step_predictor(mask, patching_config):
-    return _fill_cphl_step_predictor(mask, patching_config) * 2
+def _guided_fill_cphl_step_predictor(proxy_target, mask, proxy_textures, source_textures, patching_config):
+    scale = _get_scale_factor(proxy_textures, source_textures)
+    _, proxy_config = _get_proxy_configs(patching_config, scale)
+    if scale > 1:
+        ph, pw = proxy_target.shape[:2]
+        proxy_mask = cv2.resize(mask, (pw, ph), interpolation=cv2.INTER_LINEAR)
+    else:
+        proxy_mask = mask
+    return _fill_cphl_step_predictor(proxy_mask, proxy_config) * 2
 
 
 @step_predictor(_fill_cphl_step_predictor)
