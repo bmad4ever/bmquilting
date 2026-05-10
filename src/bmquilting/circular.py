@@ -1100,13 +1100,9 @@ def _guided_make_seamless_vertical(
         _proxy_seams: np.ndarray | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """:param scale: pre-computed source/proxy"""
-    source_textures = source_textures if source_textures else [target]
-    proxy_textures = proxy_textures if proxy_textures else [proxy_target]
-
     proxy_data = []
     def record(idx_mask_tuple: ProxyPatch):
         proxy_data.append(idx_mask_tuple)
-
 
     # Calculate synchronized roll/center based on proxy scale
     y_proxy = proxy_target.shape[0] // 2
@@ -1183,14 +1179,20 @@ def _make_seamless_both_circular_steps(target: np.ndarray, patching_config: Circ
         + _make_seamless_horizontal_circular_steps(target, patching_config)
     )
 
-def _guided_make_seamless_vertical_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
-    return _make_seamless_vertical_circular_steps(target, patching_config) * 2
+def _guided_make_seamless_vertical_circular_steps(proxy_target, target, patching_config, proxy_textures=None, source_textures=None):
+    _, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
+        patching_config, proxy_target, proxy_textures, source_textures, target)
+    return _make_seamless_vertical_circular_steps(proxy_target, proxy_config) * 2
 
-def _guided_make_seamless_horizontal_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
-    return _make_seamless_horizontal_circular_steps(target, patching_config) * 2
+def _guided_make_seamless_horizontal_circular_steps(proxy_target, target, patching_config, proxy_textures=None, source_textures=None):
+    _, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
+        patching_config, proxy_target, proxy_textures, source_textures, target)
+    return _make_seamless_horizontal_circular_steps(proxy_target, proxy_config) * 2
 
-def _guided_make_seameless_both_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
-    return _make_seamless_both_circular_steps(target, patching_config) * 2
+def _guided_make_seameless_both_circular_steps(proxy_target, target, patching_config, proxy_textures=None, source_textures=None):
+    _, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
+        patching_config, proxy_target, proxy_textures, source_textures, target)
+    return _make_seamless_both_circular_steps(proxy_target, proxy_config) * 2
 
 # endregion  -- step predictor methods --
 
@@ -1240,7 +1242,7 @@ def seamless_both(
     return texture, seams
 
 
-@step_predictor(_guided_make_seamless_horizontal_circular_steps)
+@step_predictor(_guided_make_seameless_both_circular_steps)
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
@@ -1256,13 +1258,10 @@ def seamless_both_guided(
     When using proxy textures with a different size than the source, the patching parameters
     (radius and spacing) may be auto-adjusted to ensure perfect grid alignment and prevent spatial drift.
     """
-    source_textures = source_textures if source_textures else [target]
-    proxy_textures = proxy_textures if proxy_textures else [proxy_target]
+    adj_source_config, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
+        patching_config, proxy_target, proxy_textures, source_textures, target)
 
     seed_iterator = iter(SeedSequence(seed).spawn(3))
-
-    scale = _get_scale_factor(proxy_textures, source_textures)
-    adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
 
     # Vertical pass; then Horizontal pass
     texture, seams, proxy, p_seams = _guided_make_seamless_vertical(
@@ -1313,6 +1312,14 @@ def seamless_both_guided(
     return texture, seams, proxy
 
 
+def _prepare_seamless_guided_args(patching_config, proxy_target, proxy_textures, source_textures, target):
+    source_textures = source_textures if source_textures else [target]
+    proxy_textures = proxy_textures if proxy_textures else [proxy_target]
+    scale = _get_scale_factor(proxy_textures, source_textures)
+    adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
+    return adj_source_config, proxy_config, proxy_textures, scale, source_textures
+
+
 @step_predictor(_guided_make_seamless_vertical_circular_steps)
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
@@ -1330,8 +1337,8 @@ def seamless_vertical_guided(
     When using proxy textures with a different size than the source, the patching parameters
     (radius and spacing) may be auto-adjusted to ensure perfect grid alignment and prevent spatial drift.
     """
-    scale = _get_scale_factor(proxy_textures, source_textures)
-    adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
+    adj_source_config, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
+        patching_config, proxy_target, proxy_textures, source_textures, target)
     return _guided_make_seamless_vertical(
         proxy_target, target, proxy_textures, source_textures, scale, adj_source_config, proxy_config, seed, uicd)[:3]
 
@@ -1353,8 +1360,8 @@ def seamless_horizontal_guided(
     When using proxy textures with a different size than the source, the patching parameters
     (radius and spacing) may be auto-adjusted to ensure perfect grid alignment and prevent spatial drift.
     """
-    scale = _get_scale_factor(proxy_textures, source_textures)
-    adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
+    adj_source_config, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
+        patching_config, proxy_target, proxy_textures, source_textures, target)
     return _guided_make_seamless_horizontal(
         proxy_target, target, proxy_textures, source_textures, scale, adj_source_config, proxy_config, seed, uicd)[:3]
 
