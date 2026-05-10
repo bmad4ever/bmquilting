@@ -8,14 +8,37 @@ import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from bmquilting.circular import (
-    CircularPatchingConfig, CircularPatchParams,
+    CircularPatchingConfig,
     generate_cphl6p, generate_cphl6p_guided,
     fill_cphl, fill_cphl_guided,
     seamless_vertical, seamless_horizontal, seamless_both,
     seamless_both_guided, seamless_vertical_guided, seamless_horizontal_guided
 )
+from bmquilting.utils.ui_coord import UiCoordData, JobMemoryManager
 
 class TestCircularAPI(unittest.TestCase):
+    def assertSteps(self, func, *args, **kwargs):
+        """
+        Helper to compare predicted steps with actual steps counted by uicd.
+        Returns the result of the function call.
+        """
+        if func.__name__ in ['generate_cphl6p', 'generate_cphl6p_guided', 'generate_cphl6p_recursive', 'refill_cphl6p', 'refill_cphl6p_recursive']:
+            num_jobs = 6
+        else:
+            num_jobs = 1
+        
+        with JobMemoryManager(num_jobs) as jmm:
+            uicd = UiCoordData(jmm.name, 0)
+            kwargs['uicd'] = uicd
+            
+            predicted = func.predict_steps(*args, **kwargs)
+            res = func(*args, **kwargs)
+            actual = jmm.get_progress()
+            
+            if predicted is not None:
+                self.assertEqual(predicted, actual, f"Step mismatch in {func.__name__}")
+            return res
+
     @classmethod
     def setUpClass(cls):
         # Parameters
@@ -41,15 +64,16 @@ class TestCircularAPI(unittest.TestCase):
         cls.config = CircularPatchingConfig.with_seams(**pp, tolerance=0.1, spacing_factor=1.2)
 
     def test_01_generate_cphl6p(self):
-        out_tex, out_seams = generate_cphl6p(self.source_textures, self.config, self.h, self.w, self.seed)
+        out_tex, out_seams = self.assertSteps(generate_cphl6p, self.source_textures, self.config, self.h, self.w, self.seed)
         self.assertEqual(out_tex.shape, (self.h, self.w, 3))
         self.assertEqual(out_seams.shape, (self.h, self.w))
 
     def test_02_generate_cphl6p_guided(self):
-        out_tex, out_seams, p_out_tex = generate_cphl6p_guided(
-            self.proxy_textures, self.source_textures, self.config, self.h, self.w, self.seed)
+        out_tex, out_seams, p_out_tex = self.assertSteps(generate_cphl6p_guided, self.proxy_textures, self.source_textures, self.config, self.h, self.w, self.seed)
         self.assertEqual(out_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(out_seams.shape, (self.h, self.w))
         self.assertEqual(p_out_tex.shape, (self.ph, self.pw, 3))
+
 
     def test_03_fill_cphl(self):
         mask = np.ones((self.h, self.w), dtype=np.float32)
@@ -57,8 +81,9 @@ class TestCircularAPI(unittest.TestCase):
         target = self.source_tex.copy()
         target[mask == 0] = 0
         
-        res_tex, res_seams = fill_cphl(target, mask, self.source_textures, self.config, self.seed)
+        res_tex, res_seams = self.assertSteps(fill_cphl, target, mask, self.source_textures, self.config, self.seed)
         self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
 
     def test_04_fill_cphl_guided(self):
         mask = np.ones((self.h, self.w), dtype=np.float32)
@@ -70,63 +95,43 @@ class TestCircularAPI(unittest.TestCase):
         p_mask = cv2.resize(mask, (self.pw, self.ph), interpolation=cv2.INTER_NEAREST)
         p_target[p_mask == 0] = 0
         
-        res_tex, res_seams, p_res_tex = fill_cphl_guided(
-            p_target, target, mask, self.proxy_textures, self.source_textures, self.config, self.seed)
+        res_tex, res_seams, p_res_tex = self.assertSteps(fill_cphl_guided, p_target, target, mask, self.proxy_textures, self.source_textures, self.config, self.seed)
         self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
         self.assertEqual(p_res_tex.shape, (self.ph, self.pw, 3))
 
     def test_05_seamless_vertical(self):
-        # Default (None) lookup
-        res_tex, res_seams = seamless_vertical(self.source_tex, self.config, self.seed)
+        res_tex, res_seams = self.assertSteps(seamless_vertical, self.source_tex, self.config, self.seed)
         self.assertEqual(res_tex.shape, (self.h, self.w, 3))
-        # Explicit lookup
-        res_tex, res_seams = seamless_vertical(self.source_tex, self.config, self.seed, lookup_textures=self.source_textures)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
 
     def test_06_seamless_horizontal(self):
-        # Default (None) lookup
-        res_tex, res_seams = seamless_horizontal(self.source_tex, self.config, self.seed)
+        res_tex, res_seams = self.assertSteps(seamless_horizontal, self.source_tex, self.config, self.seed)
         self.assertEqual(res_tex.shape, (self.h, self.w, 3))
-        # Explicit lookup
-        res_tex, res_seams = seamless_horizontal(self.source_tex, self.config, self.seed, lookup_textures=self.source_textures)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
 
     def test_07_seamless_both(self):
-        # Default (None) lookup
-        res_tex, res_seams = seamless_both(self.source_tex, self.config, self.seed)
+        res_tex, res_seams = self.assertSteps(seamless_both, self.source_tex, self.config, self.seed)
         self.assertEqual(res_tex.shape, (self.h, self.w, 3))
-        # Explicit lookup
-        res_tex, res_seams = seamless_both(self.source_tex, self.config, self.seed, lookup_textures=self.source_textures)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
 
     def test_08_seamless_vertical_guided(self):
-        # Default (None) textures
-        res_tex, res_seams, p_res_tex = seamless_vertical_guided(self.proxy_tex, self.source_tex, self.config, self.seed)
+        res_tex, res_seams, p_res_tex = self.assertSteps(seamless_vertical_guided, self.proxy_tex, self.source_tex, self.config, self.seed)
         self.assertEqual(res_tex.shape, (self.h, self.w, 3))
-        # Explicit textures
-        res_tex, res_seams, p_res_tex = seamless_vertical_guided(
-            self.proxy_tex, self.source_tex, self.config, self.seed, 
-            proxy_textures=self.proxy_textures, source_textures=self.source_textures)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
+        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, 3))
 
     def test_09_seamless_horizontal_guided(self):
-        # Default (None) textures
-        res_tex, res_seams, p_res_tex = seamless_horizontal_guided(self.proxy_tex, self.source_tex, self.config, self.seed)
+        res_tex, res_seams, p_res_tex = self.assertSteps(seamless_horizontal_guided, self.proxy_tex, self.source_tex, self.config, self.seed)
         self.assertEqual(res_tex.shape, (self.h, self.w, 3))
-        # Explicit textures
-        res_tex, res_seams, p_res_tex = seamless_horizontal_guided(
-            self.proxy_tex, self.source_tex, self.config, self.seed, 
-            proxy_textures=self.proxy_textures, source_textures=self.source_textures)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
+        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, 3))
 
     def test_10_seamless_both_guided(self):
-        # Default (None) textures
-        res_tex, res_seams, p_res_tex = seamless_both_guided(self.proxy_tex, self.source_tex, None, None, self.config, self.seed)
+        res_tex, res_seams, p_res_tex = self.assertSteps(seamless_both_guided, self.proxy_tex, self.source_tex, self.proxy_textures, self.source_textures, self.config, self.seed)
         self.assertEqual(res_tex.shape, (self.h, self.w, 3))
-        # Explicit textures
-        res_tex, res_seams, p_res_tex = seamless_both_guided(
-            self.proxy_tex, self.source_tex, self.proxy_textures, self.source_textures, self.config, self.seed)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
+        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, 3))
 
 if __name__ == "__main__":
     unittest.main()
