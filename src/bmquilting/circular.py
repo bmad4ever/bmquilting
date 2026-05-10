@@ -464,10 +464,11 @@ def _generate_cphl6p_recursive_step_predictor(patching_configs: list[CircularPat
                                               out_h: NumPixels, out_w: NumPixels):
     return sum((_generate_cphl6p_step_predictor(conf, out_h, out_w) for conf in patching_configs))
 
-
-def _generate_guided_chlp6p_step_predictor(patching_config: CircularPatchingConfig, out_h: int, out_w: int):
-    return _generate_cphl6p_step_predictor(patching_config, out_h, out_w) * 2
-
+def _generate_guided_chlp6p_step_predictor(proxy_textures, source_textures, patching_config, out_h, out_w, **kwargs):
+    scale = _get_scale_factor(proxy_textures, source_textures)
+    _, proxy_config = _get_proxy_configs(patching_config, scale)
+    p_out_h, p_out_w = out_h // scale, out_w // scale
+    return _generate_cphl6p_step_predictor(proxy_config, p_out_h, p_out_w) * 2
 
 # endregion -- step predictor methods --
 
