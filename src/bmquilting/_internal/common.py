@@ -64,6 +64,10 @@ class ValidatedTexturesIterator(Protocol):
         ...
 
 
+def has_any_mask(vti: ValidatedTexturesIterator) -> bool:
+    return any(vti.has_mask(idx) for idx in range(vti.__len__()))
+
+
 def is_valid_texture_list(texture_list: list[np.ndarray]) -> tuple[np._DTypeT_co, int]:
     """
     :raise ValueError: raised if not all textures have the same dtype and number of channels

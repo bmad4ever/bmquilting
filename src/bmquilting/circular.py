@@ -16,7 +16,7 @@ from ._internal.decorators import clear_cache_post_exec, step_predictor, ndarray
 from .utils.ui_coord import UiCoordData, handle_ui_interrupts, check_ui, JobInterrupted
 from ._internal.common import (
     NumPixels, PatchIdx, TextureList, Percentage, ValidatedTexturesIterator,
-    apply_mask, blend_with_mask,
+    apply_mask, blend_with_mask, has_any_mask
 )
 from ._internal.hexagonal_lattice import HexagonalLatticeIterator, Vec2_int
 from ._internal.shmem_utils import SharedTextureList
@@ -1411,7 +1411,6 @@ def _texture_transfer_advanced(
     config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
     seed: int,
     target_roi: np.ndarray | None = None,
-    recompute_valid_area: bool = False,
     uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -1434,8 +1433,9 @@ def _texture_transfer_advanced(
     filled = np.broadcast_to(np.float32(1.0), target_roi.shape)
 
     for config, alpha in config_alpha_pairs[1:]:
-        if recompute_valid_area:
+        if has_any_mask(src_tex_list):
             src_tex_list = TextureList(src_textures, config.get_patch_kernel())
+        if has_any_mask(cur_tex_list):
             cur_tex_list = TextureList(curated_textures, config.get_patch_kernel())
         tex, seams = _fill_cphl(
             tex, inv_target_roi, src_tex_list,
@@ -1507,15 +1507,13 @@ def texture_transfer(
             config_alpha_pairs=config_alpha_pairs,
             seed=seed,
             target_roi=target_roi,
-            recompute_valid_area=False,
             uicd=uicd,
         )[:2]
 
     curated_textures = [curate_for_tex_transfer(t, value_range) for t in src_textures]
     curated_target = curate_for_tex_transfer(target, value_range)
     return _texture_transfer_advanced(
-        src_textures, curated_textures, curated_target, config_alpha_pairs, seed, target_roi,
-        recompute_valid_area=False, uicd=uicd)
+        src_textures, curated_textures, curated_target, config_alpha_pairs, seed, target_roi, uicd=uicd)
 
 
 def _texture_transfer_guided_advanced(
@@ -1526,7 +1524,6 @@ def _texture_transfer_guided_advanced(
     config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
     seed: int,
     target_roi: np.ndarray | None = None,  # should be proxy sized
-    recompute_valid_area: bool = False,
     uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
@@ -1585,8 +1582,9 @@ def _texture_transfer_guided_advanced(
     filled = np.broadcast_to(np.float32(1.0), target_roi.shape)
     for config, alpha in config_alpha_pairs[1:]:
         adjust_config, proxy_config = _get_proxy_configs(config, scale)
-        if recompute_valid_area:
+        if has_any_mask(pxy_tex_list):
             pxy_tex_list = TextureList(proxy_textures, proxy_config.get_patch_kernel())
+        if has_any_mask(cur_tex_list):
             cur_tex_list = TextureList(curated_proxy_textures, proxy_config.get_patch_kernel())
         prx_tex, seams = _fill_cphl(
             prx_tex, inv_target_roi, pxy_tex_list,
@@ -1617,7 +1615,6 @@ def texture_transfer_advanced(
     config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
     seed: int,
     target_roi: np.ndarray | None = None,
-    recompute_valid_area: bool = False,
     uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
     """
@@ -1632,19 +1629,13 @@ def texture_transfer_advanced(
         if alpha=1, then only the similitude with the target, at the location, is used.
     :param target_roi:
         Mask with the area of interest in the target marked with 1s, and the remaining area with 0s.
-    :param recompute_valid_area:
-        When using proxies with invalid areas, in order to save on computations
-        (and because the block size is expected to decrease, otherwise an invalid patch draw could occur)
-        the patch draw-able area is obtained only once using the first configuration in config_alpha_pairs.
-        To ignore the default behavior and enforce the recomputation of the invalid areas per configuration,
-        set recompute_valid_area to True.
 
     :return: texture, seams, proxy_texture
     """
     return _texture_transfer_advanced(
         src_textures, curated_textures, curated_target,
         config_alpha_pairs, seed,
-        target_roi, recompute_valid_area, uicd
+        target_roi, uicd
     )
 
 @step_predictor(_texture_transfer_guided_advanced_step_predictor)
@@ -1659,7 +1650,6 @@ def texture_transfer_guided_advanced(
     config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
     seed: int,
     target_roi: np.ndarray | None = None,  # should be proxy sized
-    recompute_valid_area: bool = False,
     uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
@@ -1680,7 +1670,7 @@ def texture_transfer_guided_advanced(
     return _texture_transfer_guided_advanced(
         src_textures, proxy_textures, curated_proxy_textures, curated_proxy_target,
         config_alpha_pairs, seed,
-        target_roi, recompute_valid_area, uicd
+        target_roi, uicd
     )
 
 
