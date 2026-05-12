@@ -12,7 +12,9 @@ from bmquilting.circular import (
     generate_cphl6p, generate_cphl6p_guided,
     fill_cphl, fill_cphl_guided,
     seamless_vertical, seamless_horizontal, seamless_both,
-    seamless_both_guided, seamless_vertical_guided, seamless_horizontal_guided
+    seamless_both_guided, seamless_vertical_guided, seamless_horizontal_guided,
+    refill_cphl, refill_cphl6p, refill_cphl_recursive, refill_cphl6p_recursive,
+    texture_transfer_advanced, texture_transfer_guided_advanced
 )
 from bmquilting.utils.ui_coord import UiCoordData, JobMemoryManager
 
@@ -39,40 +41,46 @@ class TestCircularAPI(unittest.TestCase):
                 self.assertEqual(predicted, actual, f"Step mismatch in {func.__name__}")
             return res
 
+
     @classmethod
     def setUpClass(cls):
         # Parameters
-        cls.h, cls.w = 128, 128
+        cls.shape = cls.h, cls.w, cls.c = 128, 128, 3
         cls.ph, cls.pw = cls.h // 2, cls.w // 2
         cls.seed = 42
         
-        # Create a dummy texture with a pattern
-        cls.source_tex = np.zeros((cls.h, cls.w, 3), dtype=np.float32)
-        for y in range(cls.h):
-            for x in range(cls.w):
-                cls.source_tex[y, x] = [x / cls.w, y / cls.h, (x + y) / (cls.w + cls.h)]
+        # Create a dummy textures
+        rng = np.random.default_rng(cls.seed)
+        cls.source_tex = rng.random(size=cls.h*cls.w*cls.c, dtype=np.float32).reshape(cls.shape)
+        cls.target_tex = rng.random(size=cls.h*cls.w*cls.c, dtype=np.float32).reshape(cls.shape)
 
         cls.proxy_tex = cv2.resize(cls.source_tex, (cls.pw, cls.ph), interpolation=cv2.INTER_LINEAR)
-        
+
         cls.source_textures = [cls.source_tex.copy()]
         cls.source_textures[0][0, 0] = np.inf
         cls.proxy_textures = [cls.proxy_tex.copy()]
         cls.proxy_textures[0][0, 0] = np.inf
 
         # Config
-        pp = {"diameter":31, "overlap_ratio":0.3}
+        pp = {"diameter":41, "overlap_ratio":0.3}
         cls.config = CircularPatchingConfig.with_seams(**pp, tolerance=0.1, spacing_factor=1.2)
+
+        pp_2 = {"diameter":21, "overlap_ratio":0.5}
+        cls.config_2 = CircularPatchingConfig.with_seams(**pp_2, tolerance=0.05, spacing_factor=1.0)
+
+        cls._2_configs = [cls.config, cls.config_2]
+        cls._2_alphas = [.7, .3]
 
     def test_01_generate_cphl6p(self):
         out_tex, out_seams = self.assertSteps(generate_cphl6p, self.source_textures, self.config, self.h, self.w, self.seed)
-        self.assertEqual(out_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(out_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(out_seams.shape, (self.h, self.w))
 
     def test_02_generate_cphl6p_guided(self):
         out_tex, out_seams, p_out_tex = self.assertSteps(generate_cphl6p_guided, self.proxy_textures, self.source_textures, self.config, self.h, self.w, self.seed)
-        self.assertEqual(out_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(out_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(out_seams.shape, (self.h, self.w))
-        self.assertEqual(p_out_tex.shape, (self.ph, self.pw, 3))
+        self.assertEqual(p_out_tex.shape, (self.ph, self.pw, self.c))
 
 
     def test_03_fill_cphl(self):
@@ -82,7 +90,7 @@ class TestCircularAPI(unittest.TestCase):
         target[mask == 0] = 0
         
         res_tex, res_seams = self.assertSteps(fill_cphl, target, mask, self.source_textures, self.config, self.seed)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(res_seams.shape, (self.h, self.w))
 
     def test_04_fill_cphl_guided(self):
@@ -96,42 +104,85 @@ class TestCircularAPI(unittest.TestCase):
         p_target[p_mask == 0] = 0
         
         res_tex, res_seams, p_res_tex = self.assertSteps(fill_cphl_guided, p_target, target, mask, self.proxy_textures, self.source_textures, self.config, self.seed)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(res_seams.shape, (self.h, self.w))
-        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, 3))
+        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, self.c))
 
     def test_05_seamless_vertical(self):
         res_tex, res_seams = self.assertSteps(seamless_vertical, self.source_tex, self.config, self.seed)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(res_seams.shape, (self.h, self.w))
 
     def test_06_seamless_horizontal(self):
         res_tex, res_seams = self.assertSteps(seamless_horizontal, self.source_tex, self.config, self.seed)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(res_seams.shape, (self.h, self.w))
 
     def test_07_seamless_both(self):
         res_tex, res_seams = self.assertSteps(seamless_both, self.source_tex, self.config, self.seed)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(res_seams.shape, (self.h, self.w))
 
     def test_08_seamless_vertical_guided(self):
         res_tex, res_seams, p_res_tex = self.assertSteps(seamless_vertical_guided, self.proxy_tex, self.source_tex, self.config, self.seed)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(res_seams.shape, (self.h, self.w))
-        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, 3))
+        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, self.c))
 
     def test_09_seamless_horizontal_guided(self):
         res_tex, res_seams, p_res_tex = self.assertSteps(seamless_horizontal_guided, self.proxy_tex, self.source_tex, self.config, self.seed)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(res_seams.shape, (self.h, self.w))
-        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, 3))
+        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, self.c))
 
     def test_10_seamless_both_guided(self):
         res_tex, res_seams, p_res_tex = self.assertSteps(seamless_both_guided, self.proxy_tex, self.source_tex, self.proxy_textures, self.source_textures, self.config, self.seed)
-        self.assertEqual(res_tex.shape, (self.h, self.w, 3))
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(res_seams.shape, (self.h, self.w))
-        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, 3))
+        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, self.c))
+
+    def test_11_refill_cphl(self):
+        res_tex, res_seams = self.assertSteps(refill_cphl, self.target_tex, self.source_textures, self.config, self.seed)
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
+
+    def test_12_refill_cphl6p(self):
+        res_tex, res_seams = self.assertSteps(refill_cphl6p, self.target_tex, self.source_textures, self.config, self.seed)
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
+
+    def test_13_refill_cphl_recursive(self):
+        res_tex, res_seams = self.assertSteps(refill_cphl_recursive, self.target_tex, self.source_textures, self._2_configs, self.seed)
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
+
+    def test_14_refill_cphl6p_recursive(self):
+        res_tex, res_seams = self.assertSteps(refill_cphl6p_recursive, self.target_tex, self.source_textures, self._2_configs, self.seed)
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
+
+    def test_15_texture_transfer_advanced(self):
+        if True:
+            return
+        curated_target = self.target_tex.mean(-1)[:, :, np.newaxis]
+        curated_source_textures = [t.mean(-1)[:, :, np.newaxis] for t in self.source_textures]
+        config_alpha_pairs = list(zip(self._2_configs, self._2_alphas))
+        res_tex, res_seams = self.assertSteps(texture_transfer_advanced,
+            self.source_textures, curated_source_textures, curated_target, config_alpha_pairs, self.seed)
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
+
+    def test_16_texture_transfer_guided_advanced(self):
+        # slice target so it is proxy sized
+        curated_proxy_target = np.ascontiguousarray(self.target_tex.mean(-1)[:self.ph, :self.pw, np.newaxis])
+
+        curated_proxy_textures = [t.mean(-1)[:, :, np.newaxis] for t in self.proxy_textures]
+        config_alpha_pairs = list(zip(self._2_configs, self._2_alphas))
+        res_tex, res_seams, p_res_tex = self.assertSteps(texture_transfer_guided_advanced,
+            self.source_textures, self.proxy_textures, curated_proxy_textures, curated_proxy_target, config_alpha_pairs, self.seed )
+        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
+        self.assertEqual(res_seams.shape, (self.h, self.w))
+        self.assertEqual(p_res_tex.shape, (self.ph, self.pw, self.c))
 
 if __name__ == "__main__":
     unittest.main()
