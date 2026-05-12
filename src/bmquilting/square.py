@@ -262,6 +262,7 @@ def generate_texture_parallel(
     shm_vi_ltxts = shm_ltxts if vi_eq_src else SharedTextureList.from_list(vi_ltxts, patching_config.get_patch_kernel())
     shm_vhi_ltxts = shm_ltxts if vhi_eq_src else SharedTextureList.from_list(vhi_ltxts, patching_config.get_patch_kernel())
 
+    uicd_array = [(UiCoordData(uicd.jobs_shm_name, uicd.job_id + i*nps) if uicd is not None else None) for i in range(4)]
     try:
         # auxiliary variables
         quad_row_width = out_w / 2
@@ -300,10 +301,10 @@ def generate_texture_parallel(
         # generate 2 vertical strips and 2 horizontal strips that will split the generated canvas in half
         # the center, where the stripes connect, shares the same tile
         args = [
-            (shm_ltxts, hor_start_block, patching_config, cols_per_quad - 1, next(seeds), hor_start_block_seams, uicd),
-            (shm_hi_ltxts, hor_inv_start_block, patching_config, cols_per_quad - 1, next(seeds), hor_inv_start_block_seams, uicd),
-            (shm_ltxts, ver_start_block, patching_config, rows_per_quad - 1, next(seeds), ver_start_block_seams, uicd),
-            (shm_vi_ltxts, ver_inv_start_block, patching_config, rows_per_quad - 1, next(seeds), ver_inv_start_block_seams, uicd)
+            (shm_ltxts, hor_start_block, patching_config, cols_per_quad - 1, next(seeds), hor_start_block_seams, uicd_array[0]),
+            (shm_hi_ltxts, hor_inv_start_block, patching_config, cols_per_quad - 1, next(seeds), hor_inv_start_block_seams, uicd_array[1]),
+            (shm_ltxts, ver_start_block, patching_config, rows_per_quad - 1, next(seeds), ver_start_block_seams, uicd_array[2]),
+            (shm_vi_ltxts, ver_inv_start_block, patching_config, rows_per_quad - 1, next(seeds), ver_inv_start_block_seams, uicd_array[3])
         ]
         funcs = [_pfill_row, _pfill_row, _pfill_column, _pfill_column]
 
@@ -358,6 +359,8 @@ def generate_texture_parallel(
             shm_hi_ltxts.release()
         if not vi_eq_src:
             shm_vi_ltxts.release()
+
+        for uicd in uicd_array: uicd.close()
 
 
 # region    sub-routines for quadX functions
