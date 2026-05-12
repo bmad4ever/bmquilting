@@ -162,8 +162,6 @@ class TestCircularAPI(unittest.TestCase):
         self.assertEqual(res_seams.shape, (self.h, self.w))
 
     def test_15_texture_transfer_advanced(self):
-        if True:
-            return
         curated_target = self.target_tex.mean(-1)[:, :, np.newaxis]
         curated_source_textures = [t.mean(-1)[:, :, np.newaxis] for t in self.source_textures]
         config_alpha_pairs = list(zip(self._2_configs, self._2_alphas))
