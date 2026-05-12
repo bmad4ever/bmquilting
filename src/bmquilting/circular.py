@@ -1370,14 +1370,14 @@ def seamless_horizontal_guided(
 
 
 
-def _texture_transfer_advanced_step_predictor(curated_target, config_alpha_pairs, target_roi):
+def _texture_transfer_advanced_step_predictor(curated_target, config_alpha_pairs, target_roi=None):
     mask = target_roi
     if mask is None: mask = np.broadcast_to(np.float32(0.0), curated_target.shape[:2])
     return sum(_fill_cphl_step_predictor(mask, cfg) for cfg, _ in config_alpha_pairs)
 
 
 def _texture_transfer_guided_advanced_step_predictor(
-        src_textures, proxy_textures, curated_proxy_target, config_alpha_pairs, target_roi):
+        src_textures, proxy_textures, curated_proxy_target, config_alpha_pairs, target_roi=None):
     mask = target_roi
     if mask is None: mask = np.broadcast_to(np.float32(0.0), curated_proxy_target.shape[:2])
 
