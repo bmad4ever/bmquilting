@@ -261,3 +261,10 @@ def curate_for_tex_transfer(tex: np.ndarray, value_range=255.0,
     if mask is not None: new_tex *= mask
     new_tex = new_tex[:, :, np.newaxis]
     return new_tex
+
+
+def crop_to_multiple(arr: np.ndarray, multiple: int):
+    h, w = arr.shape[:2]
+    new_h = h - (h % multiple)
+    new_w = w - (w % multiple)
+    return arr[:new_h, :new_w]

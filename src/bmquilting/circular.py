@@ -20,7 +20,7 @@ from ._internal.common import (
 )
 from ._internal.hexagonal_lattice import HexagonalLatticeIterator, Vec2_int
 from ._internal.shmem_utils import SharedTextureList
-from .utils.texture import curate_for_tex_transfer
+from .utils.texture import curate_for_tex_transfer, crop_to_multiple
 
 from joblib.externals.loky import get_reusable_executor
 from multiprocessing.shared_memory import SharedMemory
@@ -1491,11 +1491,14 @@ def texture_transfer(
     config_alpha_pairs = _texture_transfer_auto_config_alpha_pairs(patching_config, alphas, last_diameter)
 
     if downscale_factor is not None and downscale_factor > 1:
+        # fix arrays sizes to comply w/ current implementation restrictions
+        src_textures = [crop_to_multiple(t, downscale_factor) for t in src_textures]
+
+        if target_roi is not None: resized_target_roi = cv2.resize(target_roi, (target_roi.shape[1]//downscale_factor, target_roi.shape[0]//downscale_factor))
         resized_target = cv2.resize(target, (target.shape[1]//downscale_factor, target.shape[0]//downscale_factor))
         resized_src_texs = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
         proxy_textures = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
         curated_rsz_textures = [curate_for_tex_transfer(t, value_range) for t in resized_src_texs]
-        resized_target_roi = cv2.resize(target_roi, (target_roi.shape[1]//downscale_factor, target_roi.shape[0]//downscale_factor))
         curated_rsz_target = curate_for_tex_transfer(resized_target, value_range, mask=resized_target_roi)
         return _texture_transfer_guided_advanced(
             src_textures=src_textures,
