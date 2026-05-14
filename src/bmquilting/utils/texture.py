@@ -230,13 +230,16 @@ def set_invalid_texture_area(src: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return res
 
 
-def curate_for_tex_transfer(tex: np.ndarray, value_range=255.0, cvt_code: int|None = cv2.COLOR_BGR2GRAY) -> np.ndarray:
+def curate_for_tex_transfer(tex: np.ndarray, value_range=255.0,
+                            cvt_code: int|None = cv2.COLOR_BGR2GRAY,
+                            mask: np.ndarray|None = None) -> np.ndarray:
     """
     Converts tex to a single channels 2D array, if not already converted.
     Applies the following operations in order: Gaussian Blur; CLAHE; Equalize Histogram.
     :param tex: image
     :param value_range: the  maximum possible value in the tex's format (supposes all channels have the same range)
     :param cvt_code: if set to None, the channels' mean is used; otherwise, cv2.cvtColor(tex, cvt_code) is used.
+    :param mask: binary mask (1s & 0s; not 255s in case of uint8 masks).
     :return: the "curated" texture with shape HxWx1 (ndim=3)
     """
     new_tex = None
@@ -249,8 +252,12 @@ def curate_for_tex_transfer(tex: np.ndarray, value_range=255.0, cvt_code: int|No
     cv2.GaussianBlur(new_tex, (5, 5), 1, dst=new_tex)
     tile_grid_size = (tex.shape[0]//10, tex.shape[1]//10)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=tile_grid_size)
+    if mask is not None and mask.dtype != np.uint8: mask = np.uint8(mask)
+    if mask is not None: new_tex *= mask
     new_tex = clahe.apply(np.uint8(new_tex*value_range))
+    if mask is not None: new_tex *= mask
     new_tex = cv2.equalizeHist(new_tex).astype(np.float32)
     new_tex /= value_range
+    if mask is not None: new_tex *= mask
     new_tex = new_tex[:, :, np.newaxis]
     return new_tex

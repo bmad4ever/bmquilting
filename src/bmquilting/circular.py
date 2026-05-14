@@ -1495,10 +1495,8 @@ def texture_transfer(
         resized_src_texs = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
         proxy_textures = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
         curated_rsz_textures = [curate_for_tex_transfer(t, value_range) for t in resized_src_texs]
-        curated_rsz_target = curate_for_tex_transfer(resized_target, value_range)
-        cv2.imshow("cr_s", curated_rsz_textures[0])
-        cv2.imshow("cr_target", curated_rsz_target)
-        cv2.waitKey(0)
+        resized_target_roi = cv2.resize(target_roi, (target_roi.shape[1]//downscale_factor, target_roi.shape[0]//downscale_factor))
+        curated_rsz_target = curate_for_tex_transfer(resized_target, value_range, mask=resized_target_roi)
         return _texture_transfer_guided_advanced(
             src_textures=src_textures,
             proxy_textures=proxy_textures,
@@ -1506,12 +1504,12 @@ def texture_transfer(
             curated_proxy_target=curated_rsz_target,
             config_alpha_pairs=config_alpha_pairs,
             seed=seed,
-            target_roi=target_roi,
+            target_roi=resized_target_roi,
             uicd=uicd,
         )[:2]
 
     curated_textures = [curate_for_tex_transfer(t, value_range) for t in src_textures]
-    curated_target = curate_for_tex_transfer(target, value_range)
+    curated_target = curate_for_tex_transfer(target, value_range, mask=target_roi)
     return _texture_transfer_advanced(
         src_textures, curated_textures, curated_target, config_alpha_pairs, seed, target_roi, uicd=uicd)
 
