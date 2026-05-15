@@ -45,8 +45,9 @@ class TestCircularAPI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # Parameters
-        cls.shape = cls.h, cls.w, cls.c = 128, 128, 3
-        cls.ph, cls.pw = cls.h // 2, cls.w // 2
+        cls.shape = cls.h, cls.w, cls.c = 128, 127, 3
+        cls.proxy_downscale = 2
+        cls.ph, cls.pw = cls.h // cls.proxy_downscale, cls.w // cls.proxy_downscale
         cls.seed = 42
         
         # Create a dummy textures
@@ -178,8 +179,11 @@ class TestCircularAPI(unittest.TestCase):
         config_alpha_pairs = list(zip(self._2_configs, self._2_alphas))
         res_tex, res_seams, p_res_tex = self.assertSteps(texture_transfer_guided_advanced,
             self.source_textures, self.proxy_textures, curated_proxy_textures, curated_proxy_target, config_alpha_pairs, self.seed )
-        self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
-        self.assertEqual(res_seams.shape, (self.h, self.w))
+
+        # for this test output size is set based on curated_proxy_target and the scale, not the source shape
+        out_h, out_w = np.array(curated_proxy_target.shape[:2])*self.proxy_downscale
+        self.assertEqual(res_tex.shape, (out_h, out_w, self.c))
+        self.assertEqual(res_seams.shape, (out_h, out_w))
         self.assertEqual(p_res_tex.shape, (self.ph, self.pw, self.c))
 
 if __name__ == "__main__":
