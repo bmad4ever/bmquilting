@@ -74,10 +74,9 @@ def _guess_near_scale_factor(src: np.ndarray, proxy: np.ndarray) -> int:
     if scale_height == scale_width: return scale_height
     raise ValueError(f"Textures dimensions don't scale by the same factor. {(scale_height, scale_width)=}")
 
-def _get_scale_factor(proxy_textures: list[np.ndarray], source_textures: list[np.ndarray]) -> int:
-    if not proxy_textures or not source_textures: return 1
+def _validate_scale_factor(proxy_textures: list[np.ndarray], source_textures: list[np.ndarray], expected_scale_factor: int) -> None:
+    if not proxy_textures or not source_textures: return
 
-    scales = []
     for pt, st in zip(proxy_textures, source_textures):
         ph, pw = pt.shape[:2]
         sh, sw = st.shape[:2]
@@ -87,12 +86,23 @@ def _get_scale_factor(proxy_textures: list[np.ndarray], source_textures: list[np
         sw_scale = sw // pw
         if sh_scale != sw_scale:
             raise ValueError(f"Non-uniform scale factor: h_scale={sh_scale}, w_scale={sw_scale}")
-        scales.append(sh_scale)
 
-    if len(set(scales)) > 1:
-        raise ValueError("Inconsistent scale factors across texture pairs.")
+        if sh_scale != expected_scale_factor:
+            raise ValueError(f"Inconsistent scale factor: {(sh_scale, expected_scale_factor)=}")
 
-    return scales[0]
+    #devnote: since expected scale is used  len(set(scales)) > 1  no longer needs to be checked
+
+def _setup_guided_args(a_tex, a_proxy, src_texs: list, proxy_texs: list, patching_config: CircularPatchingConfig):
+    """
+    :param a_tex: target or a source texture
+    :param a_proxy: target proxy or a target texture of matching index with a_tex
+    :return: source textures cropped to scale multiple, adjusted_config, proxy_config, scale
+    """
+    scale = _guess_near_scale_factor(a_tex, a_proxy)
+    source_textures = [crop_to_multiple(t, scale) for t in src_texs] # int mul compliance
+    _validate_scale_factor(proxy_texs, source_textures, scale)
+    adj_config, proxy_config = _get_proxy_configs(patching_config, scale)
+    return source_textures, adj_config, proxy_config, scale
 
 
 def _periodic_resize(src: np.ndarray, dsize: tuple[int, int], interpolation=cv2.INTER_LINEAR) -> np.ndarray:
@@ -475,9 +485,9 @@ def _generate_cphl6p_recursive_step_predictor(patching_configs: list[CircularPat
                                               out_h: NumPixels, out_w: NumPixels):
     return sum((_generate_cphl6p_step_predictor(conf, out_h, out_w) for conf in patching_configs))
 
-def _generate_guided_chlp6p_step_predictor(proxy_textures, source_textures, patching_config, out_h, out_w, **kwargs):
-    scale = _get_scale_factor(proxy_textures, source_textures)
-    _, proxy_config = _get_proxy_configs(patching_config, scale)
+def _generate_guided_chlp6p_step_predictor(proxy_textures, source_textures, patching_config, out_h, out_w):
+    guided_args = _setup_guided_args(source_textures[0], proxy_textures[0], source_textures, proxy_textures, patching_config)
+    _, _, proxy_config, scale = guided_args
     p_out_h, p_out_w = out_h // scale, out_w // scale
     return _generate_cphl6p_step_predictor(proxy_config, p_out_h, p_out_w) * 2
 
@@ -601,8 +611,8 @@ def generate_cphl6p_guided(
         )
     del critical_spacing_factor
 
-    scale = _get_scale_factor(proxy_textures, source_textures)
-    adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
+    guided_args = _setup_guided_args(source_textures[0], proxy_textures[0], source_textures, proxy_textures, patching_config)
+    source_textures, adj_source_config, proxy_config, scale = guided_args
 
     if out_h % scale != 0 or out_w % scale != 0:
         raise ValueError(f"Output dimensions ({out_h}, {out_w}) are not divisible by scale {scale}")
@@ -792,9 +802,10 @@ def _reconstruct_fill_cphl(
     return result
 
 
-def _guided_fill_cphl_step_predictor(proxy_target, mask, proxy_textures, source_textures, patching_config):
-    scale = _get_scale_factor(proxy_textures, source_textures)
-    _, proxy_config = _get_proxy_configs(patching_config, scale)
+def _guided_fill_cphl_step_predictor(target, proxy_target, mask, proxy_textures, source_textures, patching_config):
+    guided_args = _setup_guided_args(target, proxy_target, source_textures, proxy_textures, patching_config)
+    _, _, proxy_config, scale = guided_args
+
     if scale > 1:
         ph, pw = proxy_target.shape[:2]
         proxy_mask = cv2.resize(mask, (pw, ph), interpolation=cv2.INTER_LINEAR)
@@ -847,8 +858,8 @@ def fill_cphl_guided(
 
     :return: texture, seams, synthesised_proxy
     """
-    scale = _get_scale_factor(proxy_textures, source_textures)
-    adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
+    guided_args = _setup_guided_args(target, proxy_target, source_textures, proxy_textures, patching_config)
+    source_textures, adj_source_config, proxy_config, scale = guided_args
 
     if scale > 1:
         ph, pw = proxy_target.shape[:2]
@@ -1324,14 +1335,10 @@ def seamless_both_guided(
 
 
 def _prepare_seamless_guided_args(patching_config, proxy_target, proxy_textures, source_textures, target):
-    # initial scale guess and crop adjustment
-    scale = _guess_near_scale_factor(target, proxy_target)
-    source_textures = [crop_to_multiple(t, scale) for t in source_textures] # fix integer multiple constraint
-
     source_textures = source_textures if source_textures else [target]
     proxy_textures = proxy_textures if proxy_textures else [proxy_target]
-    scale = _get_scale_factor(proxy_textures, source_textures)
-    adj_source_config, proxy_config = _get_proxy_configs(patching_config, scale)
+    guided_args = _setup_guided_args(target, proxy_target, source_textures, proxy_textures, patching_config)
+    source_textures, adj_source_config, proxy_config, scale = guided_args
     return adj_source_config, proxy_config, proxy_textures, scale, source_textures
 
 
@@ -1396,7 +1403,8 @@ def _texture_transfer_guided_advanced_step_predictor(
     mask = target_roi
     if mask is None: mask = np.broadcast_to(np.float32(0.0), curated_proxy_target.shape[:2])
 
-    scale = _get_scale_factor(proxy_textures, src_textures)
+    scale = _guess_near_scale_factor(src_textures[0], proxy_textures[0])
+    _validate_scale_factor(proxy_textures, src_textures, scale)
     total = 0
     for config, _ in config_alpha_pairs:
         _, proxy_config = _get_proxy_configs(config, scale)
@@ -1558,7 +1566,8 @@ def _texture_transfer_guided_advanced(
         inv_target_roi = 1 - target_roi
 
     # --- "data" & func used for reconstruction ---
-    scale = _get_scale_factor(proxy_textures, src_textures)
+    guided_args = _setup_guided_args(src_textures[0], proxy_textures[0], src_textures, proxy_textures, config_alpha_pairs[0][0])
+    src_textures, adjust_config, proxy_config, scale = guided_args
     dst_shape = (curated_proxy_target.shape[0]*scale, curated_proxy_target.shape[1]*scale, src_textures[0].shape[2])
     texture = np.broadcast_to(np.float32(0.0), dst_shape)
     mask = cv2.resize(inv_target_roi, dst_shape[:2][::-1])
@@ -1584,8 +1593,7 @@ def _texture_transfer_guided_advanced(
 
 
     # --- execute and reconstruct 1st synthesis -----------------------------
-    first_config, first_alpha = config_alpha_pairs[0]
-    adjust_config, proxy_config = _get_proxy_configs(first_config, scale)
+    _, first_alpha = config_alpha_pairs[0]  # 1st adj & proxy configs obtained from _setup_guided_args at the start
     pxy_tex_list = TextureList(proxy_textures, proxy_config.get_patch_kernel())
     cur_tex_list = TextureList(curated_proxy_textures, proxy_config.get_patch_kernel())
 
