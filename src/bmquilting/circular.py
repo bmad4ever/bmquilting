@@ -1388,11 +1388,14 @@ def _texture_transfer_guided_advanced_step_predictor(
         total += _fill_cphl_step_predictor(mask, proxy_config) * 2  # fill + reconstruction, hence 2x
     return total
 
-def _texture_transfer_step_predictor(src_textures, target, patching_config, alphas, last_diameter, downscale_factor, target_roi):
+def _texture_transfer_step_predictor(src_textures, target, patching_config, alphas=None, last_diameter=None, downscale_factor=None, target_roi=None):
     config_alpha_pairs = _texture_transfer_auto_config_alpha_pairs(patching_config, alphas, last_diameter)
 
     if downscale_factor is None or downscale_factor == 1:
         return _texture_transfer_advanced_step_predictor(target, config_alpha_pairs, target_roi)
+
+    # handle integer multiple constraint in current implementation
+    src_textures = [crop_to_multiple(np.broadcast_to(np.float32(0.0), t.shape[:2]), downscale_factor) for t in src_textures]
 
     # mock data so that prior step predictor can be used without actually resizing stuff
     resized_target_shape = (target.shape[0]//downscale_factor, target.shape[1]//downscale_factor)
