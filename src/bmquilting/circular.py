@@ -63,6 +63,17 @@ _INTERP_PAD = {
 }
 
 
+def _guess_near_scale_factor(src: np.ndarray, proxy: np.ndarray) -> int:
+    """
+    :return:
+        the likely or exact intended multiple, if applicable to both height and width.
+        zero otherwise, indicates there is a mistake in the inputs.
+    """
+    scale_height = round(src.shape[0]/proxy.shape[0])
+    scale_width  = round(src.shape[1]/proxy.shape[1])
+    if scale_height == scale_width: return scale_height
+    raise ValueError(f"Textures dimensions don't scale by the same factor. {(scale_height, scale_width)=}")
+
 def _get_scale_factor(proxy_textures: list[np.ndarray], source_textures: list[np.ndarray]) -> int:
     if not proxy_textures or not source_textures: return 1
 
@@ -1313,6 +1324,10 @@ def seamless_both_guided(
 
 
 def _prepare_seamless_guided_args(patching_config, proxy_target, proxy_textures, source_textures, target):
+    # initial scale guess and crop adjustment
+    scale = _guess_near_scale_factor(target, proxy_target)
+    source_textures = [crop_to_multiple(t, scale) for t in source_textures] # fix integer multiple constraint
+
     source_textures = source_textures if source_textures else [target]
     proxy_textures = proxy_textures if proxy_textures else [proxy_target]
     scale = _get_scale_factor(proxy_textures, source_textures)
