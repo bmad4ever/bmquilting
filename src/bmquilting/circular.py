@@ -614,9 +614,9 @@ def generate_cphl6p_guided(
     guided_args = _setup_guided_args(source_textures[0], proxy_textures[0], source_textures, proxy_textures, patching_config)
     source_textures, adj_source_config, proxy_config, scale = guided_args
 
-    if out_h % scale != 0 or out_w % scale != 0:
-        raise ValueError(f"Output dimensions ({out_h}, {out_w}) are not divisible by scale {scale}")
-    p_out_h, p_out_w = out_h // scale, out_w // scale
+    # extend generation to nearest multiple of scale above
+    r_out_h, r_out_w = int(np.ceil(out_h/scale)*scale), int(np.ceil(out_w/scale)*scale)
+    p_out_h, p_out_w = r_out_h // scale, r_out_w // scale
 
     _proxy_manager = Manager()
     # One result slot per POTENTIAL process (job_id); set_1st_patch always writes to slot 0.
@@ -642,7 +642,7 @@ def generate_cphl6p_guided(
 
     out_tex = _reconstruct_texture_cphl6p(
         source_textures, _proxy_results,
-        out_h, out_w, adj_source_config,
+        r_out_h, r_out_w, adj_source_config,
         n_processes, uicd,
         extended_h=p_ext_h * scale,
         extended_w=p_ext_w * scale,
@@ -652,7 +652,8 @@ def generate_cphl6p_guided(
 
     if scale > 1: out_seams = cv2.resize(out_seams, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
 
-    return out_tex, out_seams, proxy_out_tex
+    out_rect = np.s_[:out_h, :out_w]
+    return out_tex[out_rect], out_seams[out_rect], proxy_out_tex
 
 
 # endregion ===== GENERATE 6P STRAT FUNCTIONS =====
@@ -1403,8 +1404,8 @@ def _texture_transfer_guided_advanced_step_predictor(
     mask = target_roi
     if mask is None: mask = np.broadcast_to(np.float32(0.0), curated_proxy_target.shape[:2])
 
-    scale = _guess_near_scale_factor(src_textures[0], proxy_textures[0])
-    _validate_scale_factor(proxy_textures, src_textures, scale)
+    _, _, _, scale = _setup_guided_args(
+        src_textures[0], proxy_textures[0], src_textures, proxy_textures, config_alpha_pairs[0][0])
     total = 0
     for config, _ in config_alpha_pairs:
         _, proxy_config = _get_proxy_configs(config, scale)

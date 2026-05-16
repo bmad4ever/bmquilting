@@ -81,8 +81,14 @@ class TestCircularAPI(unittest.TestCase):
         out_tex, out_seams, p_out_tex = self.assertSteps(generate_cphl6p_guided, self.proxy_textures, self.source_textures, self.config, self.h, self.w, self.seed)
         self.assertEqual(out_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(out_seams.shape, (self.h, self.w))
-        self.assertEqual(p_out_tex.shape, (self.ph, self.pw, self.c))
 
+        # compute the expected proxy size
+        # won't match exactly by scale due to extending out dims to a multiple of scale
+        s = self.proxy_downscale
+        r_out_h, r_out_w = int(np.ceil(self.h / s) * s), int(np.ceil(self.w / s) * s)
+        p_out_h, p_out_w = r_out_h // s, r_out_w // s
+
+        self.assertEqual(p_out_tex.shape, (p_out_h, p_out_w, self.c))
 
     def test_03_fill_cphl(self):
         mask = np.ones((self.h, self.w), dtype=np.float32)
