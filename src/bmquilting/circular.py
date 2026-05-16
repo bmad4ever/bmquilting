@@ -1719,5 +1719,8 @@ __all__ = [
     "refill_cphl",
     "refill_cphl_recursive",
     "generate_cphl",
-    "generate_cphl_recursive"
+    "generate_cphl_recursive",
+    "texture_transfer",
+    "texture_transfer_advanced",
+    "texture_transfer_guided_advanced"
 ]
