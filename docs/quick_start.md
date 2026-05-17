@@ -130,7 +130,7 @@ config = CircularPatchingConfig.with_feathering(diameter=55, overlap_ratio=.5, t
 ### Generation with Hybrid (Seams + Feathering)
 
 ```python
-config = CircularPatchingConfig.with_feathering(diameter=55, overlap_ratio=.5, tolerance=0.1, spacing_factor=1.13)
+config = CircularPatchingConfig.with_hybrid(diameter=55, overlap_ratio=.5, tolerance=0.1, spacing_factor=1.13)
 ```
 
 ---
@@ -243,7 +243,59 @@ For more details on scaling and multi-resolution guidance, see the [Proxy Synthe
 
 ---
 
-## 6. Progress Tracking and Step Prediction
+## 6. Texture Transfer (Auto)
+
+Texture transfer allow to transfer a texture to a target image, for example, you can turn a portrait (target) into a stencil made of rice (transfer texture).
+
+```python
+from bmquilting.circular import CircularPatchingConfig, texture_transfer
+import numpy as np
+import cv2
+
+src = cv2.imread("tex2transfer.png")
+target = cv2.imread("banana-big.jpg")
+
+# create a mask for the banana
+lower_white = np.array([150, 150, 150], dtype=np.uint8)
+upper_white = np.array([255, 255, 255], dtype=np.uint8)
+mask = 255-cv2.inRange(target, lower_white, upper_white)
+
+cv2.imshow('mask', mask)
+cv2.imshow("source", src)
+
+# transfer the texture 
+tex, seams = texture_transfer(
+    src_textures=[src],
+    target=target,
+    patching_config=
+        CircularPatchingConfig.with_feathering(
+            diameter=61,
+            overlap_ratio=.5,
+            tolerance=0.0,
+            spacing_factor=1.0
+        ),
+    seed=0,
+    # additional optional args
+    downscale_factor=2,  # uses a downsized tex2transfer as proxy
+    target_roi=mask,     # ignore area outside region of interest
+)
+
+cv2.imshow('tex', tex)
+cv2.imshow('seams', seams)
+cv2.waitKey(0)
+```
+
+| Input Texture | Input Target | Output (Texture) | 
+| :---: | :---: | :---: |
+| ![Input](imgs/tex2transfer.png) | ![Input](imgs/banana-big.jpg) | ![Output](imgs/transfer_out_tex.jpg)
+
+The transfer texture is a wrapper function that calls either `texture_transfer_advanced` or `texture_transfer_guided_advanced` depending on whether the `downscale_factor` optional argument is provided; it also curates the sources and target automatically for you using the `utils.curate_for_tex_transfer` function. 
+
+For more comprehensive documentation on how texture transfer works and how to setup its advanced variants, see [Advanced Texture Transfer](TODO_adv_tex_transfer.md).
+
+---
+
+## 7. Progress Tracking and Step Prediction
 
 All main generation functions are decorated with a `step_predictor`, which adds a `.predict_steps()` method. This is useful for initialising progress bars in UI applications.
 
