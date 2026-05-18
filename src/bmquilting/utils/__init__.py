@@ -23,6 +23,8 @@ from .texture import (
     get_texture_rotated_variants,
     add_salt_and_pepper,
     set_invalid_texture_area,
+    curate_for_tex_transfer,
+    crop_to_multiple
 )
 
 __all__ = [
@@ -43,4 +45,6 @@ __all__ = [
     "get_texture_rotated_variants",
     "add_salt_and_pepper",
     "set_invalid_texture_area",
+    "curate_for_tex_transfer",
+    "crop_to_multiple"
 ]
