@@ -6,9 +6,20 @@ This guide will help you get started with `bmquilting`.
 
 The core algorithms in `bmquilting` operate on **float32** NumPy arrays with values in the range `[0.0, 1.0]`. This ensures compatibility with both standard images and latents.
 
+### Array Shape
+
+All texture arrays must be in **HxWxC** format (Height × Width × Channels). A shape of `(256, 256, 3)` is a valid 256×256 RGB image, for example.
+
+- **Colour images (RGB/BGR):** `C = 3`
+- **Grayscale images:** must be expanded to `C = 1` — i.e. shape `(H, W, 1)`. A bare 2-D array `(H, W)` is not accepted; use `img[..., np.newaxis]` or `np.expand_dims(img, -1)` to add the channel axis before passing to the library.
+- **Latents / arbitrary channels:** any value of `C` is supported, provided all channels are normalised to `[0.0, 1.0]`.
+
+Mask arrays must be provided in **HxW** format (Height x Width), using values in the range of `[0.0, 1.0]`.
+
 ### Automatic `uint8` Conversion
+
 For convenience, the library handles standard image formats automatically:
-- **Input:** If a `uint8` array is provided, it is converted to `float32` and divided by `255.0`.
+- **Input:** If a `uint8` array is provided, it is converted to `float32` and divided by `255.0`. This is applicable to both textures and masks.
 - **Output:** If automatic conversion was triggered, the output texture(s) will be converted back to `uint8`, multiplied by `255.0`, and rounded.
 
 > [!CAUTION]
