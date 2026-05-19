@@ -1391,7 +1391,7 @@ def seamless_horizontal_guided(
 # endregion ===== MAKE SEAMLESS FUNCTIONS =====
 
 
-
+# region ===== TEXTURE TRANSFER FUNCTIONS =====
 
 def _texture_transfer_advanced_step_predictor(curated_target, config_alpha_pairs, target_roi=None):
     mask = target_roi
@@ -1511,7 +1511,6 @@ def texture_transfer(
     alphas:list[float]|None=None,
     downscale_factor: int | None = None,
     target_roi: np.ndarray | None = None,
-    value_range: float = 255.0,
     invert_curated_target_values: bool = False,
     uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
@@ -1526,8 +1525,8 @@ def texture_transfer(
         resized_target = cv2.resize(target, (target.shape[1]//downscale_factor, target.shape[0]//downscale_factor))
         resized_src_texs = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
         proxy_textures = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
-        curated_rsz_textures = [curate_for_tex_transfer(t, value_range) for t in resized_src_texs]
-        curated_rsz_target = curate_for_tex_transfer(resized_target, value_range, mask=resized_target_roi)
+        curated_rsz_textures = [curate_for_tex_transfer(t) for t in resized_src_texs]
+        curated_rsz_target = curate_for_tex_transfer(resized_target, mask=resized_target_roi)
         if invert_curated_target_values: np.subtract(1, curated_rsz_target, out=curated_rsz_target)
         return _texture_transfer_guided_advanced(
             src_textures=src_textures,
@@ -1540,8 +1539,8 @@ def texture_transfer(
             uicd=uicd,
         )[:2]
 
-    curated_textures = [curate_for_tex_transfer(t, value_range) for t in src_textures]
-    curated_target = curate_for_tex_transfer(target, value_range, mask=target_roi)
+    curated_textures = [curate_for_tex_transfer(t) for t in src_textures]
+    curated_target = curate_for_tex_transfer(target, mask=target_roi)
     if invert_curated_target_values: np.subtract(1, curated_target, out=curated_target)
     return _texture_transfer_advanced(
         src_textures, curated_textures, curated_target, config_alpha_pairs, seed, target_roi, uicd=uicd)
@@ -1704,6 +1703,7 @@ def texture_transfer_guided_advanced(
         target_roi, uicd
     )
 
+# endregion ===== TEXTURE TRANSFER FUNCTIONS =====
 
 
 __all__ = [
