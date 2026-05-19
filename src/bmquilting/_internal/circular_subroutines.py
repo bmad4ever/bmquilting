@@ -370,7 +370,7 @@ def allocate_auxiliary_buffer(h: int, w: int, c: int):
     buf = np.empty(h * w * alloc_c, dtype=np.float32)
 
     # ── views ────────────────────────────────────────────────────────────────
-    hwc    = buf            .reshape(h, w, c)   # full (h,w,c) in C order
+    hwc    = buf[:h*w*c]    .reshape(h, w, c)   # full (h,w,c) in C order
     mask_a = buf[:h*w]      .reshape(h, w)      # plane 0  →  elements [0,   h*w)
     mask_b = buf[h*w:2*h*w] .reshape(h, w)      # plane 1  →  elements [h*w, 2*h*w)
 
