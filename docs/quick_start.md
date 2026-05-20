@@ -252,6 +252,11 @@ out_tex, out_seams, out_proxy = generate_cphl6p_guided(
 
 For more details on scaling and multi-resolution guidance, see the [Proxy Synthesis Guide](proxy_synth.md).
 
+The image below was captured from the [proxy demo](../extras/demos/guided_texture_generation.py).
+
+
+![Proxy Synthesis](imgs/proxy_synthesis.jpg)
+
 ---
 
 ## 6. Texture Transfer (Auto)
