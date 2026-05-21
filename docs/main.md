@@ -4,7 +4,7 @@
 
 * [**Quick Start Guide**](quick_start.md)
 * [Core Concepts & Arguments](args_explained.md)
-* [Advanced Configuration (Blending & Seams)](advanced.md)
+* [Advanced Configuration (Blending & Seams)](advanced_config.md)
 * [Parallelization](parallelization.md)
 * [Proxy Synthesis (Guided Generation)](proxy_synth.md)
 * [Block Size Estimation Heuristics](blocksize_heuristics.md)

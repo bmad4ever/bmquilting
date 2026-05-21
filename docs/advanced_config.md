@@ -51,8 +51,8 @@ Defines the blending weight across the seam, shaping the transition between the 
 
 * **Input:** Signed distance from the seam relative to the blur size, $u ∈ (-∞, +∞)$
     * $u < -1$ → outside a blur-affected area and outside the patched region (inside source or empty area)
-    * $u < 0$ → blur-affected and outside the patched region (inside source or empty area)
-    * $u > 0$ → blur-affected and inside the patched region
+    * $-1 \le u < 0$ → blur-affected and outside the patched region (inside source or empty area)
+    * $1 \ge u > 0$ → blur-affected and inside the patched region
     * $u > 1$ → outside a blur-affected area and within the patched region
 * **Output:** Blending coefficients, $α ∈ [0, 1]$.
     * $α = 0$ → 100% patched pixel (0% source)
@@ -73,8 +73,7 @@ The following options are available solely for `SquarePatchingConfig.advanced`.
 `vignette_on_match_template`: If `True`, applies an adjusted blending vignette as a weight mask during the patch search.
 The diagram below illustrates its relation to the blending vignette.
 
-<div style="text-align: center;"><img  alt="Outer Corners Weighted Match Template" src="imgs/VignetteOnMatchTemplate.svg"></div>
-<br>
+<img  alt="Outer Corners Weighted Match Template" src="imgs/VignetteOnMatchTemplate.svg">
 
 ### Options for Seam Computation
 
@@ -83,8 +82,7 @@ The diagram below illustrates its relation to the blending vignette.
 - `SeamsAlgorithm.MIN_CUT`: A strict one‑direction seam strategy that forbids sideways shifts or backward steps.
 - `SeamsAlgorithm.NONE`: Bypasses seam computation entirely (useful when only feathering is desired).
 
-<div style="text-align: center;"><img width="420px" alt="Seam Types for Square Patching" src="imgs/edge_types.png"></div>
-<br>
+<img width="420px" alt="Seam Types for Square Patching" src="imgs/edge_types.png">
 
 ### Additional Blending Config Option
 
