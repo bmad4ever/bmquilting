@@ -57,7 +57,7 @@ class SquarePatchingConfig:
 
     Instances should be created via the class methods rather than directly,
     as the internal seam and error callables are managed automatically:
-    :meth:`with_seams`, :meth:`with_feathering`, :meth:`advanced`, :meth:`custom`.
+    :meth:`with_seams`, :meth:`with_feathering`, :meth:`with_hybrid`, :meth:`advanced`, :meth:`custom`.
     """
     block_size: NumPixels
     overlap: NumPixels

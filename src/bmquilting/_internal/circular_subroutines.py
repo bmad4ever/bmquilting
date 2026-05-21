@@ -104,7 +104,7 @@ class CircularPatchingConfig:
 
     Instances should be created via the class methods rather than directly,
     as the internal seam and error callables are managed automatically:
-    :meth:`with_seams`, :meth:`with_feathering`, :meth:`advanced`
+    :meth:`with_seams`, :meth:`with_feathering`, :meth:`with_hybrid`, :meth:`advanced`
     """
     patch_params: CircularPatchParams
     blend_config: BlendConfig | None
