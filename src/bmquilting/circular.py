@@ -1552,10 +1552,8 @@ def texture_transfer(
         Can be left as ``None`` when calling from a script with no UI.
 
     :return: A tuple ``(texture, seams)`` where:
-        ``texture`` is the synthesised output image in the same colour space
-          and value range as the inputs.
-        ``seams`` is a diagnostic image visualising patch boundaries,
-          useful for debugging tiling artefacts.
+        ``texture`` is the synthesised output image in the same colour space and value range as the inputs.
+        ``seams`` is a diagnostic image visualising patch boundaries, useful for debugging tiling artefacts.
     """
 
     config_alpha_pairs = _texture_transfer_auto_config_alpha_pairs(patching_config, alphas, last_diameter)
