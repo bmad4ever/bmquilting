@@ -1514,6 +1514,46 @@ def texture_transfer(
     invert_curated_target_values: bool = False,
     uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    """
+    Synthesise a new image by stitching patches from source textures to match a target image.
+
+    This is the simplest entry point: source textures and target are automatically curated,
+    and an optional downscale path enables guided mode for faster synthesis.
+    Despite its simplicity, it offers a comprehensive set of parameters for tweaking the synthesis.
+
+    :param src_textures: List of one or more source texture images (numpy arrays).
+        Patches are drawn from these images.
+    :param target: Guidance image whose overall appearance the result should match.
+    :param patching_config: Base configuration for all iterations.
+        The ``diameter`` is used for the first iteration, and ``overlap_ratio``
+        is forced to 0.5 at every iteration regardless of the value set here.
+    :param seed: Random seed for reproducibility. Two calls with identical arguments
+        and the same seed produce identical outputs.
+    :param last_diameter: Patch diameter used in the final iteration.
+        If ``None``, defaults to roughly 28% of the starting diameter.
+        Intermediate diameters are interpolated between the first and last diameters.
+    :param alphas: Per-iteration alpha weights controlling the trade-off between
+        patch-overlap coherence (α=0) and target similarity (α=1).
+        Defaults to ``[0.75, 0.5, 0.25]`` (three passes).
+        The number of elements determines the number of iterations.
+    :param downscale_factor: Integer divisor applied to both source and target
+        before synthesis. For example, a value of 2 halves the dimensions.
+        Patches are then blended at the original resolution (guided mode).
+    :param target_roi: Binary mask with the same height and width as ``target``
+        where 0 marks pixels to ignore (e.g., plain background).
+        Improves target curation and avoids unnecessary computations.
+    :param invert_curated_target_values: If ``True``, the normalised target is
+        inverted (1 − value). Useful when the source texture is light-on-dark
+        but the target is dark-on-light (or vice versa).
+    :param uicd: UI coordination data for progress reporting and cancellation hooks.
+        Can be left as ``None`` when calling from a script with no UI.
+
+    :return: A tuple ``(texture, seams)`` where:
+        ``texture`` is the synthesised output image in the same colour space
+          and value range as the inputs.
+        ``seams`` is a diagnostic image visualising patch boundaries,
+          useful for debugging tiling artefacts.
+    """
 
     config_alpha_pairs = _texture_transfer_auto_config_alpha_pairs(patching_config, alphas, last_diameter)
 
