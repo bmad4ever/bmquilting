@@ -1521,6 +1521,9 @@ def texture_transfer(
     and an optional downscale path enables guided mode for faster synthesis.
     Despite its simplicity, it offers a comprehensive set of parameters for tweaking the synthesis.
 
+    Both ``src_textures`` and ``target`` need to be either in **BGR** format (NOT RGB!) or in a **single channel format**
+    representing the luminance; but they do not need to share the same format.
+
     :param src_textures: List of one or more source texture images (numpy arrays).
         Patches are drawn from these images.
     :param target: Guidance image whose overall appearance the result should match.
