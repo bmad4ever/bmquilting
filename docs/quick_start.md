@@ -303,7 +303,7 @@ cv2.waitKey(0)
 
 | Input Texture | Input Target | Output (Texture) | 
 | :---: | :---: | :---: |
-| ![Input](imgs/tex2transfer.png) | ![Input](imgs/banana-big.jpg) | ![Output](imgs/transfer_out_tex.jpg)
+| ![Input](imgs/tex2transfer.png) | ![Input](imgs/banana-big.jpg) | ![Output](imgs/transfer_out_tex.jpg) |
 
 The transfer texture is a wrapper function that calls either `texture_transfer_advanced` or `texture_transfer_guided_advanced` depending on whether the `downscale_factor` optional argument is provided; it also curates the sources and target automatically for you using the `utils.curate_for_tex_transfer` function. 
 
