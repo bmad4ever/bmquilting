@@ -30,6 +30,7 @@ The project provides the following guided variants:
 - `bmquilting.circular.seamless_vertical_guided`
 - `bmquilting.circular.seamless_horizontal_guided`
 - `bmquilting.circular.seamless_both_guided`
+- `bmquilting.circular.texture_transfer_guided_advanced`
 
 ---
 
