@@ -6,7 +6,8 @@
 * [Core Concepts & Arguments](args_explained.md)
 * [Advanced Configuration (Blending & Seams)](advanced_config.md)
 * [Parallelization](parallelization.md)
-* [Proxy Synthesis (Guided Generation)](proxy_synth.md)
+* [Proxy Synthesis](proxy_synth.md)
+* [Texture Transfer](tex_transfer.md)
 * [Block Size Estimation Heuristics](blocksize_heuristics.md)
 
 ### Visual Aids

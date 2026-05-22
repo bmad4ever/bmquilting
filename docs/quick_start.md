@@ -307,7 +307,7 @@ cv2.waitKey(0)
 
 The transfer texture is a wrapper function that calls either `texture_transfer_advanced` or `texture_transfer_guided_advanced` depending on whether the `downscale_factor` optional argument is provided; it also curates the sources and target automatically for you using the `utils.curate_for_tex_transfer` function. 
 
-For more comprehensive documentation on how texture transfer works and how to setup its advanced variants, see [Advanced Texture Transfer](TODO_adv_tex_transfer.md).
+For more comprehensive documentation on how texture transfer works and how to setup its advanced variants, see [Texture Transfer](tex_transfer.md).
 
 ---
 
