@@ -1,44 +1,60 @@
 # bmquilting
 
-`bmquilting` is a Python library for texture synthesis based on the image quilting algorithms. It allows to patch or extend textures from small source samples by stitching patches together.
-
+`bmquilting` is a Python library for texture synthesis based on image quilting algorithms. It synthesises new textures from small source samples by intelligently stitching patches together.
 
 ## Features
 
-*   **Dual Grid Support:** Choose between Square (Cartesian) and Circular (Hexagonal) patching strategies.
-*   **Adaptive Seam Blending:** Dynamically adjusts blur intensity based on local gradient differences to hide transitions.
-*   **Proxy Synthesis (Guided):** Match patches using simplified "proxies" (blurred, downscaled, etc.) while reconstructing with full-resolution detail.
-*   **Seamless Tiling:** Tools to make a texture tileable.
-*   **Parallel Generation:** Multi-process implementation for faster synthesis.
-*   **Block Size Heuristics:** (Experimental) Automatically estimate an adequate patch size using FFT or SIFT descriptors distribution.
+- **Dual Grid and Patch Shape Support:** Square patches on a Cartesian grid, or circular patches over a hexagonal lattice.
+- **Multiple Stitching Modes:** Seams, blurred seams, feathering, or hybrid stitching solutions.
+- **Adaptive Seam Blending:** Dynamically adjusts blur intensity based on local gradient differences to conceal transitions.
+- **Proxy Synthesis:** Match patches using simplified proxies (blurred, downscaled, etc.) whilst reconstructing with full-resolution detail.
+- **Seamless Tiling:** Built-in functions to make any texture tileable.
+- **Hole Filling:** Inpaint textures with missing or masked-out regions.
+- **Texture Transfer:** Transfer the texture of one object onto another, or create a textured stencil of a subject.
+- **Incomplete References:** Mark invalid sections of a source image; the library will still make partial use of them during synthesis.
+- **Parallel Generation:** Multi-process variants of synthesis functions for faster throughput.
+- **Block Size Heuristics** *(Experimental)*: Automatically estimate a suitable patch size using FFT or SIFT descriptor distributions.
 
+## Synthesis Examples
 
-### Synthesis Example
-
-| Input | Output (Texture) | Output (Seams) |
+|  |  |  |
 | :---: | :---: | :---: |
-| ![Input](docs/imgs/in_circ_tex_184x124.png) | ![Output](docs/imgs/out_circ_tex.png) | ![Seams](docs/imgs/out_circ_seams.png) |
+| ![Input](docs/imgs/in_circ_tex_184x124.png) | ![Seams](docs/imgs/out_circ_seams.png) | ![Output](docs/imgs/out_circ_tex.png) |
+| ![Target](docs/imgs/fill_in_target.png) | ![Seams](docs/imgs/filled_seams.png) | ![Filled](docs/imgs/filled_tex.png) |
+| ![Input](docs/imgs/tex2transfer.png) | ![Input](docs/imgs/banana-big.jpg) | ![Output](docs/imgs/transfer_out_tex.jpg) |
+
+## Requirements
+
+- Python 3.12 or higher
+- See `pyproject.toml` for full dependency list
 
 ## Installation
 
-You can install `bmquilting` directly from the source:
+Install directly from source:
 
 ```bash
 # Basic installation
 pip install .
 
-# Recommended: With Numba acceleration, slightly improves performance
+# With Numba acceleration (improves certain internals; overall speedup is typically 1–6%)
 pip install .[fast]
 ```
 
+## Documentation
 
-## Documentation and Examples
+| Resource | Description |
+| :--- | :--- |
+| [Main Documentation Index](docs/main.md) | Full API reference and overview |
+| [Quick Start Guide](docs/quick_start.md) | Examples including circular patching and inpainting |
+| [Arguments Explained](docs/args_explained.md) | Deep dive into block size, overlap, and tolerance |
+| [Advanced Configuration](docs/advanced_config.md) | Fine-tuning blending kernels and seam algorithms |
+| [Demo Scripts](extras/demos) | Runnable examples for synthesis and utility functions |
 
-For detailed guides and API references, please see:
+---
 
-*   [**Main Documentation Index**](docs/main.md)
-*   [**Quick Start Guide**](docs/quick_start.md) — More examples including circular patching and inpainting.
-*   [**Arguments Explained**](docs/args_explained.md) — Deep dive into block size, overlap, and tolerance.
-*   [**Advanced Configuration**](docs/advanced.md) — Fine-tuning blending kernels and seam algorithms.
 
-For example scripts regarding synthesis and other utilities in the library see: [extras/demos](extras/demos).
+## Licence
+
+This project is distributed under [MIT](LICENSE) licence.
+
+
