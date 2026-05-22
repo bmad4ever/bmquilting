@@ -4,7 +4,7 @@
 
 ## Features
 
-- **Dual Grid and Patch Shape Support:** Square patches on a Cartesian grid, or circular patches over a hexagonal lattice.
+- **Dual Grid and Patch Shape Support:** Square patches on a cartesian grid, or circular patches over a hexagonal lattice.
 - **Multiple Stitching Modes:** Seams, blurred seams, feathering, or hybrid stitching solutions.
 - **Adaptive Seam Blending:** Dynamically adjusts blur intensity based on local gradient differences to conceal transitions.
 - **Proxy Synthesis:** Match patches using simplified proxies (blurred, downscaled, etc.) whilst reconstructing with full-resolution detail.
