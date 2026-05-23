@@ -65,7 +65,7 @@ _CACHED_FUNCS = [
 
 # region     _____ AUXILIARY_METHODS _____
 
-def child_seed(root_seed: SeedSequence, spawn_key: int):
+def _child_seed(root_seed: SeedSequence, spawn_key: int):
     return SeedSequence(
         entropy=root_seed.entropy,
         spawn_key=(spawn_key,)
@@ -166,7 +166,7 @@ def _pfill_quad_inplace(patching_config: SquarePatchingConfig, texture_map, seam
     b, o = patching_config.bo
     bmo = b - o
     for blk_y in range(bmo, texture_map.shape[0] - b + 1, bmo):
-        rng: np.random.Generator = np.random.default_rng(child_seed(seed, blk_y))
+        rng: np.random.Generator = np.random.default_rng(_child_seed(seed, blk_y))
         for blk_x in range(bmo, texture_map.shape[1] - b + 1, bmo):
             block_idx = np.s_[blk_y:(blk_y + b), blk_x:(blk_x + b)]
             process_block(texture_map, seams_map, lookup_textures, block_idx,
@@ -216,15 +216,28 @@ def _parallel_generate_texture_step_predictor(patching_config: SquarePatchingCon
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_texture_parallel(
-        src_textures: list[np.ndarray], patching_config: SquarePatchingConfig,
+        src_texs: list[np.ndarray], patching_config: SquarePatchingConfig,
         out_h: NumPixels, out_w: NumPixels,
         nps: int, seed: int,
         uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
-    :param out_h: output's height in pixels
-    :param out_w: output's width in pixels
-    :param nps: number of parallel stripes; tells how many jobs to use for each of the 4 sections.
-    :param uicd: utility to track the generation progress and to process UI interrupts
+    Similar to `generate_texture`, but starts the generation from the center, dividing the generation into four
+    separate regions that are synthesized independently.
+    There will always be a created process for each one of the four regions, independently of the value set for ``nps``.
+
+    Furthermore, each independent region can be further parallelized by generating multiple rows in parallel, although,
+    due to the sequential nature of the algorithm, rows may halt temporarily.
+    ``nps`` indicates how many parallel rows (or stripes) will run per region.
+
+    Output is kept the same for different values of ``nps`` if the remaining arguments are kept the same;
+    however, because the algorithm segments the generation area, its output differs from the ``generate_texture`` output.
+
+    For info regarding the remaining parameters and returned data see :func:`generate_texture`.
+
+    :param nps: Number of Parallel Stripes (NPS); tells how many jobs to use for each of the 4 sections.
+        Examples:
+        ``nps=1`` sets 1 parallel stripe per region, resulting in 4 processes.
+        ``nps=2`` sets 2 parallel stripes per region, resulting in 8 processes.
     """
     assert out_w > patching_config.block_size + 2 * (patching_config.block_size - patching_config.overlap)
     assert out_h > patching_config.block_size + 2 * (patching_config.block_size - patching_config.overlap)
@@ -238,7 +251,7 @@ def generate_texture_parallel(
     hi_ltxts: list[np.ndarray] = []
     vi_ltxts: list[np.ndarray] = []
     vhi_ltxts: list[np.ndarray] = []
-    for ltxt in src_textures:
+    for ltxt in src_texs:
         hi = np.fliplr(ltxt)
         hi_ltxts.append(hi)
         vi_ltxts.append(np.flipud(ltxt))
@@ -246,7 +259,7 @@ def generate_texture_parallel(
     # note: inverted both ways is computed later when filling the top-left quadrant/section
 
     # check if lists match; if so there is no need to use a separate SharedTextureList
-    src_txt_ids: set[int] = {quick_checksum(txt) for txt in src_textures}
+    src_txt_ids: set[int] = {quick_checksum(txt) for txt in src_texs}
     hi_txt_ids: set[int] = {quick_checksum(txt) for txt in hi_ltxts}
     vi_txt_ids: set[int] = {quick_checksum(txt) for txt in vi_ltxts}
     vhi_txt_ids: set[int] = {quick_checksum(txt) for txt in vhi_ltxts}
@@ -257,7 +270,7 @@ def generate_texture_parallel(
 
     # init stuff that will have to be released eventually
     parallel = Parallel(n_jobs=4, backend="loky", timeout=None, verbose=0)
-    shm_ltxts = SharedTextureList.from_list(src_textures, patching_config.get_patch_kernel())
+    shm_ltxts = SharedTextureList.from_list(src_texs, patching_config.get_patch_kernel())
     shm_hi_ltxts = shm_ltxts if hi_eq_src else SharedTextureList.from_list(hi_ltxts, patching_config.get_patch_kernel())
     shm_vi_ltxts = shm_ltxts if vi_eq_src else SharedTextureList.from_list(vi_ltxts, patching_config.get_patch_kernel())
     shm_vhi_ltxts = shm_ltxts if vhi_eq_src else SharedTextureList.from_list(vhi_ltxts, patching_config.get_patch_kernel())
@@ -296,7 +309,7 @@ def generate_texture_parallel(
         ver_start_block_seams = cp_seams[-block_size - bmo:, bmo:-bmo]
         ver_inv_start_block_seams = np.flipud(cp_seams[:block_size + bmo, bmo:-bmo])
 
-        del src_textures, hi_ltxts, vi_ltxts
+        del src_texs, hi_ltxts, vi_ltxts
 
         # generate 2 vertical strips and 2 horizontal strips that will split the generated canvas in half
         # the center, where the stripes connect, shares the same tile
@@ -653,7 +666,7 @@ def _pfill_rows_ps(pid: int, job: _ParaRowsJobInfo, jobs_events: list, uicd: UiC
             coord_list[pid * 2 + 0] = i
 
             blk_index_i = i * bmo
-            rng = np.random.default_rng(child_seed(seed, blk_index_i))
+            rng = np.random.default_rng(_child_seed(seed, blk_index_i))
 
             for j in range(1, columns + 1):
                 # if previous row hasn't processed the adjacent section yet wait for it to advance.
@@ -730,23 +743,33 @@ def _generate_texture(src_textures: ValidatedTexturesIterator,
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def generate_texture(src_textures: list[np.ndarray],
+def generate_texture(src_texs: list[np.ndarray],
                      patching_config: SquarePatchingConfig,
                      out_h: NumPixels, out_w: NumPixels,
                      seed: int,
                      uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
-    :param out_h: output's height in pixels
-    :param out_w: output's width in pixels
+    Generate a texture with patches drawn from the provided source textures.
+
+    This is the vanilla, straightforward, sequential implementation.
+
+    :param src_texs: Source textures from where the patches will be drawn.
+    :param patching_config: Patching configuration contains the parameters for the generation, such as the block size.
+    :param out_h: Output's height in pixels.
+    :param out_w: Output's width in pixels.
+    :param seed: Random Number Generator's seed, ensures reproducibility.
+    :param uicd: Utility to track the generation progress and to process UI interrupts.
+
+    :return: A tuple ``(texture, seams)``.
     """
     rng = np.random.default_rng(seed=seed)
-    src_textures = TextureList(src_textures, patching_config.get_patch_kernel())
-    return _generate_texture(src_textures, patching_config, out_h, out_w, rng, uicd)
+    src_texs = TextureList(src_texs, patching_config.get_patch_kernel())
+    return _generate_texture(src_texs, patching_config, out_h, out_w, rng, uicd)
 
 
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
-def generate_texture_diagonal(src_textures: list[np.ndarray],
+def generate_texture_diagonal(src_texs: list[np.ndarray],
                               patching_config: SquarePatchingConfig,
                               out_h: NumPixels, out_w: NumPixels,
                               seed: int) -> tuple[np.ndarray, np.ndarray]:
@@ -755,12 +778,14 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
         covered by the new patches --- could improve the generation quality, and perhaps help avoid "loose" seams.
 
         For the most part doesn't seem to make that big of a difference.
+
+        For info regarding the parameters and returned data see :func:`generate_texture`.
     """
     b, o = patching_config.block_size, patching_config.overlap
     assert o * 2 < b
 
     rng = np.random.default_rng(seed=seed)
-    src_textures = TextureList(src_textures, patching_config.get_patch_kernel())
+    src_texs = TextureList(src_texs, patching_config.get_patch_kernel())
 
     bm2o = b - 2 * o
     _n_h = n_h = ceil(out_h / bm2o)
@@ -779,20 +804,20 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
     #  patch instead of just the overlap section
     # mind that we need to over-estimate the size of the texture to make room for the adjacent patches to be filled
     # in rows that may not be aligned
-    texture_map = np.zeros((o + b * 2 + n_h * bm2o, o + b * 2 + n_w * bm2o, src_textures.global_channel_count),
-                           dtype=src_textures.global_dtype)
+    texture_map = np.zeros((o + b * 2 + n_h * bm2o, o + b * 2 + n_w * bm2o, src_texs.global_channel_count),
+                           dtype=src_texs.global_dtype)
     seams_map = np.zeros(texture_map.shape[:2], dtype=np.float32)
 
     # Set starting block
-    _, starting_block = _get_random_valid_block(b, src_textures, rng)
+    _, starting_block = _get_random_valid_block(b, src_texs, rng)
     texture_map[o:o + b, o:o + b, :] = starting_block
 
     # --- generation ----
     d_ixd = o  # texture offset ( both for x & y )
 
     # fill the 1st row & column
-    _fill_row_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_textures, patching_config, rng)
-    _fill_column_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_textures, patching_config, rng)
+    _fill_row_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_texs, patching_config, rng)
+    _fill_column_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_texs, patching_config, rng)
 
     # fill the rest iterating diagonally
     find_patch = get_find_patch_both_method()
@@ -801,17 +826,17 @@ def generate_texture_diagonal(src_textures: list[np.ndarray],
         d_ixd += bm2o
 
         block_idx = np.s_[d_ixd:d_ixd + b, d_ixd:d_ixd + b]
-        process_block(texture_map, seams_map, src_textures, block_idx, find_patch, find_cut, patching_config, rng)
+        process_block(texture_map, seams_map, src_texs, block_idx, find_patch, find_cut, patching_config, rng)
 
         # columns
         for blk_x in range(d_ixd + b - o, texture_map.shape[1] - b + 1, (b - o)):
             block_idx = np.s_[d_ixd:d_ixd + b, blk_x:blk_x + b]
-            process_block(texture_map, seams_map, src_textures, block_idx, find_patch, find_cut, patching_config, rng)
+            process_block(texture_map, seams_map, src_texs, block_idx, find_patch, find_cut, patching_config, rng)
 
         # rows
         for blk_y in range(d_ixd + b - o, texture_map.shape[0] - b + 1, (b - o)):
             block_idx = np.s_[blk_y:blk_y + b, d_ixd:d_ixd + b]
-            process_block(texture_map, seams_map, src_textures, block_idx, find_patch, find_cut, patching_config, rng)
+            process_block(texture_map, seams_map, src_texs, block_idx, find_patch, find_cut, patching_config, rng)
 
     return texture_map[o:o + out_h, o:o + out_w], seams_map[o:o + out_h, o:o + out_w]
 
@@ -995,34 +1020,36 @@ def _generate_guided_steps_predictor(patching_config: SquarePatchingConfig, out_
 @auto_uint8_to_float32
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def generate_guided(
-        proxy_textures: list[np.ndarray],
-        source_textures: list[np.ndarray],
+        proxy_texs: list[np.ndarray],
+        src_texs: list[np.ndarray],
         patching_config: SquarePatchingConfig,
         out_h: NumPixels, out_w: NumPixels,
         seed: int,
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
-    Uses a variant of the source_textures to guide the texture synthesis algorithms and maps the result to the
-    source textures.
+    Uses a variant of the source textures — the proxy textures — to guide the texture synthesis algorithms and
+    reconstruct the synthesis result using the source textures.
+
     Can be used, for example, in noisy images, where a filter can be applied so that the
     generation is not influenced by noise or some other visual artifacts or features.
 
-    :param proxy_textures: textures used to guide the generation;
-        the textures order SHOULD MATCH those in the source textures list.
-    :param source_textures: textures used to build the final result post proxy synthesis.
-    :return:
-        item 1: reconstructed synthesis result using the source textures;
-        item 2: seams map;
-        item 3: synthesis result using the proxy textures.
+    For info regarding the remaining parameters see :func:`generate_texture`.
+
+    :param proxy_texs: Textures used to guide the generation;
+        the textures order MUST MATCH those in the source textures list.
+    :param src_texs: Textures used to build the final result post proxy synthesis.
+
+    :return: A tuple ``(texture, seams, proxy_texture)``.
+        ``proxy_texture`` is the output generated from the proxy synthesis, before reconstruction with the source textures.
     """
     # note: ui interrupt exceptions are not caught by _compute_synthesis_map or _reconstruct_texture.
     #       the handle_ui_interrupts wrapper catches the exception here instead, since this is the public method.
     rng = np.random.default_rng(seed=seed)
     patches_idxs, masks, proxy_out_tex, out_cut = _compute_synthesis_map(
-        proxy_textures, patching_config, out_h, out_w, rng, uicd)
+        proxy_texs, patching_config, out_h, out_w, rng, uicd)
     out_tex = _reconstruct_texture(
-        source_textures, patches_idxs, masks, out_h, out_w, patching_config, uicd)
+        src_texs, patches_idxs, masks, out_h, out_w, patching_config, uicd)
     return out_tex, out_cut, proxy_out_tex
 
 
@@ -1031,7 +1058,7 @@ def generate_guided(
 
 # region    _____ MAKE SEAMLESS MULTI PATCH _____
 
-def get_numb_of_blocks_to_fill_stripe(block_size, overlap, dim_length):
+def _get_numb_of_blocks_to_fill_stripe(block_size, overlap, dim_length):
     return int(ceil((dim_length - block_size) / (block_size - overlap)))
 
 
@@ -1048,7 +1075,7 @@ def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchin
     bmo = block_size - overlap
 
     src_h, src_w = image.shape[:2]
-    n_h = get_numb_of_blocks_to_fill_stripe(block_size, overlap, src_h)
+    n_h = _get_numb_of_blocks_to_fill_stripe(block_size, overlap, src_h)
 
     texture_map = np.zeros((src_h, src_w, image.shape[-1])).astype(image.dtype)
     texture_map[:] = image
@@ -1104,15 +1131,22 @@ def _seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchin
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def seamless_horizontal_multi(image: np.ndarray, patching_config: SquarePatchingConfig, seed: int,
-                              lookup_textures: list[np.ndarray] = None, seams_map: np.ndarray | None = None,
+def seamless_horizontal_multi(target_tex: np.ndarray, patching_config: SquarePatchingConfig, seed: int,
+                              src_texs: list[np.ndarray] = None,
                               uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
-    :param image: the image to make seamless; also be used to fetch the patches.
-    :param lookup_textures: if provided, the patches will be obtained from the list of "lookup_textures" instead.
+    Attempts to make a texture horizontally tileable by patching the texture at the edge, assembling a column of
+    block sized patches over at the texture edge seam.
+
+    For info regarding the remaining parameters see :func:`generate_texture`.
+
+    :param target_tex: The texture to make seamless; will also be used to fetch the patches if ``src_texts`` is None.
+    :param src_texs: If provided, the patches are obtained from ``src_texs``; otherwise, they will be fetched from ``image``.
+
+    :return: A tuple ``(texture, seams)``.
     """
     rng = np.random.default_rng(seed=seed)
-    return _seamless_horizontal_multi(image, patching_config, rng, lookup_textures, seams_map, uicd)
+    return _seamless_horizontal_multi(target_tex, patching_config, rng, src_texs, uicd)
 
 
 def _seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingConfig, rng: np.random.Generator,
@@ -1131,26 +1165,37 @@ def _seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingC
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def seamless_vertical_multi(image: np.ndarray, patching_config: SquarePatchingConfig, seed: int,
-                            lookup_textures: list[np.ndarray] = None,
+def seamless_vertical_multi(target_tex: np.ndarray, patching_config: SquarePatchingConfig, seed: int,
+                            src_texs: list[np.ndarray] = None,
                             uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """
+    Attempts to make a texture vertically tileable by patching the texture at the edge, assembling a row of
+    block sized patches over at the texture edge seam.
+
+    For info regarding the parameters and returned data see :func:`seamless_horizontal_multi`.
+    """
     rng = np.random.default_rng(seed=seed)
-    return _seamless_vertical_multi(image, patching_config, rng, lookup_textures, uicd)
+    return _seamless_vertical_multi(target_tex, patching_config, rng, src_texs, uicd)
 
 
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def seamless_both_multi(image, patching_config: SquarePatchingConfig, seed: int,
-                        lookup_textures: list[np.ndarray] = None,
+def seamless_both_multi(target_tex, patching_config: SquarePatchingConfig, seed: int,
+                        src_texs: list[np.ndarray] = None,
                         uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    lookup_textures = [image] if lookup_textures is None else lookup_textures
+    """
+    Attempts to make a texture seamless, both vertically and horizontally tileable.
+
+    For info regarding the parameters and returned data see :func:`seamless_horizontal_multi`.
+    """
+    src_texs = [target_tex] if src_texs is None else src_texs
     block_size = patching_config.block_size
 
     rng = np.random.default_rng(seed=seed)
 
     # patch the texture in both directions. the last stripe's endpoints won't loop yet.
-    texture, seams = _seamless_vertical_multi(image, patching_config, rng, lookup_textures=lookup_textures, uicd=uicd)
+    texture, seams = _seamless_vertical_multi(target_tex, patching_config, rng, lookup_textures=src_texs, uicd=uicd)
 
     if texture is None:
         return ret_val_on_interrupt
@@ -1159,11 +1204,11 @@ def seamless_both_multi(image, patching_config: SquarePatchingConfig, seed: int,
     for m in [texture, seams]:
         m[:] = np.roll(m, -block_size // 2, axis=0)
 
-    lookup_textures = TextureList(lookup_textures, patching_config.get_patch_kernel())
+    src_texs = TextureList(src_texs, patching_config.get_patch_kernel())
 
     texture, seams = _seamless_horizontal_multi(
         texture, patching_config, rng,
-        lookup_textures=lookup_textures,
+        lookup_textures=src_texs,
         seams_map=seams,
         uicd=uicd)
 
@@ -1172,7 +1217,7 @@ def seamless_both_multi(image, patching_config: SquarePatchingConfig, seed: int,
         m[:] = np.roll(m, texture.shape[0] // 2, axis=0)
         m[:] = np.roll(m, (texture.shape[1] - block_size) // 2, axis=1)
 
-    return _patch_horizontal_seam(texture, seams, lookup_textures, patching_config, rng, uicd=uicd)
+    return _patch_horizontal_seam(texture, seams, src_texs, patching_config, rng, uicd=uicd)
 
 
 def _patch_horizontal_seam(texture_to_patch: np.ndarray, seams_map: np.ndarray, lookup_textures: TextureList,
@@ -1290,47 +1335,58 @@ def _seamless_vertical_single(image: np.ndarray, lookup_texture: np.ndarray,
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def seamless_horizontal_single(image: np.ndarray, lookup_texture: np.ndarray, patching_config: SquarePatchingConfig,
+def seamless_horizontal_single(target_tex: np.ndarray, src_texs: np.ndarray, patching_config: SquarePatchingConfig,
                                seed: int,
                                uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """
+    Attempts to make a texture horizontally tileable by patching the texture at the edge.
+
+    A single patch with width equal to the ``block_size`` defined in ``patching_config`` is used to patch the texture.
+
+    For info regarding the parameters and returned data see :func:`seamless_horizontal_multi`.
+    """
     rng = np.random.default_rng(seed=seed)
-    return _seamless_horizontal_single(image, lookup_texture, patching_config, rng, None, uicd)
+    return _seamless_horizontal_single(target_tex, src_texs, patching_config, rng, None, uicd)
 
 
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def seamless_vertical_single(image: np.ndarray, lookup_texture: np.ndarray,
+def seamless_vertical_single(target_tex: np.ndarray, src_texs: np.ndarray,
                              patching_config: SquarePatchingConfig, seed: int,
                              uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
+    """
+    Attempts to make a texture vertically tileable by patching the texture at the edge.
+
+    A single patch with height equal to the ``block_size`` defined in ``patching_config`` is used to patch the texture.
+
+    For info regarding the parameters and returned data see :func:`seamless_horizontal_multi`.
+    """
     rng = np.random.default_rng(seed=seed)
-    return _seamless_vertical_single(image, lookup_texture, patching_config, rng, uicd)
+    return _seamless_vertical_single(target_tex, src_texs, patching_config, rng, uicd)
 
 
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
-def seamless_both_single(image: np.ndarray, lookup_texture: np.ndarray,
+def seamless_both_single(target_tex: np.ndarray, src_texs: np.ndarray,
                          patching_config: SquarePatchingConfig, seed: int,
                          uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
-    :param image: source texture to be made seamless.
-    :param lookup_texture: texture from where the patches will be extracted.
-    :param patching_config: generation parameters.
-    :param seed: seed used for the random number generator (RNG).
-    :param uicd: optional element to keep track of the generation or interrupt it.
-    :return: the tuple: (texture, seam map)
+    Attempts to make a texture both vertically and horizontally tileable by patching the texture at the edges.
+
+    For info regarding the parameters and returned data see :func:`seamless_horizontal_multi`.
     """
-    lookup_texture = image if lookup_texture is None else lookup_texture
+    src_texs = target_tex if src_texs is None else src_texs
     block_size = patching_config.block_size
     rng = np.random.default_rng(seed=seed)
 
-    texture, seams = _seamless_vertical_single(image, lookup_texture, patching_config, rng, uicd)
+    texture, seams = _seamless_vertical_single(target_tex, src_texs, patching_config, rng, uicd)
     if texture is None:
         return ret_val_on_interrupt
     for m in [texture, seams]:
         m[:] = np.roll(m, -block_size // 2, axis=0)  # center future seam at stripes interception
-    texture, seams = _seamless_horizontal_single(texture, lookup_texture, patching_config, rng, seams, uicd)
+    texture, seams = _seamless_horizontal_single(texture, src_texs, patching_config, rng, seams, uicd)
     if texture is None:
         return ret_val_on_interrupt
 
@@ -1338,8 +1394,8 @@ def seamless_both_single(image: np.ndarray, lookup_texture: np.ndarray,
     for m in [texture, seams]:
         m[:] = np.roll(m, texture.shape[0] // 2, axis=0)
         m[:] = np.roll(m, texture.shape[1] // 2 - block_size // 2, axis=1)
-    lookup_texture = TextureList([lookup_texture], None)
-    texture, seams = _patch_horizontal_seam(texture, seams, lookup_texture, patching_config, rng, uicd)
+    src_texs = TextureList([src_texs], None)
+    texture, seams = _patch_horizontal_seam(texture, seams, src_texs, patching_config, rng, uicd)
 
     # fix overvalues due to seams overlap
     np.clip(seams, 0, 1, out=seams)
