@@ -64,8 +64,8 @@ rng = np.random.default_rng(42)
 # 3. Generate with guidance
 # Note: The order of textures in proxy_textures MUST match source_textures
 out_tex, out_seams, out_proxy = generate_guided(
-    proxy_textures=[proxy_img],
-    source_textures=[source_img],
+    proxy_texs=[proxy_img],
+    src_texs=[source_img],
     patching_config=config,
     out_h=512,
     out_w=512,

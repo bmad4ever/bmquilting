@@ -68,7 +68,7 @@ config = SquarePatchingConfig.with_seams(block_size=50, overlap=20, tolerance=0.
 
 # Generate a 256x256 texture
 out_tex, out_seams = generate_texture(
-    src_textures=[src],
+    src_texs=[src],
     patching_config=config,
     out_h=256, out_w=256, seed=42
 )
@@ -119,7 +119,7 @@ config = CircularPatchingConfig.with_seams(diameter=55, overlap_ratio=.5, tolera
 
 # Generate a 256x256 texture
 out_tex, out_seams = generate_cphl6p(
-    source_textures=[src],
+    src_texs=[src],
     patching_config=config,
     out_h=256, out_w=256, seed=0
 )
@@ -172,11 +172,12 @@ Providing additional texture variations besides the original source may improve 
 
 This can be done by generating a larger texture using the available generation methods, or by using the methods `get_texture_variants` and `get_texture_rotated_variants` which can be imported from `bmquilting.utils`.
 
-The lookup textures can be provided in the following manner:
+Additional textures can be supplied through the optional `src_texs` argument. When this argument is set, patches are drawn from the textures listed in `src_texs` instead of from `target_tex`. If you also want to use `target_tex` as a source for the patches, include it explicitly in `src_texs`, as shown in the example below.
+
 ```python
-seamless_img, seams_map = seamless_both(
-        target=src,
-        lookup_textures=[src, mirrored_src, extended_src],
+    seamless_img, seams_map = seamless_both(
+        target_tex=src,
+        src_texs=[src, mirrored_src, extended_src],
         patching_config=config,
         seed=0
     )
@@ -214,9 +215,9 @@ config = CircularPatchingConfig.with_feathering(diameter=33, overlap_ratio=0.4, 
 
 # Fill the holes
 out_tex, out_seams = fill_cphl(
-    target=target,
+    target_tex=target,
     mask=mask,
-    source_textures=src_textures,
+    src_texs=src_textures,
     patching_config=config,
     seed=42
 )
@@ -236,13 +237,14 @@ Proxy synthesis allows matching patches based on a proxy (e.g. a blurred or down
 
 ```python
 from bmquilting.circular import generate_cphl6p_guided
+import cv2
 
 # Create a blurred proxy to ignore fine noise during matching
 proxy = cv2.medianBlur(src, 5)
 
 out_tex, out_seams, out_proxy = generate_cphl6p_guided(
-    proxy_textures=[proxy],
-    source_textures=[src],
+    proxy_texs=[proxy],
+    src_texs=[src],
     patching_config=config,
     out_h=512,
     out_w=512,
@@ -281,8 +283,8 @@ cv2.imshow("source", src)
 
 # transfer the texture 
 tex, seams = texture_transfer(
-    src_textures=[src],
-    target=target,
+    src_texs=[src],
+    target_img=target,
     patching_config=
         CircularPatchingConfig.with_feathering(
             diameter=61,
@@ -293,7 +295,7 @@ tex, seams = texture_transfer(
     seed=0,
     # additional optional args
     downscale_factor=2,  # uses a downsized tex2transfer as proxy
-    target_roi=mask,     # ignore area outside region of interest
+    target_roi=mask,  # ignore area outside region of interest
 )
 
 cv2.imshow('tex', tex)
@@ -313,17 +315,24 @@ For more comprehensive documentation on how texture transfer works and how to se
 
 ## 7. Progress Tracking and Step Prediction
 
-All main generation functions are decorated with a `step_predictor`, which adds a `.predict_steps()` method. This is useful for initialising progress bars in UI applications.
+All **generate** and **circular** functions are decorated with a `step_predictor`, which adds a `.predict_steps()` method. This is useful for initialising progress bars in UI applications.
 
 ```python
 from bmquilting.circular import generate_cphl6p, CircularPatchingConfig
 
-# Predict how many patches will be generated
+# Predict how many patches will be used
 total_patches = generate_cphl6p.predict_steps(
-    patching_config=CircularPatchingConfig.with_seams(diameter=65, overlap_ratio=0.25, tolerance=0.1, spacing_factor=1.12), 
-    out_h=512, 
+    patching_config=
+        CircularPatchingConfig.with_seams(
+            diameter=65,
+            overlap_ratio=0.25,
+            tolerance=0.1,
+            spacing_factor=1.12
+        ),
+    out_h=512,
     out_w=512
 )
+
 print(f"Expected patches: {total_patches}")
 ```
 
