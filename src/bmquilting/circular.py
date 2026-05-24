@@ -127,8 +127,8 @@ def _periodic_resize(src: np.ndarray, dsize: tuple[int, int], interpolation=cv2.
     off_w, off_h = pad * scale_w, pad * scale_h
     return resized_padded[off_h:off_h + dsize[1], off_w:off_w + dsize[0]].copy(order="C")
 
-def _get_proxy_configs(source_config: CircularPatchingConfig, scale: int) -> tuple[
-    CircularPatchingConfig, CircularPatchingConfig]:
+def _get_proxy_configs(source_config: CircularPatchingConfig, scale: int)\
+        -> tuple[CircularPatchingConfig, CircularPatchingConfig]:
     """
     Adjusts the source configuration and creates a proxy configuration to ensure
     perfect grid alignment and avoid spatial drift when using scaled proxy textures.
@@ -261,14 +261,6 @@ def _generate_cphl6p(
     """
     Circular Patches on a Hexagonal Lattice with 6 Partitions (CPHL6P)
 
-    :param source_textures: Textures used for the generation
-    :param out_h: Output texture height
-    :param out_w: Output texture width
-    :param seed: Used for the random selection of patches within the provided tolerance.
-        Be mindful that, despite the provided seed, the generation can only ensure deterministic behavior if the
-        sections do not overlap. If the spacing factor is not lower than 1.12, there is potential overlap.
-    :param n_processes: Number of processes to run in parallel when filling the stripes and sections.
-    :param uicd: (Optional) Keeps track of the generation step
     :param _record: Optional function to store or analyze the processed patches.
         The first argument, JobID, is a number that relates to a stripe and a section in the generation
         ( it is independent of the number of processes used ).
@@ -475,18 +467,18 @@ def _generate_cphl6p_step_predictor(patching_config: CircularPatchingConfig, out
     return sum(1 for inner in hexa_iter.iterate_spiral() for _ in inner)
 
 
-def _refill_cphl6p_step_predictor(target: np.ndarray, patching_config: CircularPatchingConfig):
-    return _generate_cphl6p_step_predictor(patching_config, target.shape[0], target.shape[1])
+def _refill_cphl6p_step_predictor(target_tex: np.ndarray, patching_config: CircularPatchingConfig):
+    return _generate_cphl6p_step_predictor(patching_config, target_tex.shape[0], target_tex.shape[1])
 
-def _refill_cphl6p_recursive_step_predictor(target: np.ndarray, patching_configs: list[CircularPatchingConfig]):
-    return _generate_cphl6p_recursive_step_predictor(patching_configs, target.shape[0], target.shape[1])
+def _refill_cphl6p_recursive_step_predictor(target_tex: np.ndarray, patching_configs: list[CircularPatchingConfig]):
+    return _generate_cphl6p_recursive_step_predictor(patching_configs, target_tex.shape[0], target_tex.shape[1])
 
 def _generate_cphl6p_recursive_step_predictor(patching_configs: list[CircularPatchingConfig],
                                               out_h: NumPixels, out_w: NumPixels):
     return sum((_generate_cphl6p_step_predictor(conf, out_h, out_w) for conf in patching_configs))
 
-def _generate_guided_chlp6p_step_predictor(proxy_textures, source_textures, patching_config, out_h, out_w):
-    guided_args = _setup_guided_args(source_textures[0], proxy_textures[0], source_textures, proxy_textures, patching_config)
+def _generate_guided_chlp6p_step_predictor(proxy_texs, src_texs, patching_config, out_h, out_w):
+    guided_args = _setup_guided_args(src_texs[0], proxy_texs[0], src_texs, proxy_texs, patching_config)
     _, _, proxy_config, scale = guided_args
     p_out_h, p_out_w = out_h // scale, out_w // scale
     return _generate_cphl6p_step_predictor(proxy_config, p_out_h, p_out_w) * 2
@@ -499,14 +491,27 @@ def _generate_guided_chlp6p_step_predictor(proxy_textures, source_textures, patc
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_cphl6p(
-        source_textures: list[np.ndarray],
+        src_texs: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         out_h: NumPixels, out_w: NumPixels,
         seed: int,
         n_processes: int = 1,
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    return _generate_cphl6p(source_textures, out_h, out_w, patching_config, seed, n_processes, uicd)
+    """
+    Generates a texture using Circular Patches over a Hexagonal Lattice with 6 Partitions (CHPL6P).
+
+    Similar to ``generate_cphl``, but starts from the center of the generation area splitting it into 6 separate regions.
+
+    The output from this function is not consistent with ``generate_function``.
+    Furthermore, the provided ``seed`` can only ensure reproducibility when the ``spacing_factor`` in ``patching_config``
+    is higher than 1.12 due to potential patch overlaps at the partitions' edges.
+
+    For info regarding the remaining parameters and returned data see :func:`generate_cphl`.
+
+    :param n_processes: the number of processes to use; the minimum is 1, the maximum is 6.
+    """
+    return _generate_cphl6p(src_texs, out_h, out_w, patching_config, seed, n_processes, uicd)
 
 
 @step_predictor(_refill_cphl6p_step_predictor)
@@ -514,15 +519,23 @@ def generate_cphl6p(
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def refill_cphl6p(
-        target: np.ndarray,
-        source_textures: list[np.ndarray],
+        target_tex: np.ndarray,
+        src_texs: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         seed: int,
         n_processes: int = 1,
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    out_h, out_w = target.shape[:2]
-    return _generate_cphl6p(source_textures, out_h, out_w, patching_config, seed, n_processes, uicd, _refill_target=target)
+    """
+    Synthesises on top of the provided ``target_tex``.
+    Patch selection will consider the patch's overlap with ``target_tex`` and other patches.
+
+    For info regarding the remaining parameters and returned data see :func:`generate_cphl6p`.
+
+    :param target_tex: Target Texture, the starting canvas for the generation.
+    """
+    out_h, out_w = target_tex.shape[:2]
+    return _generate_cphl6p(src_texs, out_h, out_w, patching_config, seed, n_processes, uicd, _refill_target=target_tex)
 
 
 @step_predictor(_refill_cphl6p_recursive_step_predictor)
@@ -530,17 +543,26 @@ def refill_cphl6p(
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def refill_cphl6p_recursive(
-        target: np.ndarray,
-        source_textures: list[np.ndarray],
+        target_tex: np.ndarray,
+        src_texs: list[np.ndarray],
         patching_configs: list[CircularPatchingConfig],
         seed: int,
         n_processes: int = 1,
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    out_h, out_w = target.shape[:2]
-    tex, seams = target, np.broadcast_to(np.float32(0.0), target.shape[:2])
+    """
+    Iterates the ``patching_configs``.
+    The 1st item in ``patching_configs`` is processed over the provided ``target_tex``;
+    the following generations run on top of prior outputs.
+
+    For info regarding the remaining parameters and returned data see :func:`generate_cphl` and :func:`generate_cphl6p`.
+
+    :param target_tex: Target Texture, the starting canvas for the generation.
+    """
+    out_h, out_w = target_tex.shape[:2]
+    tex, seams = target_tex, np.broadcast_to(np.float32(0.0), target_tex.shape[:2])
     for config in patching_configs:
-        tex, seams = _generate_cphl6p(source_textures, out_h, out_w, config, seed, n_processes, uicd,
+        tex, seams = _generate_cphl6p(src_texs, out_h, out_w, config, seed, n_processes, uicd,
                                       _refill_target=tex, _refill_seams=seams)
     return tex, seams
 
@@ -550,16 +572,23 @@ def refill_cphl6p_recursive(
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_cphl6p_recursive(
-        source_textures: list[np.ndarray],
+        src_texs: list[np.ndarray],
         patching_configs: list[CircularPatchingConfig],
         out_h: NumPixels, out_w: NumPixels,
         seed: int,
         n_processes: int = 1,
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    tex, seams = _generate_cphl6p(source_textures, out_h, out_w, patching_configs[0], seed, n_processes, uicd)
+    """
+    Iterates the ``patching_configs``.
+    The 1st item in ``patching_configs`` is processed in the same way as ``generate_cphl6p``, with an empty canvas;
+    the following generations run on top of prior outputs.
+
+    For info regarding the remaining parameters and returned data see :func:`generate_cphl` and :func:`generate_cphl6p`.
+    """
+    tex, seams = _generate_cphl6p(src_texs, out_h, out_w, patching_configs[0], seed, n_processes, uicd)
     for config in patching_configs[1:]:
-        tex, seams = _generate_cphl6p(source_textures, out_h, out_w, config, seed, n_processes, uicd,
+        tex, seams = _generate_cphl6p(src_texs, out_h, out_w, config, seed, n_processes, uicd,
                                       _refill_target=tex, _refill_seams=seams)
     return tex, seams
 
@@ -569,8 +598,8 @@ def generate_cphl6p_recursive(
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def generate_cphl6p_guided(
-        proxy_textures: list[np.ndarray],
-        source_textures: list[np.ndarray],
+        proxy_texs: list[np.ndarray],
+        src_texs: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         out_h: NumPixels, out_w: NumPixels,
         seed: int,
@@ -578,28 +607,33 @@ def generate_cphl6p_guided(
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
-    Uses a variant of the source_textures to guide the texture synthesis algorithms and maps the result to the
-    source textures.
-    Can be used, for example, in noisy images, where a filter can be applied so that the
-    generation is not influenced by noise or some other visual artifacts or features.
+    Uses a variant of the source textures — the proxy textures — to guide the texture synthesis algorithm and
+    reconstruct the synthesis result using the source textures.
 
-    proxy_textures and source_textures should match in length and their elements dimensions should be scaled
-    by the same factor.
+    Can be used, for example, in noisy images, where a filter can be applied so that the
+    generation is not influenced by noise or some other visual artefacts or features.
 
     When using proxy textures with a different size than the source, the patching parameters
     (radius and spacing) may be auto-adjusted to ensure perfect grid alignment and prevent spatial drift.
 
-    :param proxy_textures: Textures used to guide the generation.
-    :param source_textures: Textures used for the final generation, guided by the proxy generation obtained with proxy_textures.
+    All proxy textures should have the same resolution, i.e., their scale with respect to their matching source texture
+    should be the same.
 
-    Check generate_cphl6p documentation for the remaining arguments.
+    **If the** ``spacing_factor`` **is not higher than 1.12 and the number of processes is higher than 1, there may be
+    overlaps in the proxy generation whose application order during reconstruction differs, creating visual artefacts.**
 
-    :return:
-        item 1: reconstructed synthesis result using the source textures;
-        item 2: seams map;
-        item 3: synthesis result using the proxy textures.
+    For info regarding the remaining parameters see :func:`generate_cphl` and :func:`generate_cphl6p`.
+
+    :param proxy_texs: Textures used to guide the generation;
+        the textures order MUST MATCH those in the source textures list.
+    :param src_texs: Textures used to build the final result post proxy synthesis.
+    :param patching_config: Patching Configuration set with respect to the source textures' resolution.
+
+    :return: A tuple ``(texture, seams, proxy_synthesis)`` where:
+        ``texture``: reconstructed synthesis result using the source textures;
+        ``seams``: seams map, can be used for debug or for further refinements;
+        ``proxy_synthesis``: synthesis result using the proxy textures.
     """
-
     # note: ui interrupt exceptions are not caught by _compute_synthesis_map or _reconstruct_texture.
 
     critical_spacing_factor = 1.12
@@ -607,12 +641,12 @@ def generate_cphl6p_guided(
         logger.warning(
             f"Spacing factor is less than or equal to {critical_spacing_factor} and number of processes is higher than 1."
             "\nDue to potential overlaps, not only is the output not guaranteed to be deterministic, "
-            "the reconstruct procedure after the proxy generation may introduce artifacts due to different patch ordering."
+            "the reconstruct procedure after the proxy generation may introduce artefacts due to different patch ordering."
         )
     del critical_spacing_factor
 
-    guided_args = _setup_guided_args(source_textures[0], proxy_textures[0], source_textures, proxy_textures, patching_config)
-    source_textures, adj_source_config, proxy_config, scale = guided_args
+    guided_args = _setup_guided_args(src_texs[0], proxy_texs[0], src_texs, proxy_texs, patching_config)
+    src_texs, adj_source_config, proxy_config, scale = guided_args
 
     # extend generation to nearest multiple of scale above
     r_out_h, r_out_w = int(np.ceil(out_h/scale)*scale), int(np.ceil(out_w/scale)*scale)
@@ -626,7 +660,7 @@ def generate_cphl6p_guided(
         _proxy_results[job_id].append(result)
 
     proxy_out_tex, out_seams = _generate_cphl6p(
-        proxy_textures, p_out_h, p_out_w, proxy_config,
+        proxy_texs, p_out_h, p_out_w, proxy_config,
         seed, n_processes, uicd,
         _record=_record
     )
@@ -641,7 +675,7 @@ def generate_cphl6p_guided(
     p_margin_x = (p_ext_w - p_out_w) // 2
 
     out_tex = _reconstruct_texture_cphl6p(
-        source_textures, _proxy_results,
+        src_texs, _proxy_results,
         r_out_h, r_out_w, adj_source_config,
         n_processes, uicd,
         extended_h=p_ext_h * scale,
@@ -803,12 +837,12 @@ def _reconstruct_fill_cphl(
     return result
 
 
-def _guided_fill_cphl_step_predictor(target, proxy_target, mask, proxy_textures, source_textures, patching_config):
-    guided_args = _setup_guided_args(target, proxy_target, source_textures, proxy_textures, patching_config)
+def _guided_fill_cphl_step_predictor(target_tex, proxy_target_tex, mask, proxy_texs, src_texs, patching_config):
+    guided_args = _setup_guided_args(target_tex, proxy_target_tex, src_texs, proxy_texs, patching_config)
     _, _, proxy_config, scale = guided_args
 
     if scale > 1:
-        ph, pw = proxy_target.shape[:2]
+        ph, pw = proxy_target_tex.shape[:2]
         proxy_mask = cv2.resize(mask, (pw, ph), interpolation=cv2.INTER_LINEAR)
     else:
         proxy_mask = mask
@@ -820,21 +854,28 @@ def _guided_fill_cphl_step_predictor(target, proxy_target, mask, proxy_textures,
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def fill_cphl(
-        target: np.ndarray,
+        target_tex: np.ndarray,
         mask: np.ndarray,
-        source_textures: list[np.ndarray],
+        src_texs: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         seed: int,
         uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
     """
+    Patch a texture with missing or corrupt areas.
+
+    In order to drawn patches from ``target_tex`` use the ``utils.texture.set_invalid_texture_area`` function and
+    pass the resulting texture as the source texture.
+
+    For info regarding the remaining parameters and returned data see :func:`generate_cphl`.
+
+    :param target_tex: Target Texture, the texture to patch.
+    :param src_texs: Source Textures, the textures from where the patches are drawn from.
     :param mask: Binary mask.
         If provided in float32 format the area to patch should be filled with zeroes, and the remaining area with ones.
         If provided in uint8 format use 255 instead of 1.
-
-    :return: texture, seams
     """
-    return _fill_cphl(target, mask, source_textures, patching_config, seed, uicd)
+    return _fill_cphl(target_tex, mask, src_texs, patching_config, seed, uicd)
 
 
 @step_predictor(_guided_fill_cphl_step_predictor)
@@ -842,28 +883,28 @@ def fill_cphl(
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def fill_cphl_guided(
-        proxy_target: np.ndarray, target: np.ndarray, mask: np.ndarray,
-        proxy_textures: list[np.ndarray], source_textures: list[np.ndarray],
+        proxy_target_tex: np.ndarray, target_tex: np.ndarray, mask: np.ndarray,
+        proxy_texs: list[np.ndarray], src_texs: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         seed: int, uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
-    Check generate_cphl6p_guided documentation for more info on the guided approach.
+    Patch a texture with missing or corrupt areas via a set of proxy textures.
 
-    When using proxy textures with a different size than the source, the patching parameters
-    (radius and spacing) may be auto-adjusted to ensure perfect grid alignment and prevent spatial drift.
+    For info regarding the remaining parameters and returned data see :func:`generate_cphl6p_guided`.
 
+    :param proxy_target_tex: Proxy Target Texture, the proxy for the texture to patch.
+    :param target_tex: Target Texture, the texture to patch.
+    :param patching_config: Patching Configuration set with respect to the source textures' resolution.
     :param mask: Binary mask.
         If provided in float32 format the area to patch should be filled with zeroes, and the remaining area with ones.
         If provided in uint8 format use 255 instead of 1.
-
-    :return: texture, seams, synthesised_proxy
     """
-    guided_args = _setup_guided_args(target, proxy_target, source_textures, proxy_textures, patching_config)
-    source_textures, adj_source_config, proxy_config, scale = guided_args
+    guided_args = _setup_guided_args(target_tex, proxy_target_tex, src_texs, proxy_texs, patching_config)
+    src_texs, adj_source_config, proxy_config, scale = guided_args
 
     if scale > 1:
-        ph, pw = proxy_target.shape[:2]
+        ph, pw = proxy_target_tex.shape[:2]
         proxy_mask = cv2.resize(mask, (pw, ph), interpolation=cv2.INTER_LINEAR)
     else:
         proxy_mask = mask
@@ -874,7 +915,7 @@ def fill_cphl_guided(
         proxy_data.append(idx_mask_tuple)
 
     proxy_result, seams = _fill_cphl(
-        target=proxy_target, mask=proxy_mask, source_textures=proxy_textures,
+        target=proxy_target_tex, mask=proxy_mask, source_textures=proxy_texs,
         patching_config=proxy_config, seed=seed, uicd=uicd, _record=record)
 
     _scale_proxy_patch_list(proxy_data, scale, adj_source_config.patch_params.block_size)
@@ -884,18 +925,18 @@ def fill_cphl_guided(
     _, p_margin_y, p_margin_x = _extend4filling(mask, p_pp)
 
     result = _reconstruct_fill_cphl(
-        target=target, source_textures=source_textures, proxy_data=proxy_data,
+        target=target_tex, source_textures=src_texs, proxy_data=proxy_data,
         patching_config=adj_source_config, uicd=uicd,
         margin_y=p_margin_y * scale, margin_x=p_margin_x * scale
     )
 
-    if scale > 1: seams = cv2.resize(seams, (target.shape[1], target.shape[0]), interpolation=cv2.INTER_LINEAR)
+    if scale > 1: seams = cv2.resize(seams, (target_tex.shape[1], target_tex.shape[0]), interpolation=cv2.INTER_LINEAR)
 
     return result, seams, proxy_result
 
 
-def _refill_cphl_step_predictor(target: np.ndarray, patching_config: CircularPatchingConfig):
-    mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
+def _refill_cphl_step_predictor(target_tex: np.ndarray, patching_config: CircularPatchingConfig):
+    mask = np.broadcast_to(np.float32(0.0), target_tex.shape[:2])
     return _fill_cphl_step_predictor(mask, patching_config)
 
 @step_predictor(_refill_cphl_step_predictor)
@@ -903,21 +944,28 @@ def _refill_cphl_step_predictor(target: np.ndarray, patching_config: CircularPat
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def refill_cphl(
-        target: np.ndarray,
-        source_textures: list[np.ndarray],
+        target_tex: np.ndarray,
+        src_texs: list[np.ndarray],
         patching_config: CircularPatchingConfig,
         seed: int,
         uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    """:return: texture, seams"""
-    mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
-    filled = np.broadcast_to(np.float32(1.0), target.shape[:2])
-    return _fill_cphl(target, mask, source_textures, patching_config, seed, uicd,
+    """
+    Synthesises on top of the provided ``target_tex``.
+    Patch selection will consider the patch's overlap with ``target_tex`` and other patches.
+
+    For info regarding the remaining parameters and returned data see :func:`generate_cphl`.
+
+    :param target_tex: Target Texture, the starting canvas for the generation.
+    """
+    mask = np.broadcast_to(np.float32(0.0), target_tex.shape[:2])
+    filled = np.broadcast_to(np.float32(1.0), target_tex.shape[:2])
+    return _fill_cphl(target_tex, mask, src_texs, patching_config, seed, uicd,
                       _custom_fill=filled, _broadcast_zero_mask=True)
 
 
-def _refill_cphl_recursive_step_predictor(target: np.ndarray, patching_configs: list[CircularPatchingConfig]):
-    mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
+def _refill_cphl_recursive_step_predictor(target_tex: np.ndarray, patching_configs: list[CircularPatchingConfig]):
+    mask = np.broadcast_to(np.float32(0.0), target_tex.shape[:2])
     return sum((_fill_cphl_step_predictor(mask, config) for config in patching_configs))
 
 @step_predictor(_refill_cphl_recursive_step_predictor)
@@ -925,21 +973,29 @@ def _refill_cphl_recursive_step_predictor(target: np.ndarray, patching_configs: 
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def refill_cphl_recursive(
-        target: np.ndarray,
-        source_textures: list[np.ndarray],
+        target_tex: np.ndarray,
+        src_texs: list[np.ndarray],
         patching_configs: list[CircularPatchingConfig],
         seed: int,
         uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    """:return: texture, seams"""
-    seams = np.zeros(target.shape[:2], dtype=np.float32)
-    tex = target
-    mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
-    filled = np.broadcast_to(np.float32(1.0), target.shape[:2])
+    """
+    Iterates the ``patching_configs``.
+    The 1st item in ``patching_configs`` is processed over the provided ``target_tex``;
+    the following generations run on top of prior outputs.
+
+    For info regarding the remaining parameters and returned data see :func:`generate_cphl`.
+
+    :param target_tex: Target Texture, the starting canvas for the generation.
+    """
+    seams = np.zeros(target_tex.shape[:2], dtype=np.float32)
+    tex = target_tex
+    mask = np.broadcast_to(np.float32(0.0), target_tex.shape[:2])
+    filled = np.broadcast_to(np.float32(1.0), target_tex.shape[:2])
     ss_iter = iter(SeedSequence(seed).spawn(len(patching_configs)))
     for patching_config in patching_configs:
-        tex, seams = _fill_cphl(tex, mask, source_textures, patching_config, next(ss_iter), uicd,
-                          _seams=seams, _custom_fill=filled, _broadcast_zero_mask=True)
+        tex, seams = _fill_cphl(tex, mask, src_texs, patching_config, next(ss_iter), uicd,
+                                _seams=seams, _custom_fill=filled, _broadcast_zero_mask=True)
     return tex, seams
 
 # endregion ===== FILL FUNCTIONS =====
@@ -956,14 +1012,26 @@ def _generate_cphl_step_predictor(out_h: int, out_w: int, patching_config: Circu
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def generate_cphl(
-        lookup_textures: list[np.ndarray],
-        out_h: int, out_w: int,
+        src_texs: list[np.ndarray],
         patching_config: CircularPatchingConfig,
+        out_h: int, out_w: int,
         seed: int,
         uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    """:return: texture, seams"""
-    texs = TextureList(lookup_textures, patching_config.get_patch_kernel())
+    """
+    Generate a texture with patches drawn from the provided source textures.
+    This is done using Circular Patches over a Hexagonal Lattice (CPHL)
+
+    :param src_texs: Source textures from where the patches will be drawn.
+    :param patching_config: Patching configuration contains the parameters for the generation, such as the patches' diameter.
+    :param out_h: Output's height in pixels.
+    :param out_w: Output's width in pixels.
+    :param seed: Random Number Generator's seed, ensures reproducibility.
+    :param uicd: Utility to track the generation progress and to process UI interrupts.
+
+    :return: A tuple ``(texture, seams)``.
+    """
+    texs = TextureList(src_texs, patching_config.get_patch_kernel())
     target = np.zeros((out_h, out_w, texs.global_channel_count), dtype=texs.global_dtype)
     mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
     return _fill_cphl(target, mask, texs, patching_config, seed, uicd, _broadcast_zero_mask=True)
@@ -978,14 +1046,20 @@ def _generate_cphl_recursive_step_predictor(out_h: int, out_w: int, patching_con
 @clear_cache_post_exec(_extend4filling, *_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def generate_cphl_recursive(
-        lookup_textures: list[np.ndarray],
-        out_h: int, out_w: int,
+        src_texs: list[np.ndarray],
         patching_configs: list[CircularPatchingConfig],
+        out_h: int, out_w: int,
         seed: int,
         uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | RetOnInterrupt:
-    """:return: texture, seams"""
-    tex_list = TextureList(lookup_textures, patching_configs[0].get_patch_kernel())
+    """
+    Iterates the ``patching_configs``.
+    The 1st item in ``patching_configs`` is processed in the same way as ``generate_cphl``, with an empty canvas;
+    the following generations run on top of prior outputs.
+
+    For info regarding the remaining parameters and returned data see :func:`generate_cphl`.
+    """
+    tex_list = TextureList(src_texs, patching_configs[0].get_patch_kernel())
     target = np.zeros((out_h, out_w, tex_list.global_channel_count), dtype=tex_list.global_dtype)
     mask = np.broadcast_to(np.float32(0.0), target.shape[:2])
     ss_iter = iter(SeedSequence(seed).spawn(len(patching_configs)))
@@ -1185,37 +1259,37 @@ def _guided_make_seamless_horizontal(
 
 # region  -- step predictor methods --
 
-def _make_seamless_vertical_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
+def _make_seamless_vertical_circular_steps(target_tex: np.ndarray, patching_config: CircularPatchingConfig):
     pp = patching_config.patch_params
     margin = pp.block_size
-    extended_target_width = margin * 2 + target.shape[1]
+    extended_target_width = margin * 2 + target_tex.shape[1]
     x_bounds = (pp.radius, extended_target_width-pp.radius)
     return sum(1 for _ in range(x_bounds[0], x_bounds[1], patching_config.spacing))
 
-def _make_seamless_horizontal_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
-    return _make_seamless_vertical_circular_steps(np.rot90(target), patching_config)
+def _make_seamless_horizontal_circular_steps(target_tex: np.ndarray, patching_config: CircularPatchingConfig):
+    return _make_seamless_vertical_circular_steps(np.rot90(target_tex), patching_config)
 
-def _make_seamless_both_circular_steps(target: np.ndarray, patching_config: CircularPatchingConfig):
+def _make_seamless_both_circular_steps(target_tex: np.ndarray, patching_config: CircularPatchingConfig):
     return (
         2
-        + _make_seamless_vertical_circular_steps(target, patching_config)
-        + _make_seamless_horizontal_circular_steps(target, patching_config)
+        + _make_seamless_vertical_circular_steps(target_tex, patching_config)
+        + _make_seamless_horizontal_circular_steps(target_tex, patching_config)
     )
 
-def _guided_make_seamless_vertical_circular_steps(proxy_target, target, patching_config, proxy_textures=None, source_textures=None):
+def _guided_make_seamless_vertical_circular_steps(proxy_target_tex, target_tex, patching_config, proxy_textures=None, source_textures=None):
     _, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
-        patching_config, proxy_target, proxy_textures, source_textures, target)
-    return _make_seamless_vertical_circular_steps(proxy_target, proxy_config) * 2
+        patching_config, proxy_target_tex, proxy_textures, source_textures, target_tex)
+    return _make_seamless_vertical_circular_steps(proxy_target_tex, proxy_config) * 2
 
-def _guided_make_seamless_horizontal_circular_steps(proxy_target, target, patching_config, proxy_textures=None, source_textures=None):
+def _guided_make_seamless_horizontal_circular_steps(proxy_target_tex, target_tex, patching_config, proxy_textures=None, source_textures=None):
     _, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
-        patching_config, proxy_target, proxy_textures, source_textures, target)
-    return _make_seamless_horizontal_circular_steps(proxy_target, proxy_config) * 2
+        patching_config, proxy_target_tex, proxy_textures, source_textures, target_tex)
+    return _make_seamless_horizontal_circular_steps(proxy_target_tex, proxy_config) * 2
 
-def _guided_make_seameless_both_circular_steps(proxy_target, target, patching_config, proxy_textures=None, source_textures=None):
+def _guided_make_seameless_both_circular_steps(proxy_target_tex, target_tex, patching_config, proxy_textures=None, source_textures=None):
     _, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
-        patching_config, proxy_target, proxy_textures, source_textures, target)
-    return _make_seamless_both_circular_steps(proxy_target, proxy_config) * 2
+        patching_config, proxy_target_tex, proxy_textures, source_textures, target_tex)
+    return _make_seamless_both_circular_steps(proxy_target_tex, proxy_config) * 2
 
 # endregion  -- step predictor methods --
 
@@ -1225,11 +1299,17 @@ def _guided_make_seameless_both_circular_steps(proxy_target, target, patching_co
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def seamless_vertical(
-        target: np.ndarray, patching_config: CircularPatchingConfig, seed: int,
-        lookup_textures: list[np.ndarray] | None = None,
+        target_tex: np.ndarray, patching_config: CircularPatchingConfig, seed: int,
+        src_texs: list[np.ndarray] | None = None,
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
-    return _make_seamless_vertical_circular(target, lookup_textures, patching_config, seed, uicd)
+    """
+    Attempts to make a texture vertically tileable by patching the texture at the edge,
+    assembling a row of patches over at the texture edge seam.
+
+    For info regarding the parameters and returned data see :func:`seamless_horizontal` and  :func:`generate_texture`.
+    """
+    return _make_seamless_vertical_circular(target_tex, src_texs, patching_config, seed, uicd)
 
 
 @step_predictor(_make_seamless_horizontal_circular_steps)
@@ -1237,11 +1317,22 @@ def seamless_vertical(
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def seamless_horizontal(
-        target: np.ndarray, patching_config: CircularPatchingConfig, seed: int,
-        lookup_textures: list[np.ndarray] | None = None,
+        target_tex: np.ndarray, patching_config: CircularPatchingConfig, seed: int,
+        src_texs: list[np.ndarray] | None = None,
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
-    return _make_seamless_horizontal_circular(target, lookup_textures, patching_config, seed, uicd)
+    """
+    Attempts to make a texture horizontally tileable by patching the texture at the edge,
+    assembling a column of patches over at the texture edge seam.
+
+    For info regarding the remaining parameters see :func:`generate_texture`.
+
+    :param target_tex: The texture to make seamless; will also be used to fetch the patches if ``src_texts`` is None.
+    :param src_texs: If provided, the patches are obtained from ``src_texs``; otherwise, they will be fetched from ``target_tex``.
+
+    :return: A tuple ``(texture, seams)``.
+    """
+    return _make_seamless_horizontal_circular(target_tex, src_texs, patching_config, seed, uicd)
 
 
 @step_predictor(_make_seamless_both_circular_steps)
@@ -1249,17 +1340,22 @@ def seamless_horizontal(
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def seamless_both(
-        target: np.ndarray, patching_config: CircularPatchingConfig, seed: int,
-        lookup_textures: list[np.ndarray] | None = None,
+        target_tex: np.ndarray, patching_config: CircularPatchingConfig, seed: int,
+        src_texs: list[np.ndarray] | None = None,
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
-    lookup_textures = lookup_textures if lookup_textures else [target]
+    """
+    Attempts to make a texture both horizontally and vertically tileable by patching the texture at the edges.
+
+    For info regarding the parameters and returned data see :func:`seamless_horizontal` and  :func:`generate_texture`.
+    """
+    src_texs = src_texs if src_texs else [target_tex]
 
     seed_iterator = iter(SeedSequence(seed).spawn(3))
 
-    texture, seams = _make_seamless_vertical_circular(target, lookup_textures, patching_config, next(seed_iterator), uicd)
-    texture, seams = _make_seamless_horizontal_circular(texture, lookup_textures, patching_config, next(seed_iterator), uicd, seams)
-    texture, seams = _patch_hseam(texture, seams, lookup_textures, patching_config, next(seed_iterator), uicd)
+    texture, seams = _make_seamless_vertical_circular(target_tex, src_texs, patching_config, next(seed_iterator), uicd)
+    texture, seams = _make_seamless_horizontal_circular(texture, src_texs, patching_config, next(seed_iterator), uicd, seams)
+    texture, seams = _patch_hseam(texture, seams, src_texs, patching_config, next(seed_iterator), uicd)
 
     texture, seams = _adjust_seamboth_seams([texture, seams], patching_config)
     return texture, seams
@@ -1270,29 +1366,31 @@ def seamless_both(
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def seamless_both_guided(
-        proxy_target: np.ndarray, target: np.ndarray,
-        proxy_textures: list[np.ndarray] | None, source_textures: list[np.ndarray] | None,
+        proxy_target_tex: np.ndarray, target_tex: np.ndarray,
         patching_config: CircularPatchingConfig,
-        seed: int, uicd: UiCoordData | None = None,
+        seed: int,
+        proxy_texs: list[np.ndarray] | None = None, src_texs: list[np.ndarray] | None = None,
+        uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
-    Check generate_cphl6p_guided documentation for more info on the guided approach.
+    Attempts to make ``target_tex`` both vertically and horizontally tileable by
+    using a variant of the source textures — the proxy textures — to guide the texture synthesis algorithm and
+    reconstruct the synthesis result using the source textures.
 
-    When using proxy textures with a different size than the source, the patching parameters
-    (radius and spacing) may be auto-adjusted to ensure perfect grid alignment and prevent spatial drift.
+    For info regarding the parameters and returned data see :func:`seamless_horizontal_guided`.
     """
-    adj_source_config, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
-        patching_config, proxy_target, proxy_textures, source_textures, target)
+    adj_source_config, proxy_config, proxy_texs, scale, src_texs = _prepare_seamless_guided_args(
+        patching_config, proxy_target_tex, proxy_texs, src_texs, target_tex)
 
     seed_iterator = iter(SeedSequence(seed).spawn(3))
 
     # Vertical pass; then Horizontal pass
     texture, seams, proxy, p_seams = _guided_make_seamless_vertical(
-        proxy_target, target, proxy_textures, source_textures,
+        proxy_target_tex, target_tex, proxy_texs, src_texs,
         scale, adj_source_config, proxy_config, next(seed_iterator), uicd)
 
     texture, seams, proxy, p_seams = _guided_make_seamless_horizontal(
-        proxy, texture, proxy_textures, source_textures,
+        proxy, texture, proxy_texs, src_texs,
         scale, adj_source_config, proxy_config, next(seed_iterator), uicd, _proxy_seams=p_seams)
 
     # Calculate synchronized rolls based on proxy scale
@@ -1304,7 +1402,7 @@ def seamless_both_guided(
     def record(idx_mask_tuple: ProxyPatch):
         proxy_data.append(idx_mask_tuple)
 
-    proxy, p_seams = _patch_hseam(proxy, p_seams, proxy_textures, proxy_config, next(seed_iterator), uicd, _record=record, y_roll=y_proxy)
+    proxy, p_seams = _patch_hseam(proxy, p_seams, proxy_texs, proxy_config, next(seed_iterator), uicd, _record=record, y_roll=y_proxy)
 
     # Reconstruction
     _scale_proxy_patch_list(proxy_data, scale, adj_source_config.patch_params.block_size)
@@ -1313,13 +1411,13 @@ def seamless_both_guided(
     # _patch_hseam rolls it by y_roll AGAIN to perform the horizontal patch line.
     texture = np.roll(texture, y_roll, axis=0)
     pp = adj_source_config.patch_params
-    source_lookup = source_textures if source_textures else [target]
+    source_lookup = src_texs if src_texs else [target_tex]
     for pd_item in proxy_data:
         _paste_fromproxy(texture, pd_item, pp, source_lookup)
         check_ui(uicd, 1)
 
     if scale > 1:
-        seams = _periodic_resize(p_seams, (target.shape[1], target.shape[0]), interpolation=cv2.INTER_LINEAR)
+        seams = _periodic_resize(p_seams, (target_tex.shape[1], target_tex.shape[0]), interpolation=cv2.INTER_LINEAR)
     else:
         seams = p_seams
 
@@ -1348,22 +1446,23 @@ def _prepare_seamless_guided_args(patching_config, proxy_target, proxy_textures,
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def seamless_vertical_guided(
-        proxy_target: np.ndarray, target: np.ndarray,
+        proxy_target_tex: np.ndarray, target_tex: np.ndarray,
         patching_config: CircularPatchingConfig,
         seed: int | SeedSequence,
-        proxy_textures: list[np.ndarray] | None = None, source_textures: list[np.ndarray] | None = None,
+        proxy_texs: list[np.ndarray] | None = None, src_texs: list[np.ndarray] | None = None,
         uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
-    Check generate_cphl6p_guided documentation for more info on the guided approach.
+    Attempts to make ``target_tex`` vertically tileable by
+    using a variant of the source textures — the proxy textures — to guide the texture synthesis algorithm and
+    reconstruct the synthesis result using the source textures.
 
-    When using proxy textures with a different size than the source, the patching parameters
-    (radius and spacing) may be auto-adjusted to ensure perfect grid alignment and prevent spatial drift.
+    For info regarding the parameters and returned data see :func:`seamless_horizontal_guided`.
     """
-    adj_source_config, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
-        patching_config, proxy_target, proxy_textures, source_textures, target)
+    adj_source_config, proxy_config, proxy_texs, scale, src_texs = _prepare_seamless_guided_args(
+        patching_config, proxy_target_tex, proxy_texs, src_texs, target_tex)
     return _guided_make_seamless_vertical(
-        proxy_target, target, proxy_textures, source_textures, scale, adj_source_config, proxy_config, seed, uicd)[:3]
+        proxy_target_tex, target_tex, proxy_texs, src_texs, scale, adj_source_config, proxy_config, seed, uicd)[:3]
 
 
 @step_predictor(_guided_make_seamless_horizontal_circular_steps)
@@ -1371,63 +1470,80 @@ def seamless_vertical_guided(
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def seamless_horizontal_guided(
-        proxy_target: np.ndarray, target: np.ndarray,
+        proxy_target_tex: np.ndarray, target_tex: np.ndarray,
         patching_config: CircularPatchingConfig,
         seed: int | SeedSequence,
-        proxy_textures: list[np.ndarray] | None = None, source_textures: list[np.ndarray] | None = None,
+        proxy_texs: list[np.ndarray] | None = None, src_texs: list[np.ndarray] | None = None,
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
-    Check generate_cphl6p_guided documentation for more info on the guided approach.
+    Attempts to make ``target_tex`` horizontally tileable by
+    using a variant of the source textures — the proxy textures — to guide the texture synthesis algorithm and
+    reconstruct the synthesis result using the source textures.
+
+    Can be used, for example, in noisy images, where a filter can be applied so that the
+    generation is not influenced by noise or some other visual artefacts or features.
 
     When using proxy textures with a different size than the source, the patching parameters
     (radius and spacing) may be auto-adjusted to ensure perfect grid alignment and prevent spatial drift.
+
+    If ``proxy_texs`` and ``src_texs`` are not provided, ``proxy_target_tex`` and ``target_tex`` will be used instead
+    to draw patches during the proxy synthesis and reconstruction procedures respectively.
+
+    For info regarding the remaining parameters and returned data see :func:`generate_cphl`.
+
+    :param proxy_target_tex: Proxy Target Texture, the proxy synthesis will run over this texture.
+    :param target_tex: Target Texture, the final output will be reconstructed using this texture.
+    :param patching_config: Patching Configuration set with respect to the source textures' resolution.
+    :param proxy_texs: Textures used to guide the generation;
+        the textures order MUST MATCH those in the source textures list.
+    :param src_texs: Textures used to build the final result post proxy synthesis.
     """
-    adj_source_config, proxy_config, proxy_textures, scale, source_textures = _prepare_seamless_guided_args(
-        patching_config, proxy_target, proxy_textures, source_textures, target)
+    adj_source_config, proxy_config, proxy_texs, scale, src_texs = _prepare_seamless_guided_args(
+        patching_config, proxy_target_tex, proxy_texs, src_texs, target_tex)
     return _guided_make_seamless_horizontal(
-        proxy_target, target, proxy_textures, source_textures, scale, adj_source_config, proxy_config, seed, uicd)[:3]
+        proxy_target_tex, target_tex, proxy_texs, src_texs, scale, adj_source_config, proxy_config, seed, uicd)[:3]
 
 # endregion ===== MAKE SEAMLESS FUNCTIONS =====
 
 
 # region ===== TEXTURE TRANSFER FUNCTIONS =====
 
-def _texture_transfer_advanced_step_predictor(curated_target, config_alpha_pairs, target_roi=None):
+def _texture_transfer_advanced_step_predictor(curated_target_img, config_alpha_pairs, target_roi=None):
     mask = target_roi
-    if mask is None: mask = np.broadcast_to(np.float32(0.0), curated_target.shape[:2])
+    if mask is None: mask = np.broadcast_to(np.float32(0.0), curated_target_img.shape[:2])
     return sum(_fill_cphl_step_predictor(mask, cfg) for cfg, _ in config_alpha_pairs)
 
 
 def _texture_transfer_guided_advanced_step_predictor(
-        src_textures, proxy_textures, curated_proxy_target, config_alpha_pairs, target_roi=None):
-    mask = target_roi
-    if mask is None: mask = np.broadcast_to(np.float32(0.0), curated_proxy_target.shape[:2])
+        src_texs, proxy_texs, curated_proxy_target_img, config_alpha_pairs, proxy_target_roi=None):
+    mask = proxy_target_roi
+    if mask is None: mask = np.broadcast_to(np.float32(0.0), curated_proxy_target_img.shape[:2])
 
     _, _, _, scale = _setup_guided_args(
-        src_textures[0], proxy_textures[0], src_textures, proxy_textures, config_alpha_pairs[0][0])
+        src_texs[0], proxy_texs[0], src_texs, proxy_texs, config_alpha_pairs[0][0])
     total = 0
     for config, _ in config_alpha_pairs:
         _, proxy_config = _get_proxy_configs(config, scale)
         total += _fill_cphl_step_predictor(mask, proxy_config) * 2  # fill + reconstruction, hence 2x
     return total
 
-def _texture_transfer_step_predictor(src_textures, target, patching_config, alphas=None, last_diameter=None, downscale_factor=None, target_roi=None):
+def _texture_transfer_step_predictor(src_texs, target_img, patching_config, alphas=None, last_diameter=None, downscale_factor=None, target_roi=None):
     config_alpha_pairs = _texture_transfer_auto_config_alpha_pairs(patching_config, alphas, last_diameter)
 
     if downscale_factor is None or downscale_factor == 1:
-        return _texture_transfer_advanced_step_predictor(target, config_alpha_pairs, target_roi)
+        return _texture_transfer_advanced_step_predictor(target_img, config_alpha_pairs, target_roi)
 
     # handle integer multiple constraint in current implementation
-    src_textures = [crop_to_multiple(np.broadcast_to(np.float32(0.0), t.shape[:2]), downscale_factor) for t in src_textures]
+    src_texs = [crop_to_multiple(np.broadcast_to(np.float32(0.0), t.shape[:2]), downscale_factor) for t in src_texs]
 
     # mock data so that prior step predictor can be used without actually resizing stuff
-    resized_target_shape = (target.shape[0]//downscale_factor, target.shape[1]//downscale_factor)
-    resized_proxy_shape = (src_textures[0].shape[0]//downscale_factor, src_textures[0].shape[1]//downscale_factor)
+    resized_target_shape = (target_img.shape[0] // downscale_factor, target_img.shape[1] // downscale_factor)
+    resized_proxy_shape = (src_texs[0].shape[0] // downscale_factor, src_texs[0].shape[1] // downscale_factor)
     curated_proxy_target = np.broadcast_to(np.float32(0.0), resized_target_shape)
     proxy_textures = [np.broadcast_to(np.float32(0.0), resized_proxy_shape)]
 
-    return _texture_transfer_guided_advanced_step_predictor(src_textures, proxy_textures, curated_proxy_target, config_alpha_pairs, target_roi)
+    return _texture_transfer_guided_advanced_step_predictor(src_texs, proxy_textures, curated_proxy_target, config_alpha_pairs, target_roi)
 
 
 
@@ -1503,8 +1619,8 @@ def _texture_transfer_auto_config_alpha_pairs(
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def texture_transfer(
-    src_textures: list[np.ndarray],
-    target: np.ndarray,
+    src_texs: list[np.ndarray],
+    target_img: np.ndarray,
     patching_config: CircularPatchingConfig,
     seed: int,
     last_diameter: int | None = None,
@@ -1517,16 +1633,16 @@ def texture_transfer(
     """
     Synthesise a new image by stitching patches from source textures to match a target image.
 
-    This is the simplest entry point: source textures and target are automatically curated,
+    This is the simplest entry point for texture transfer: source textures and target are automatically curated,
     and an optional downscale path enables guided mode for faster synthesis.
     Despite its simplicity, it offers a comprehensive set of parameters for tweaking the synthesis.
 
-    Both ``src_textures`` and ``target`` need to be either in **BGR** format (NOT RGB!) or in a **single channel format**
+    Both ``src_texs`` and ``target_img`` need to be either in **BGR** format (NOT RGB!) or in a **single channel format**
     representing the luminance; but they do not need to share the same format.
 
-    :param src_textures: List of one or more source texture images (numpy arrays).
+    :param src_texs: List of one or more source texture images (numpy arrays).
         Patches are drawn from these images.
-    :param target: Guidance image whose overall appearance the result should match.
+    :param target_img: Guidance image whose overall appearance the result should match.
     :param patching_config: Base configuration for all iterations.
         The ``diameter`` is used for the first iteration, and ``overlap_ratio``
         is forced to 0.5 at every iteration regardless of the value set here.
@@ -1542,7 +1658,7 @@ def texture_transfer(
     :param downscale_factor: Integer divisor applied to both source and target
         before synthesis. For example, a value of 2 halves the dimensions.
         Patches are then blended at the original resolution (guided mode).
-    :param target_roi: Binary mask with the same height and width as ``target``
+    :param target_roi: Binary mask with the same height and width as ``target_img``
         where 0 marks pixels to ignore (e.g., plain background).
         Improves target curation and avoids unnecessary computations.
     :param invert_curated_target_values: If ``True``, the normalised target is
@@ -1560,17 +1676,17 @@ def texture_transfer(
 
     if downscale_factor is not None and downscale_factor > 1:
         # fix arrays sizes to comply w/ current implementation restrictions
-        src_textures = [crop_to_multiple(t, downscale_factor) for t in src_textures]
+        src_texs = [crop_to_multiple(t, downscale_factor) for t in src_texs]
 
         if target_roi is not None: resized_target_roi = cv2.resize(target_roi, (target_roi.shape[1]//downscale_factor, target_roi.shape[0]//downscale_factor))
-        resized_target = cv2.resize(target, (target.shape[1]//downscale_factor, target.shape[0]//downscale_factor))
-        resized_src_texs = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
-        proxy_textures = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_textures]
+        resized_target = cv2.resize(target_img, (target_img.shape[1] // downscale_factor, target_img.shape[0] // downscale_factor))
+        resized_src_texs = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_texs]
+        proxy_textures = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_texs]
         curated_rsz_textures = [curate_for_tex_transfer(t) for t in resized_src_texs]
         curated_rsz_target = curate_for_tex_transfer(resized_target, mask=resized_target_roi)
         if invert_curated_target_values: np.subtract(1, curated_rsz_target, out=curated_rsz_target)
         return _texture_transfer_guided_advanced(
-            src_textures=src_textures,
+            src_textures=src_texs,
             proxy_textures=proxy_textures,
             curated_proxy_textures=curated_rsz_textures,
             curated_proxy_target=curated_rsz_target,
@@ -1580,11 +1696,11 @@ def texture_transfer(
             uicd=uicd,
         )[:2]
 
-    curated_textures = [curate_for_tex_transfer(t) for t in src_textures]
-    curated_target = curate_for_tex_transfer(target, mask=target_roi)
+    curated_textures = [curate_for_tex_transfer(t) for t in src_texs]
+    curated_target = curate_for_tex_transfer(target_img, mask=target_roi)
     if invert_curated_target_values: np.subtract(1, curated_target, out=curated_target)
     return _texture_transfer_advanced(
-        src_textures, curated_textures, curated_target, config_alpha_pairs, seed, target_roi, uicd=uicd)
+        src_texs, curated_textures, curated_target, config_alpha_pairs, seed, target_roi, uicd=uicd)
 
 
 def _texture_transfer_guided_advanced(
@@ -1680,31 +1796,36 @@ def _texture_transfer_guided_advanced(
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None), auto_close=True)
 def texture_transfer_advanced(
-    src_textures: list[np.ndarray],
-    curated_textures: list[np.ndarray],
-    curated_target: np.ndarray,
+    src_texs: list[np.ndarray],
+    curated_texs: list[np.ndarray],
+    curated_target_img: np.ndarray,
     config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
     seed: int,
     target_roi: np.ndarray | None = None,
     uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
     """
-    :param curated_textures:
-        Textures processed in the same way as the target.
-        The number of channels should be the same as the target, but can differ from src.
-    :param config_alpha_pairs:
-        The settings to run in each iteration.
+    Advanced variant of ``texture_transfer``.
+    Does not handle curation and the entire synthesis schedule must be provided by the user.
+
+    For info regarding the remaining parameters see :func:`texture_transfer`.
+
+    :param curated_texs: The source textures processed in the same way as the ``curated_target_img``.
+        The number of channels should be the same as the ``curated_target_img``, but can differ from ``src_texs``.
+    :param curated_target_img: The target image processed in a way that makes its values meaningfully comparable with
+        other equally curated images (e.g. normalised luminance).
+    :param config_alpha_pairs: The settings to run in each iteration (iteration schedule).
         Typically, both the block sizes and alphas are decreasing.
         Alpha is the weight given to a patch similitude to the target during patch selection:
-        if alpha=0, then only the overlap with existing data is used for patch selection;
-        if alpha=1, then only the similitude with the target, at the location, is used.
-    :param target_roi:
-        Mask with the area of interest in the target marked with 1s, and the remaining area with 0s.
+        if alpha=1, then only the similitude with the target, at the location, is used;
+        if alpha=0, then only the overlap with existing data is used for patch selection.
+    :param target_roi: Mask with the area of interest in the target marked with 1s (for float32) or 255s (for uint8),
+        and the remaining area with 0s.
 
-    :return: texture, seams, proxy_texture
+    :return: A tuple ``(texture, seams)``.
     """
     return _texture_transfer_advanced(
-        src_textures, curated_textures, curated_target,
+        src_texs, curated_texs, curated_target_img,
         config_alpha_pairs, seed,
         target_roi, uicd
     )
@@ -1714,34 +1835,43 @@ def texture_transfer_advanced(
 @clear_cache_post_exec(*_CACHED_FUNCS)
 @handle_ui_interrupts(return_on_cancel=(None, None, None), auto_close=True)
 def texture_transfer_guided_advanced(
-    src_textures: list[np.ndarray],
-    proxy_textures: list[np.ndarray],
-    curated_proxy_textures: list[np.ndarray],
-    curated_proxy_target: np.ndarray,
+    proxy_texs: list[np.ndarray],
+    src_texs: list[np.ndarray],
+    curated_proxy_texs: list[np.ndarray],
+    curated_proxy_target_img: np.ndarray,
     config_alpha_pairs: list[tuple[CircularPatchingConfig, float]],
     seed: int,
-    target_roi: np.ndarray | None = None,  # should be proxy sized
+    proxy_target_roi: np.ndarray | None = None,  # should be proxy sized
     uicd: UiCoordData | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
-    :param curated_proxy_textures:
-        Proxy textures processed in the same way as the target.
-        The number of channels should be the same as the target, but can differ from the src & proxies.
-    :param curated_proxy_target:
-        Its resolution should be the same as the proxy textures
-    :param config_alpha_pairs:
-        The "pseudo" settings to run in each iteration.
-        The configs should be set as if they were to run at the src_textures resolution, not at the proxies resolution.
-    :param target_roi:
-        Mask with the area of interest in the target marked with 1s, and the remaining area with 0s.
-        Should have the same size and resolution as curated_proxy_target.
+    Advanced variant of ``texture_transfer`` that uses a variant of the source textures — the proxy textures — to guide
+    the texture synthesis algorithm and reconstruct the synthesis result using the source textures.
+
+    Can be used, for example, in noisy images, where a filter can be applied so that the
+    generation is not influenced by noise or some other visual artefacts or features.
+
+    For info regarding the remaining parameters see :func:`texture_transfer`.
+
+    :param proxy_texs: The proxy textures used during proxy synthesis.
+        All should have a matching source texture in ``src_texs`` that has the same index.
+    :param src_texs: The source textures used during reconstruction to obtain the final output.
+    :param curated_proxy_texs: Proxy textures processed in the same way as ``curated_proxy_target_img``.
+        The number of channels should be the same as the ``curated_proxy_target_img``,
+        but can differ from the source and proxy textures.
+    :param curated_proxy_target_img: Its resolution should be the same as the proxy textures
+    :param config_alpha_pairs: The "quasi" settings to run in each iteration (iteration schedule).
+        The configs should be set as if they were to run at the ``src_texs`` resolution, not at the ``proxy_texs`` resolution.
+    :param proxy_target_roi: Mask with the area of interest in the target marked with 1s (for float32) or 255s (for uint8),
+        and the remaining area with 0s.
+        **Should have the same size and resolution as** ``curated_proxy_target_img``.
 
     :return: texture, seams, proxy_texture
     """
     return _texture_transfer_guided_advanced(
-        src_textures, proxy_textures, curated_proxy_textures, curated_proxy_target,
+        src_texs, proxy_texs, curated_proxy_texs, curated_proxy_target_img,
         config_alpha_pairs, seed,
-        target_roi, uicd
+        proxy_target_roi, uicd
     )
 
 # endregion ===== TEXTURE TRANSFER FUNCTIONS =====

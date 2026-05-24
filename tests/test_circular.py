@@ -143,7 +143,8 @@ class TestCircularAPI(unittest.TestCase):
         self.assertEqual(p_res_tex.shape, (self.ph, self.pw, self.c))
 
     def test_10_seamless_both_guided(self):
-        res_tex, res_seams, p_res_tex = self.assertSteps(seamless_both_guided, self.proxy_tex, self.source_tex, self.proxy_textures, self.source_textures, self.config, self.seed)
+        res_tex, res_seams, p_res_tex = self.assertSteps(seamless_both_guided, self.proxy_tex, self.source_tex,
+                                                         self.config, self.seed, self.proxy_textures, self.source_textures)
         self.assertEqual(res_tex.shape, (self.h, self.w, self.c))
         self.assertEqual(res_seams.shape, (self.h, self.w))
         self.assertEqual(p_res_tex.shape, (self.ph, self.pw, self.c))
@@ -184,7 +185,7 @@ class TestCircularAPI(unittest.TestCase):
         curated_proxy_textures = [t.mean(-1)[:, :, np.newaxis] for t in self.proxy_textures]
         config_alpha_pairs = list(zip(self._2_configs, self._2_alphas))
         res_tex, res_seams, p_res_tex = self.assertSteps(texture_transfer_guided_advanced,
-            self.source_textures, self.proxy_textures, curated_proxy_textures, curated_proxy_target, config_alpha_pairs, self.seed )
+            self.proxy_textures, self.source_textures, curated_proxy_textures, curated_proxy_target, config_alpha_pairs, self.seed )
 
         # for this test output size is set based on curated_proxy_target and the scale, not the source shape
         out_h, out_w = np.array(curated_proxy_target.shape[:2])*self.proxy_downscale

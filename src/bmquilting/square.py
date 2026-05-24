@@ -1028,11 +1028,11 @@ def generate_guided(
         uicd: UiCoordData | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | tuple[None, None, None]:
     """
-    Uses a variant of the source textures — the proxy textures — to guide the texture synthesis algorithms and
+    Uses a variant of the source textures — the proxy textures — to guide the texture synthesis algorithm and
     reconstruct the synthesis result using the source textures.
 
     Can be used, for example, in noisy images, where a filter can be applied so that the
-    generation is not influenced by noise or some other visual artifacts or features.
+    generation is not influenced by noise or some other visual artefacts or features.
 
     For info regarding the remaining parameters see :func:`generate_texture`.
 
@@ -1141,7 +1141,7 @@ def seamless_horizontal_multi(target_tex: np.ndarray, patching_config: SquarePat
     For info regarding the remaining parameters see :func:`generate_texture`.
 
     :param target_tex: The texture to make seamless; will also be used to fetch the patches if ``src_texts`` is None.
-    :param src_texs: If provided, the patches are obtained from ``src_texs``; otherwise, they will be fetched from ``image``.
+    :param src_texs: If provided, the patches are obtained from ``src_texs``; otherwise, they will be fetched from ``target_tex``.
 
     :return: A tuple ``(texture, seams)``.
     """
