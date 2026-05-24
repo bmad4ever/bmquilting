@@ -334,5 +334,5 @@ For more details on integrating with a GUI, see the [UICD Demo](../extras/demos/
 ## Next Steps
 
 - **Parameter Details:** See [Arguments Explained](args_explained.md).
-- **Advanced Options:** See [Advanced Configuration](advanced.md).
+- **Advanced Options:** See [Advanced Configuration](advanced_config.md).
 - **Examples:** Check the `extras/demos/` directory to experiment with the methods via a GUI interface.
