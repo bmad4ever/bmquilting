@@ -1,0 +1,18 @@
+<svg width="400" height="300" xmlns="http://www.w3.org/2000/svg">
+  <rect x="125" y="10" width="150" height="60" fill="lightblue" stroke="black"/>
+  <text x="200" y="30" text-anchor="middle" font-size="12">Identify Prominent</text>
+  <text x="200" y="45" text-anchor="middle" font-size="12">Pattern Sizes</text>
+  <text x="200" y="60" text-anchor="middle" font-size="12">via FFT and/or SIFT</text>
+  <line x1="200" y1="70" x2="200" y2="90" stroke="black" stroke-width="2"/>
+  <polygon points="195,85 200,95 205,85" fill="black"/>
+  <rect x="125" y="100" width="150" height="60" fill="lightblue" stroke="black"/>
+  <text x="200" y="120" text-anchor="middle" font-size="12">Find Candidate Block</text>
+  <text x="200" y="135" text-anchor="middle" font-size="12">Sizes that Synchronize</text>
+  <text x="200" y="150" text-anchor="middle" font-size="12">Well</text>
+  <line x1="200" y1="160" x2="200" y2="180" stroke="black" stroke-width="2"/>
+  <polygon points="195,175 200,185 205,175" fill="black"/>
+  <rect x="125" y="190" width="150" height="60" fill="lightblue" stroke="black"/>
+  <text x="200" y="210" text-anchor="middle" font-size="12">Select Largest</text>
+  <text x="200" y="225" text-anchor="middle" font-size="12">Synchronized Candidate</text>
+  <text x="200" y="240" text-anchor="middle" font-size="12">for Performance</text>
+</svg>

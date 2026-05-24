@@ -1,0 +1,54 @@
+<svg width="800" height="450" viewBox="0 0 800 450" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Clip the sine wave so it stays inside the source rectangle -->
+    <clipPath id="sourceClip">
+      <rect x="0" y="0" width="500" height="80" />
+    </clipPath>
+    <!-- Arrow marker definition -->
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="0" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L9,3 z" fill="#a22" />
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="450" fill="#ffffff" />
+  
+  <!-- Title -->
+  <text x="400" y="30" font-family="Arial" font-size="20" font-weight="bold" text-anchor="middle" fill="#333">Pattern Continuity and the Block Size Limit</text>
+  
+  <!-- Source Image (Width D = 500) -->
+  <g transform="translate(50, 80)">
+    <text x="0" y="-10" font-family="Arial" font-size="14" fill="#666">Source Image (Width D = 500px)</text>
+    <rect width="500" height="80" fill="#f0f0f0" stroke="#ccc" stroke-width="1" />
+    
+    <!-- Pattern (Sine Wave) - Drawn beyond 500 but clipped -->
+    <path d="M 0 40 Q 75 0 150 40 T 300 40 T 450 40 T 600 40" 
+          fill="none" stroke="#555" stroke-width="2" 
+          clip-path="url(#sourceClip)" />
+    
+    <!-- Pattern Period Marker (T = 300) -->
+    <line x1="0" y1="95" x2="300" y2="95" stroke="#888" stroke-width="1" stroke-dasharray="4" />
+    <text x="150" y="110" font-family="Arial" font-size="12" text-anchor="middle" fill="#888">Pattern Period (T = 300px)</text>
+    <line x1="0" y1="90" x2="0" y2="100" stroke="#888" />
+    <line x1="300" y1="90" x2="300" y2="100" stroke="#888" />
+  </g>
+  
+  <!-- Block and Search Space (b = 300) -->
+  <g transform="translate(50, 240)">
+    <text x="0" y="-10" font-family="Arial" font-size="14" fill="#666">Addressable Search Space (D - b = 200px)</text>
+    
+    <!-- Reachable starting points -->
+    <rect width="200" height="30" fill="#6c6" fill-opacity="0.3" stroke="#2a2" stroke-width="1" />
+    <text x="100" y="20" font-family="Arial" font-size="12" text-anchor="middle" fill="#262">Reachable Phases</text>
+    
+    <!-- The Continuity Gap -->
+    <rect x="200" y="0" width="100" height="30" fill="#f66" fill-opacity="0.3" stroke="#a22" stroke-width="1" />
+    <text x="250" y="60" font-family="Arial" font-size="12" text-anchor="middle" fill="#a22">The Continuity Gap (Phases [200, 300])</text>
+    <!-- Arrow pointing UP to the center of the gap rectangle -->
+    <path d="M 250 45 L 250 18" fill="none" stroke="#a22" stroke-width="1" marker-end="url(#arrow)" />
+    
+    <text x="0" y="100" font-family="Arial" font-size="14" font-weight="bold" fill="#333">Constraint: b ≤ D/2</text>
+    <text x="0" y="120" font-family="Arial" font-size="13" fill="#444">If b > D/2, the search space (D-b) becomes smaller than the pattern period T (if b ≈ T).</text>
+    <text x="0" y="140" font-family="Arial" font-size="13" fill="#444">This means you cannot "reach" certain phases of the pattern to maintain continuity.</text>
+  </g>
+</svg>
