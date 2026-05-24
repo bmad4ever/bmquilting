@@ -767,12 +767,36 @@ def generate_texture(src_texs: list[np.ndarray],
     return _generate_texture(src_texs, patching_config, out_h, out_w, rng, uicd)
 
 
+def _generate_texture_diagonal_step_predictor(patching_config: SquarePatchingConfig, out_h: NumPixels, out_w: NumPixels):
+    b, o = patching_config.block_size, patching_config.overlap
+    bmo = b - o; bm2o = b - 2 * o; d_ixd = o
+    _n_h = n_h = ceil(out_h / bm2o); _n_w = n_w = ceil(out_w / bm2o)
+    if out_h % bm2o <= o: _n_h -= 1
+    if out_w % bm2o <= o: _n_w -= 1
+    h, w = (o + b * 2 + n_h * bm2o, o + b * 2 + n_w * bm2o)
+    n_d = min(_n_h, _n_w)
+    # ================================================================
+    count = 1
+    # 1st row & column
+    count += len(range(bmo, (w - o) - b + 1, bmo))
+    count += len(range(bmo, (h - o) - b + 1, bmo))
+    # remaining rows & columns
+    count += len(range(1, n_d))  # patches at the diagonal
+    for d in range(1, n_d):
+        d_ixd += bm2o
+        count += len(range(d_ixd + b - o, w - b + 1, (b - o)))
+        count += len(range(d_ixd + b - o, h - b + 1, (b - o)))
+    return count
+
+@step_predictor(_generate_texture_diagonal_step_predictor)
 @auto_uint8_to_float32
 @clear_cache_post_exec(*_CACHED_FUNCS)
+@handle_ui_interrupts(return_on_cancel=ret_val_on_interrupt, auto_close=True)
 def generate_texture_diagonal(src_texs: list[np.ndarray],
                               patching_config: SquarePatchingConfig,
                               out_h: NumPixels, out_w: NumPixels,
-                              seed: int) -> tuple[np.ndarray, np.ndarray]:
+                              seed: int,
+                              uicd: UiCoordData | None = None) -> tuple[np.ndarray, np.ndarray]:
     """
         I've wondered if iterating diagonally with an overlap sized offset --- so that the corners shared by 4 patches are
         covered by the new patches --- could improve the generation quality, and perhaps help avoid "loose" seams.
@@ -790,10 +814,8 @@ def generate_texture_diagonal(src_texs: list[np.ndarray],
     bm2o = b - 2 * o
     _n_h = n_h = ceil(out_h / bm2o)
     _n_w = n_w = ceil(out_w / bm2o)
-    if out_h % bm2o <= o:
-        _n_h -= 1
-    if out_w % bm2o <= o:
-        _n_w -= 1
+    if out_h % bm2o <= o: _n_h -= 1
+    if out_w % bm2o <= o: _n_w -= 1
 
     n_d = min(_n_h, _n_w)  # number of diagonal iterations
 
@@ -811,13 +833,14 @@ def generate_texture_diagonal(src_texs: list[np.ndarray],
     # Set starting block
     _, starting_block = _get_random_valid_block(b, src_texs, rng)
     texture_map[o:o + b, o:o + b, :] = starting_block
+    check_ui(uicd, to_add=1)
 
     # --- generation ----
     d_ixd = o  # texture offset ( both for x & y )
 
     # fill the 1st row & column
-    _fill_row_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_texs, patching_config, rng)
-    _fill_column_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_texs, patching_config, rng)
+    _fill_row_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_texs, patching_config, rng, uicd)
+    _fill_column_inplace(texture_map[d_ixd:, d_ixd:], seams_map[d_ixd:, d_ixd:], src_texs, patching_config, rng, uicd)
 
     # fill the rest iterating diagonally
     find_patch = get_find_patch_both_method()
@@ -826,17 +849,17 @@ def generate_texture_diagonal(src_texs: list[np.ndarray],
         d_ixd += bm2o
 
         block_idx = np.s_[d_ixd:d_ixd + b, d_ixd:d_ixd + b]
-        process_block(texture_map, seams_map, src_texs, block_idx, find_patch, find_cut, patching_config, rng)
+        process_block(texture_map, seams_map, src_texs, block_idx, find_patch, find_cut, patching_config, rng, uicd)
 
         # columns
         for blk_x in range(d_ixd + b - o, texture_map.shape[1] - b + 1, (b - o)):
             block_idx = np.s_[d_ixd:d_ixd + b, blk_x:blk_x + b]
-            process_block(texture_map, seams_map, src_texs, block_idx, find_patch, find_cut, patching_config, rng)
+            process_block(texture_map, seams_map, src_texs, block_idx, find_patch, find_cut, patching_config, rng, uicd)
 
         # rows
         for blk_y in range(d_ixd + b - o, texture_map.shape[0] - b + 1, (b - o)):
             block_idx = np.s_[blk_y:blk_y + b, d_ixd:d_ixd + b]
-            process_block(texture_map, seams_map, src_texs, block_idx, find_patch, find_cut, patching_config, rng)
+            process_block(texture_map, seams_map, src_texs, block_idx, find_patch, find_cut, patching_config, rng, uicd)
 
     return texture_map[o:o + out_h, o:o + out_w], seams_map[o:o + out_h, o:o + out_w]
 
