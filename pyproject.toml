@@ -8,7 +8,7 @@ version = "2.0.0"
 authors = [
     {name = "Bruno Madeira", email = "bmad.works@gmail.com"}
 ]
-description = "A brief description of your bmquilting library"
+description = "A library for texture synthesis based on image quilting algorithms."
 readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "MIT"} 
