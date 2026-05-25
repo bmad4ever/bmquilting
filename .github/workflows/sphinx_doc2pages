@@ -1,0 +1,70 @@
+name: Deploy Sphinx Docs to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main          
+  workflow_dispatch:  
+
+permissions:
+  contents: read
+  pages:    write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip            # caches the pip download cache across runs
+
+      # Install Sphinx + every extension/theme referenced in conf.py.
+      # Built-in sphinx.ext.* extensions need no extra install.
+      # autodoc_mock_imports (numpy, cv2, …) are mocked, so also skipped.
+      - name: Install documentation dependencies
+        run: |
+          pip install --upgrade pip
+          pip install \
+            sphinx \
+            myst-parser \
+            furo \
+            sphinx-github-alerts
+
+      - name: Build HTML documentation
+        run: |
+          sphinx-build \
+            -b html \
+            sphinx \            # dir w/ conf.py
+            sphinx/_build/html  # output dir
+        # note: 
+        #   there are warnings in the current source
+        #   -W turns warnings into errors; it can't be used 
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: sphinx/_build/html  # output dir
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
