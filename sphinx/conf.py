@@ -71,6 +71,7 @@ extensions = [
     "myst_parser",
     "sphinx.ext.mathjax",
     "sphinx_github_alerts",
+    "sphinx.ext.githubpages",
 ]
 
 myst_enable_extensions = [
