@@ -748,7 +748,7 @@ def _fill_cphl(
         uicd: UiCoordData | None = None,
         _record: Callable[[ProxyPatch], None] = lambda _: None,
         _seams: np.ndarray | None = None,
-        _custom_fill: np.ndarray | None = False,
+        _custom_fill: np.ndarray | None = None,
         _broadcast_zero_mask: bool = False,
         _transfer_tex: tuple[ValidatedTexturesIterator, np.ndarray, Percentage] | None = None, # proxies, target, alpha
 ) -> tuple[np.ndarray, np.ndarray]:
