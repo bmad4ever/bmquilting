@@ -42,11 +42,7 @@ jobs:
             sphinx-github-alerts
 
       - name: Build HTML documentation
-        run: |
-          sphinx-build \
-            -b html \
-            sphinx \            # dir w/ conf.py
-            sphinx/_build/html  # output dir
+        run: sphinx-build -b html sphinx sphinx/_build/html
         # note: 
         #   there are warnings in the current source
         #   -W turns warnings into errors; it can't be used 
@@ -54,7 +50,7 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: sphinx/_build/html  # output dir
+          path: sphinx/_build/html
 
   deploy:
     needs: build
