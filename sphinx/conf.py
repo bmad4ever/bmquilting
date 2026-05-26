@@ -13,7 +13,8 @@ from pathlib import Path
 
 # -- Project Root Setup -------------------------------------------------------
 # Path is now relative to sphinx_src/
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Since the package is in src/bmquilting/, add src/ to the path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 
 project = 'bmquilting'
 copyright = '2026, BMad4ever'
