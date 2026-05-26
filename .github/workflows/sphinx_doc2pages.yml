@@ -41,9 +41,6 @@ jobs:
             furo \
             sphinx-github-alerts
 
-      - name: Install package in editable mode
-        run: pip install -e .
-
       - name: Build HTML documentation
         run: sphinx-build -b html sphinx sphinx/_build/html
         # note: 
