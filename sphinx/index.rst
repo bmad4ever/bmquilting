@@ -29,6 +29,7 @@ bmquilting
    :maxdepth: 2
    :caption: Visual Aids
 
+   docs_md/gallery
    docs_md/seam_blending_diagram
 
 .. toctree::

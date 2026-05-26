@@ -17,11 +17,52 @@
 
 ## Synthesis Examples
 
-|  |  |  |
+<details>
+<summary><strong>📸 Click to expand example section</strong></summary>
+
+### Texture Transfer
+
+| Input Target | Input Texture | Output |
 | :---: | :---: | :---: |
-| ![Input](docs/imgs/in_circ_tex_184x124.png) | ![Seams](docs/imgs/out_circ_seams.png) | ![Output](docs/imgs/out_circ_tex.png) |
-| ![Target](docs/imgs/fill_in_target.png) | ![Seams](docs/imgs/filled_seams.png) | ![Filled](docs/imgs/filled_tex.png) |
-| ![Input](docs/imgs/tex2transfer.png) | ![Input](docs/imgs/banana-big.jpg) | ![Output](docs/imgs/transfer_out_tex.jpg) |
+| ![Target](docs/imgs/samples/gallery_trans_target_0.jpg) | ![Texture](docs/imgs/samples/gallery_trans_tex_0.jpg) | ![Output](docs/imgs/samples/gallery_trans_out_0.jpg) |
+| ![Target](docs/imgs/samples/gallery_trans_target_1.jpg) | ![Texture](docs/imgs/samples/gallery_tile_in_1.jpg) | ![Output](docs/imgs/samples/gallery_trans_out_1.jpg) |
+| ![Target](docs/imgs/samples/gallery_trans_target_2.jpg) | ![Texture](docs/imgs/samples/gallery_trans_tex_2.jpg) | ![Output](docs/imgs/samples/gallery_trans_out_2.jpg) |
+
+### Hole Filling
+
+| Input | Seams | Output |
+| :---: | :---: | :---: |
+| ![Input](docs/imgs/samples/gallery_fill_in_0.jpg) | ![Seams](docs/imgs/samples/gallery_fill_seams_0.jpg) | ![Output](docs/imgs/samples/gallery_fill_out_0.jpg) |
+| ![Input](docs/imgs/samples/gallery_fill_in_1.jpg) | ![Seams](docs/imgs/samples/gallery_fill_seams_1.jpg) | ![Output](docs/imgs/samples/gallery_fill_out_1.jpg) |
+| ![Input](docs/imgs/samples/gallery_fill_in_2.jpg) | ![Seams](docs/imgs/samples/gallery_fill_seams_2.jpg) | ![Output](docs/imgs/samples/gallery_fill_out_2.jpg) |
+
+### Proxy Synthesis
+
+| Input (Noisy) | Proxy (Blurred) | Output |
+| :---: | :---: | :---: |
+| ![Input](docs/imgs/samples/gallery_proxy_in_0.jpg) | ![Proxy](docs/imgs/samples/gallery_proxy_p_0.jpg) | ![Output](docs/imgs/samples/gallery_proxy_out_0.jpg) |
+| ![Input](docs/imgs/samples/gallery_proxy_in_1.jpg) | ![Proxy](docs/imgs/samples/gallery_proxy_p_1.jpg) | ![Output](docs/imgs/samples/gallery_proxy_out_1.jpg) |
+| ![Input](docs/imgs/samples/gallery_proxy_in_2.jpg) | ![Proxy](docs/imgs/samples/gallery_proxy_p_2.jpg) | ![Output](docs/imgs/samples/gallery_proxy_out_2.jpg) |
+
+### Texture Generation
+
+| Input | Seams | Output |
+| :---: | :---: | :---: |
+| ![Input](docs/imgs/samples/gallery_gen_in_0.jpg) | ![Seams](docs/imgs/samples/gallery_gen_seams_0.jpg) | ![Output](docs/imgs/samples/gallery_gen_out_0.jpg) |
+| ![Input](docs/imgs/samples/gallery_gen_in_1.jpg) | ![Seams](docs/imgs/samples/gallery_gen_seams_1.jpg) | ![Output](docs/imgs/samples/gallery_gen_out_1.jpg) |
+| ![Input](docs/imgs/samples/gallery_gen_in_2.jpg) | ![Seams](docs/imgs/samples/gallery_gen_seams_2.jpg) | ![Output](docs/imgs/samples/gallery_gen_out_2.jpg) |
+
+### Make Texture Tile-able
+
+| Input | Output | Tiled 2x2 |
+| :---: | :---: | :---: |
+| ![Input](docs/imgs/samples/gallery_tile_in_0.jpg) | ![Output](docs/imgs/samples/gallery_tile_out_0.jpg) | ![Tiled](docs/imgs/samples/gallery_tile_2x2_0.jpg) |
+| ![Input](docs/imgs/samples/gallery_tile_in_1.jpg) | ![Output](docs/imgs/samples/gallery_tile_out_1.jpg) | ![Tiled](docs/imgs/samples/gallery_tile_2x2_1.jpg) |
+| ![Input](docs/imgs/samples/gallery_tile_in_2.jpg) | ![Output](docs/imgs/samples/gallery_tile_out_2.jpg) | ![Tiled](docs/imgs/samples/gallery_tile_2x2_2.jpg) |
+
+</details>
+
+
 
 ## Requirements
 

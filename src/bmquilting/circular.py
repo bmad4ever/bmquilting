@@ -1678,6 +1678,7 @@ def texture_transfer(
         # fix arrays sizes to comply w/ current implementation restrictions
         src_texs = [crop_to_multiple(t, downscale_factor) for t in src_texs]
 
+        resized_target_roi = None
         if target_roi is not None: resized_target_roi = cv2.resize(target_roi, (target_roi.shape[1]//downscale_factor, target_roi.shape[0]//downscale_factor))
         resized_target = cv2.resize(target_img, (target_img.shape[1] // downscale_factor, target_img.shape[0] // downscale_factor))
         resized_src_texs = [cv2.resize(t, (t.shape[1]//downscale_factor, t.shape[0]//downscale_factor)) for t in src_texs]
