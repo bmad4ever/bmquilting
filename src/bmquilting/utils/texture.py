@@ -23,6 +23,9 @@ except ImportError:
 # endregion
 
 
+INVALID_VALUE = np.inf
+
+
 def get_texture_variants(
         img: np.ndarray,
         original: bool = True,
@@ -33,8 +36,14 @@ def get_texture_variants(
         transpose_flip_h: bool = True,
         transpose_flip_v: bool = True,
         transpose_flip_both: bool = True
-):
-    """ Compute mirrored and transposed variants of the provided image."""
+) -> list[np.ndarray]:
+    """
+    :param flip_both: Same as rotating 180 degrees.
+    :param transpose_flip_h: Same as rotating 90 degrees clockwise.
+    :param transpose_flip_v: Same as rotating 90 degrees anti-clockwise.
+
+    Compute mirrored and transposed variants of the provided image.
+    """
     texture_variants = []
 
     if original:
@@ -61,6 +70,140 @@ def get_texture_variants(
         texture_variants[idx] = np.ascontiguousarray(tex)
 
     return texture_variants
+
+
+def arrange_texture_variants_grid(
+        img: np.ndarray,
+        margin: int = 1,
+        original: bool = True,
+        flip_h: bool = True,
+        flip_v: bool = True,
+        flip_both: bool = True,
+        transposed: bool = True,
+        transpose_flip_h: bool = True,
+        transpose_flip_v: bool = True,
+        transpose_flip_both: bool = True,
+) -> np.ndarray:
+    """
+    WARNING: Can worsen performance significantly and may affect patch selection due to matchTemplate optimizations.
+
+    Why use this despite the above warning?
+
+    It can improve performance significantly under specific conditions.
+    Here are some points to take into account:
+
+    * If the texture shape is not approximately a square, avoid transposed variants as these will increase the invalid area, leading to more wasted computations.
+    * There are less wasted computations the smaller the patch; this make it a potential good candidate to deal with latent sources.
+
+    DevNote: Based on some preliminary tests it seems that the "sweet spot" appears to be:
+    1) above the 160.000 addressable units (pixels if dealing with images); so a 200x200 using only mirrors or 100x100 using both mirrors and transposed variants
+    2) a block size smaller than 20% the texture size and bigger than 2.5% the texture size.
+    x) There seem to be a no-go area within the above defined parameter area, usually around a particular block size;
+    I do not know why that is.
+
+    _______________________________________________________________________________
+
+    Call get_texture_variants and composite all results into a single grid image.
+
+    Layout rationale — the 8 variants form 4 natural vertical-mirror pairs, so
+    each pair occupies one column (mirror placed directly below its counterpart):
+
+        col 0          col 1        col 2                col 3
+      ┌──────────┬────────────┬─────────────┬──────────────────────┐
+      | original │  flip_h    │  transposed │  transpose_flip_h    │  row 0
+      |──────────┼────────────┼─────────────┼──────────────────────┤
+      | flip_v   │  flip_both │  transpose_ │  transpose_flip_both │  row 1
+      |          │            │  flip_v     │                      │
+      └──────────┴────────────┴─────────────┴──────────────────────┘
+
+    Disabled variants simply reduce a column to a single image (or skip the
+    column entirely if both halves of a pair are disabled).  A hole therefore
+    only ever appears at the bottom of a column — never mid-layout — keeping
+    wasted space to an absolute minimum without any search algorithm.
+
+    Column width  = max image width  inside that column.
+    Row height    = max image height at that row index across all columns.
+    Images are top-left aligned within their cell.
+
+    :param img: Source image (H × W × C); integer arrays are cast to float32 and divided by 255.0.
+    :param margin: Minimum gap in pixels between adjacent images.
+    1 suffices; unless, perhaps, you want to patch the image before using it.
+
+    :return: Single composite image as a float32 np.ndarray.
+    """
+
+    # Collect variants, map names → arrays
+    flags = dict(
+        original=original,
+        flip_h=flip_h,
+        flip_v=flip_v,
+        flip_both=flip_both,
+        transposed=transposed,
+        transpose_flip_h=transpose_flip_h,
+        transpose_flip_v=transpose_flip_v,
+        transpose_flip_both=transpose_flip_both,
+    )
+
+    is_integer = img.dtype in [np.uint8, np.uint16, np.uint32, np.uint64, np.int16, np.int32, np.int64]
+    img = np.float32(img)
+    if is_integer:
+        img /= 255.0
+
+    images = get_texture_variants(img, **flags)
+
+    # Build name→array dict preserving the function's return order
+    ordered_keys = [k for k, v in flags.items() if v]
+    variant_map: dict[str, np.ndarray] = dict(zip(ordered_keys, images))
+
+    # Build columns from the four vertical-mirror pairs
+    PAIRS: list[tuple[str, str]] = [
+        ("original",         "flip_v"),
+        ("flip_h",           "flip_both"),
+        ("transposed",       "transpose_flip_v"),
+        ("transpose_flip_h", "transpose_flip_both"),
+    ]
+
+    columns: list[list[np.ndarray]] = []
+    for top_key, bot_key in PAIRS:
+        col = [variant_map[k] for k in (top_key, bot_key) if k in variant_map]
+        if col:
+            columns.append(col)
+
+    if not columns:
+        raise ValueError("No variants selected — enable at least one flag.")
+
+    n_cols = len(columns)
+    n_rows = max(len(col) for col in columns)
+
+    # Per-column widths and per-row heights
+    col_widths  = [max(im.shape[1] for im in col) for col in columns]
+    row_heights = [
+        max((col[r].shape[0] for col in columns if r < len(col)), default=0)
+        for r in range(n_rows)
+    ]
+
+    # Allocate canvas
+    canvas_w = sum(col_widths) + (n_cols - 1) * margin
+    canvas_h = sum(row_heights) + (n_rows - 1) * margin
+
+    depth = img.shape[2] if img.ndim == 3 else None
+    if depth is not None:
+        bg = np.broadcast_to(INVALID_VALUE, (depth,)).astype(img.dtype)
+        canvas = np.full((canvas_h, canvas_w, depth), bg, dtype=img.dtype)
+    else:
+        canvas = np.full((canvas_h, canvas_w), INVALID_VALUE, dtype=img.dtype)
+
+    # Stamp each image into its cell (top-left aligned)
+    x0 = 0
+    for c, col in enumerate(columns):
+        y0 = 0
+        for r, im in enumerate(col):
+            h, w = im.shape[:2]
+            canvas[y0 : y0 + h, x0 : x0 + w] = im
+            y0 += row_heights[r] + margin
+        x0 += col_widths[c] + margin
+
+    return canvas
 
 
 @optional_njit(cache=True)
@@ -225,10 +368,10 @@ def set_invalid_texture_area(src: np.ndarray, mask: np.ndarray) -> np.ndarray:
     :param mask: zeroes will be set as invalid
     :return: a copy of src with the invalid texture area set to np.inf
     """
-    res = np.float32(src)
+    res = src.astype(np.float32, copy=True)
     if src.dtype in [np.uint8, np.uint16, np.uint32, np.uint64, np.int16, np.int32, np.int64]:
         res /= 255.0
-    res[mask == 0] = np.inf
+    res[mask == 0] = INVALID_VALUE
     return res
 
 
