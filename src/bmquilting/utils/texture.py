@@ -23,6 +23,9 @@ except ImportError:
 # endregion
 
 
+INVALID_VALUE = np.inf
+
+
 def get_texture_variants(
         img: np.ndarray,
         original: bool = True,
@@ -225,10 +228,10 @@ def set_invalid_texture_area(src: np.ndarray, mask: np.ndarray) -> np.ndarray:
     :param mask: zeroes will be set as invalid
     :return: a copy of src with the invalid texture area set to np.inf
     """
-    res = np.float32(src)
+    res = src.astype(np.float32, copy=True)
     if src.dtype in [np.uint8, np.uint16, np.uint32, np.uint64, np.int16, np.int32, np.int64]:
         res /= 255.0
-    res[mask == 0] = np.inf
+    res[mask == 0] = INVALID_VALUE
     return res
 
 
