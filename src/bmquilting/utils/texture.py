@@ -36,8 +36,14 @@ def get_texture_variants(
         transpose_flip_h: bool = True,
         transpose_flip_v: bool = True,
         transpose_flip_both: bool = True
-):
-    """ Compute mirrored and transposed variants of the provided image."""
+) -> list[np.ndarray]:
+    """
+    :param flip_both: Same as rotating 180 degrees.
+    :param transpose_flip_h: Same as rotating 90 degrees clockwise.
+    :param transpose_flip_v: Same as rotating 90 degrees anti-clockwise.
+
+    Compute mirrored and transposed variants of the provided image.
+    """
     texture_variants = []
 
     if original:
