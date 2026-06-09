@@ -24,7 +24,8 @@ from .texture import (
     add_salt_and_pepper,
     set_invalid_texture_area,
     curate_for_tex_transfer,
-    crop_to_multiple
+    crop_to_multiple,
+    arrange_texture_variants_grid
 )
 
 __all__ = [
@@ -46,5 +47,6 @@ __all__ = [
     "add_salt_and_pepper",
     "set_invalid_texture_area",
     "curate_for_tex_transfer",
-    "crop_to_multiple"
+    "crop_to_multiple",
+    "arrange_texture_variants_grid"
 ]
